@@ -103,7 +103,7 @@ class ZooDialog(QDialog):
         lay = QVBoxLayout(self)
         tip = QLabel("按住条目拖到 3D 视口即可在落点放置机器人（编辑模式下）；"
                      "或选中后\"添加到当前场景\"/\"生成并打开\"完整项目。"
-                     "首次使用某模型会联网下载一次（之后永久离线）。")
+                     "模型资产随平台自带，离线可用、无需下载。")
         tip.setWordWrap(True)
         lay.addWidget(tip)
         self.listw = QListWidget()
@@ -339,7 +339,7 @@ class SceneAgentDialog(QDialog):
             self._session = SceneGenSession(
                 self._cfg,
                 on_download=lambda k: self.statusChanged.emit(
-                    f"首次使用 {k}，联网下载模型…"))
+                    f"资产缺失，回退下载模型 {k}…"))
         op = "refine" if self._yaml else "generate"
         self.btn_gen.setEnabled(False)
         self.btn_close.setText("取消")
@@ -979,7 +979,7 @@ class MainWindow(QMainWindow):
         if self.state.value == UiState.RUNNING or self._busy:
             self._log("运行中不能生成演示（先等 run 结束或 reset）", "warn")
             return
-        self._apply_state(f"模型库：生成 {key} 运动演示中（首次使用需联网下载）…")
+        self._apply_state(f"模型库：生成 {key} 运动演示中…")
         self._log(f"从模型库生成运动演示：{key}")
         self.client.call_tool("zoo_create", {"key": key, "demo": True},
                               self._on_zoo_created)
@@ -989,8 +989,8 @@ class MainWindow(QMainWindow):
         if self._zoo_dlg is None or not self._zoo_dlg.selected_key:
             return
         key = self._zoo_dlg.selected_key
-        self._apply_state(f"模型库：生成 {key} 中（首次使用需联网下载）…")
-        self._log(f"从模型库生成：{key}（首次需联网下载）")
+        self._apply_state(f"模型库：生成 {key} 中…")
+        self._log(f"从模型库生成：{key}")
         self.client.call_tool("zoo_create", {"key": key}, self._on_zoo_created)
 
     def _add_robot_center(self, key: str):
@@ -1007,7 +1007,7 @@ class MainWindow(QMainWindow):
         if self._spec is None:
             self._log("先加载一个世界，再把机器人加进场景", "warn")
             return
-        self._apply_state(f"添加 {key} 到场景（首次使用需联网下载）…")
+        self._apply_state(f"添加 {key} 到场景…")
         self._log(f"从模型库添加机器人：{key}（位置：{note or '默认'}）")
 
         def ensured(err, data):

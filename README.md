@@ -32,7 +32,7 @@ AgentSim 把"世界"做成代码（World as Code：一份 YAML 即一个完整�
 - **进程级控制器隔离**：每个机器人的控制器是独立 OS 进程，通过 ZMQ REQ/ROUTER 与内核栅栏同步；控制器崩溃、超时都不会死锁内核
 - **MCP 原生接入**：零依赖自实现的 stdio JSON-RPC MCP 服务器，任何支持 MCP 的 AI Agent（Claude、Trae 等）都能直接驱动仿真，包括让 Agent 用 `screenshot` 截取仿真画面"亲眼"看世界
 - **传感器系统**：YAML 里给机器人声明 encoder / IMU / 触觉 / 关节力矩 / 相机五类传感器，编译进 MuJoCo 模型、读数进观测流，GUI 面板实时显示；传感器是只读派生量，不改变物理轨迹（bit 级守护测试保证）
-- **机器人模型库**：MuJoCo Menagerie 官方模型一键接入——预配置 14 个著名机器人（Unitree Go1/Go2/H1/G1、ANYmal C、Spot、Franka Panda、UR5e/UR10e、xArm7、Shadow Hand、ALOHA 等），GUI 点"模型库"选模型即生成世界 + 控制器模板并自动打开编辑器，改完控制律点 Run 即跑；AI Agent 走同一条 `zoo_create` 工具
+- **机器人模型库（资产自带）**：MuJoCo Menagerie 官方模型一键接入——预配置 14 个著名机器人（Unitree Go1/Go2/H1/G1、ANYmal C、Spot、Franka Panda、UR5e/UR10e、xArm7、Shadow Hand、ALOHA 等），**模型资产随仓库自带（`models/zoo/`），clone 完即离线可用、无需下载**；GUI 点"模型库"选模型即生成世界 + 控制器模板并自动打开编辑器，改完控制律点 Run 即跑；AI Agent 走同一条 `zoo_create` 工具
 - **夹爪装配工作台**：内置 OnRobot 2FG7 平行夹爪，GUI"装备"页点选即可给 UR5e / UR10e / xArm7 / Panda 四臂挂爪/拆爪，并可视化挂点、关节、body 清单；同一页表单式添加五类传感器（encoder/IMU/触觉/关节力矩/相机），全部改 YAML 自动重载，不手写配置。夹爪安装位姿（mount）按各臂腕部几何逐臂标定，夹爪后法兰与机器人法兰同轴贴合、指尖沿法兰法向伸出；自带"码垛分区"场景模板（UR5e+2FG7，A 区取料→B 区码放）
 - **RL 训练接口**：一个 YAML 世界 = 一个确定性 gymnasium.Env——动作空间 = 执行器拼接、观测 = qpos/qvel/传感器、reset 逐位一致（同 YAML 跑两遍轨迹逐 bit 相同，eval 可复现），单进程直驱不起 ZMQ，训练吞吐优先
 - **Supervisor 能力**：save/load 内存快照（物理状态逐位恢复）、teleport、reset——快照包含 `mjSTATE_FULLPHYSICS | mjSTATE_WARMSTART`，保证轨迹级可复现
@@ -52,6 +52,8 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> 仓库自带 14 个机器人模型资产（`models/zoo/`，约 346MB），clone 时下载量约 100MB；换来的是模型库全程离线可用、首次使用零联网。
+
 ### Windows 部署
 
 AgentSim 全链路 Windows 兼容：内核用 `tcp://127.0.0.1` 随机端口（无 `ipc://`，Windows 不支持）；控制器子进程走 `subprocess.Popen` + `sys.executable`（无 fork）；渲染后端代码已平台自适应——**Linux/macOS 默认 EGL，Windows 默认 wgl**（`mcp_server.py` / `gui/__init__.py` 里的 `setdefault`，用户可用环境变量 `MUJOCO_GL` 覆盖）。零配置，照下面做即可：
@@ -68,7 +70,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-所有依赖（mujoco / PySide6 / pyzmq / numpy / mujoco-menagerie 等）在 Windows 均有官方预编译 wheel，无需编译器。
+所有依赖（mujoco / PySide6 / pyzmq / numpy 等）在 Windows 均有官方预编译 wheel，无需编译器。机器人模型资产随仓库自带，无需额外下载。
 
 **3. 验证安装**：
 
@@ -97,7 +99,7 @@ start.bat                      # 双击即启动 GUI（快捷方式即指向它�
 | 首次运行弹 Windows 防火墙提示 | 点"允许"——内核 ZMQ 只绑 `127.0.0.1` 本机回环，不对外通信 |
 | 远程桌面（RDP）断开后 GUI 崩溃 | RDP 会话的 GPU 上下文随会话注销销毁；用控制台会话（`qwinsta` 抢 session 1）或无 GUI 的 `python -m agentsim run` |
 | 渲染报 `wgl` 相关错误（无 GPU 的服务器） | Windows Server 无 OpenGL 驱动，装 [Mesa3D 离屏驱动](https://mesa3d.org/)（或设 `MUJOCO_GL=osmesa`），或改用 Linux 容器跑无头测试 |
-| `mujoco-menagerie` 模型首次下载慢/失败 | 模型资产由 `mujoco-menagerie` 包从 GitHub 下载到 `~/.cache/mujoco_menagerie/`；网络受限时配代理（`HTTPS_PROXY` 环境变量），或先在有网机器上下载后拷贝缓存目录 |
+| `mujoco-menagerie` 模型下载慢/失败 | 正常不需要联网：14 个模型资产已随仓库自带（`models/zoo/`，约 346MB）。仅当该目录被删时才回退 `mujoco-menagerie` 下载——重新 clone 仓库即可恢复，无需任何网络处理 |
 | 中文/空格路径 | 完全支持（pathlib 全程处理），但建议路径不含空格避免个别工具链问题 |
 | sw2urdf 导出的 URDF 导入后 mesh 报错 | mesh 路径按 urdf 所在目录解析（`package://` 前缀自动剥除）；编码兼容 UTF-8 与 GBK（中文 Windows 导出常见），确认 mesh 是 STL/OBJ 且 `<collision>` 里有几何 |
 
@@ -112,7 +114,7 @@ pip install stable-baselines3   # RL 训练示例（examples/train_ppo_go2.py）
 按上面"安装"章节建好环境后，先验证再上路：
 
 ```bash
-python -m pytest tests/ -q               # 全绿即环境就绪（266 项）
+python -m pytest tests/ -q               # 全绿即环境就绪（267 项）
 ./start.sh run worlds/pick_cube.yaml     # 跑通一个内置任务（输出见"快速开始"）
 ```
 
@@ -225,10 +227,10 @@ python -m agentsim gui
 
 GUI 本身就是一个 MCP 客户端（与 AI Agent 同构）：左键加载世界 YAML，后端经 stdio JSON-RPC 驱动同一个 `agentsim.mcp` 服务器——Run 时仿真跑在服务器后台线程，GUI 以 30Hz 拉取观测快照并渲染 MuJoCo 3D 画面 + 关节/物体面板。窗口里可以：
 
-- **模型库**：选 Menagerie 官方模型（首次联网下载一次）→ 自动生成世界 + 控制器模板 → 自动加载并打开编辑器——点击-打开-编程闭环
+- **模型库**：选 Menagerie 官方模型（资产随仓库自带，离线即用）→ 自动生成世界 + 控制器模板 → 自动加载并打开编辑器——点击-打开-编程闭环
 - **装备页**：选中机器人后点选即可装配/移除 OnRobot 2FG7 夹爪（UR5e/UR10e/xArm7/Panda），并按类型表单添加/删除五类传感器——所有改动写回世界 YAML 并自动重载，无需手写
 - **新建场景**（文件 → 新建场景，Ctrl+N）：选参数化模板（含码垛分区 pallet）→ 设参数 → 保存即生成并加载
-- **AI 生成场景**（文件 → AI 生成场景，Ctrl+G）：一句话描述需求（"一只 Go2 站在 3x3 场地中央，面前放个红方块"）→ LLM 直接生成世界 YAML → 本地 schema+编译双重校验，失败自动把错误喂回重试 → 通过即加载；机器人引用模型库写 `zoo://key` 自动解析成缓存路径（首次联网下载一次）。需先在 Agent 页配置任意 OpenAI 兼容端点（DeepSeek/GLM/Ollama 均可）
+- **AI 生成场景**（文件 → AI 生成场景，Ctrl+G）：一句话描述需求（"一只 Go2 站在 3x3 场地中央，面前放个红方块"）→ LLM 直接生成世界 YAML → 本地 schema+编译双重校验，失败自动把错误喂回重试 → 通过即加载；机器人引用模型库写 `zoo://key` 自动解析成本地模型路径（资产随仓库自带，离线即用）。需先在 Agent 页配置任意 OpenAI 兼容端点（DeepSeek/GLM/Ollama 均可）
 - **导入模型**（文件 → 导入模型，Ctrl+I）：选本地 `.urdf` / `.xml` 机器人模型导入当前场景或新世界——URDF 自动适配（mesh 相对路径按 urdf 目录解析、`package://` 前缀剥除、逐关节自动补 motor）、贴地出生高度自动计算，SolidWorks 工作流见 [导入 URDF（含 SolidWorks）](#导入-urdf含-solidworks)
 - **保存世界**（Ctrl+S）：拖动/位姿/装备/添加机器人等全部修改写回 YAML 文件——改完的世界可以留到下次（内存世界会提示另存位置；跨目录保存时相对资源路径自动改绝对）
 - **最近打开**（文件菜单）：最近 8 个世界一键重开（跨会话持久化）
@@ -257,7 +259,7 @@ python -m agentsim run worlds/my_maze.yaml
 | `push` | 地面推物：panda+2FG7 把低摩擦 cube 推进成功区（控制器留给 Agent 写） | - |
 | `maze` | 差速车走蛇形迷宫 | `--rows` `--cols`（2~8） |
 | `race` | 多车竞速 | `--lanes`（2~3） |
-| `pallet` | 码垛分区：UR5e+2FG7 把 A 区 N 个 cube 逐个码到 B 区目标格（首次需联网下载一次 UR5e） | `--cubes`（1~6） |
+| `pallet` | 码垛分区：UR5e+2FG7 把 A 区 N 个 cube 逐个码到 B 区目标格 | `--cubes`（1~6） |
 | `empty` | 空世界（配 arm / diff_car / 无机器人） | `--robot` |
 
 ## 世界文件格式
@@ -405,7 +407,7 @@ obs, reward, terminated, truncated, info = env.step(action)
 
 预配置 14 个著名机器人（`agentsim/zoo.py`）：Unitree Go1 / Go2 / H1 / G1、ANYmal C、Boston Dynamics Spot、Franka Emika Panda、UR5e / UR10e、xArm7、Shadow Hand、ALOHA、Google Robot、Stretch 3——全部来自 DeepMind 官方精选模型库，经 MjSpec attach 编译进 AgentSim 世界（浮动基座四足/人形实测落地稳定）。
 
-**GUI 闭环**（`python -m agentsim gui`）：点"模型库"按钮 → 选模型（首次使用联网下载一次，之后永久离线）→ 自动生成世界 + 控制器模板 → 自动加载并打开编辑器 → 改完控制律点 Run 重跑。
+**GUI 闭环**（`python -m agentsim gui`）：点"模型库"按钮 → 选模型（资产随仓库自带，离线即用）→ 自动生成世界 + 控制器模板 → 自动加载并打开编辑器 → 改完控制律点 Run 重跑。
 
 **Agent / CLI 闭环**（与 GUI 同一条 MCP 工具）：
 
@@ -417,7 +419,7 @@ tools.load_world(yaml_path=r["world"])
 tools.run(ticks=200)
 ```
 
-生成的 `controller.py` 模板带完整执行器清单与 API 注释——AI Agent 可以直接读清单后改写控制律，人类用户用任意编辑器改写。依赖官方包 `mujoco-menagerie`（`pip install mujoco-menagerie`），模型资产缓存在 `~/.cache/mujoco_menagerie/`。
+生成的 `controller.py` 模板带完整执行器清单与 API 注释——AI Agent 可以直接读清单后改写控制律，人类用户用任意编辑器改写。**模型资产随仓库自带**：14 个模型完整目录（XML + mesh + LICENSE，约 346MB）在 `models/zoo/<key>/`，clone 完即可离线使用，首次点模型库不联网；仅当该目录缺失时才回退可选包 `mujoco-menagerie` 的下载能力。
 
 > 已知语义：attach 时子模型的 MuJoCo option（impratio / cone 等）被父世界值覆盖——接触求解参数以世界 YAML 为准（`worlds/zoo` 生成模板已按各模型类目调好 floor 摩擦）。
 
@@ -450,7 +452,7 @@ URDF 与 MJCF 的差异由导入层（`agentsim/world/builder.py` 的 `_load_rob
 文件 → AI 生成场景（Ctrl+G）：自然语言需求 → LLM 生成世界 YAML → 本地校验 → 加载，与参数化模板（`scenegen`）、手写 YAML 三条路径并存。
 
 - **生成闭环**（`agentsim/agent/scene_agent.py`）：LLM 输出 → 剥围栏提取 YAML → `parse_world` schema 校验 + `build_world` 编译校验 → 失败把可读错误喂回 LLM 重试（默认 3 次）→ 通过即加载
-- **模型引用**：prompt 注入完整模型库清单，LLM 写 `zoo://unitree_go2` 引用 → 本地自动解析成 menagerie 缓存绝对路径（首次联网下载一次）
+- **模型引用**：prompt 注入完整模型库清单，LLM 写 `zoo://unitree_go2` 引用 → 本地自动解析成模型绝对路径（资产随仓库自带，离线即用）
 - **配置复用**：与 Agent 控制台共用 `~/.agentsim/agent.json`（任意 OpenAI 兼容端点：OpenAI / DeepSeek / GLM / Ollama / vLLM）
 - **抗"MJCF 人设"模型**：给本地模型（如 Ollama）预设过 MJCF/XML 生成器提示词也能用——请求级 system prompt 带人设覆盖指令 + 生成规则明令禁 MJCF/mesh；模型仍输出 XML 时回喂定向纠错（"平台不加载外部 mesh，改用基本体+zoo://"），实测收敛
 - **保留手动路径**：AI 生成不取代手写——模板（`scenegen`）、手写 YAML、导入模型全部保留，AI 只是多一条"说一句话就出场景"的捷径
@@ -585,7 +587,7 @@ python examples/train_ppo_go2.py
 
 ```bash
 python -m pytest tests/ -q
-# 266 passed —— 覆盖 schema/builder/内核/多机器人/Supervisor 逐位重现/
+# 267 passed —— 覆盖 schema/builder/内核/多机器人/Supervisor 逐位重现/
 #              MCP（含 screenshot/zoo_create/stop/save_world 往返）/
 #              传感器（含 bit 级轨迹守护）/
 #              RL 环境（含逐位一致性守护）/控制器心跳（含跨平台死亡探测）/
@@ -624,12 +626,13 @@ agentsim/
 │   ├── scene_gen.py       # 6 个确定性场景模板（含码垛分区 pallet）
 │   └── cli.py             # run / mcp / gui / scenegen 命令行
 ├── models/                # 机器人 MJCF（demo_arm 三指臂、diff_car）+ grippers/2FG7
+│                          # + zoo/<key>/：14 个 Menagerie 模型资产随仓库自带（离线即用）
 ├── controllers/           # 示例控制器（pick_place 桌面抓取相位机等）
 ├── worlds/                # 示例世界（pick_cube、twin_arms、empty——GUI 启动默认加载）
 ├── examples/             # PPO 训练示例（train_ppo_go2.py，sb3 可选依赖）
 ├── start.bat / create_desktop_shortcut.bat / agentsim.ico
 │                            # Windows 双击启动 + 桌面快捷方式（项目图标）
-└── tests/                 # 266 项测试（含 URDF 导入/AI 场景生成/夹爪/码垛）
+└── tests/                 # 267 项测试（含 URDF 导入/AI 场景生成/夹爪/码垛）
 ```
 
 ## Roadmap

@@ -16,10 +16,16 @@ from agentsim.world.schema import load_world
 
 ROOT = pathlib.Path(__file__).parent.parent
 
-# pallet 依赖 menagerie UR5e 缓存（首次需联网下载一次）
-_UR5E = glob.glob(
-    "/home/yuancheng-zhu/.cache/mujoco_menagerie/models/"
-    "universal_robots_ur5e-*/ur5e.xml")
+# pallet 依赖 UR5e 资产（随仓库 models/zoo/ 自带，离线可用）
+def _has_ur5e() -> bool:
+    from agentsim.zoo import bundled_model
+    if bundled_model("universal_robots_ur5e") is not None:
+        return True
+    return bool(glob.glob(str(pathlib.Path.home() / (
+        ".cache/mujoco_menagerie/models/universal_robots_ur5e-*/ur5e.xml"))))
+
+
+_UR5E = _has_ur5e()
 
 # (模板, 参数变体)：默认 + 每个参数至少一个变体
 CASES = [

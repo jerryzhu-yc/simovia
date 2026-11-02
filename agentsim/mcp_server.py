@@ -192,7 +192,7 @@ _TOOLS = [
         "description": "从模型库（MuJoCo Menagerie 官方模型）生成可编辑项目："
                        "世界 YAML + 控制器模板（含执行器清单与 API 注释），"
                        "生成后 load_world 打开、改控制律即编程。"
-                       "首次用某模型会联网下载一次（之后永久离线）。"
+                       "模型资产随仓库自带（models/zoo/），离线即用、无需下载。"
                        "key 列表见返回的 models 字段，或传 key='list' 只列清单。"
                        "demo=true 时另生成 demo.py 运动演示（四足小跑/臂扫掠/"
                        "人形摆臂）且世界指向它——load_world + run 即可看动画。",
@@ -597,8 +597,8 @@ class AgentSimSession:
                  "desc": m["desc"]}
                 for k, m in MODELS.items()]}
         if args.get("ensure_only"):
-            # GUI 拖放添加机器人用：只确保模型已缓存，返回 xml 路径与建议初始高度
-            xml = ensure_model(key)             # 未缓存会先下载一次
+            # GUI 拖放添加机器人用：取模型 xml 路径与建议初始高度
+            xml = ensure_model(key)             # 自带资产，离线即取
             return {"key": key, "title": MODELS[key]["title"],
                     "xml": str(xml), "pos": list(MODELS[key]["pos"])}
         out_dir = args.get("out_dir")

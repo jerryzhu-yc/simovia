@@ -6,8 +6,8 @@
 最多 max_retries 次。闭环全部在本地可测（不打真 API 也全覆盖）。
 
 机器人模型引用：LLM 写 `zoo://key`（模型库 key），生成后本地替换成
-menagerie 缓存绝对路径（ensure_model，首次联网下载一次）——LLM 不必
-知道任何文件路径。
+模型 XML 绝对路径（ensure_model，资产随仓库自带、离线即用）——LLM
+不必知道任何文件路径。
 """
 from __future__ import annotations
 
@@ -261,7 +261,7 @@ def extract_yaml(text: str) -> str:
 
 
 def resolve_zoo_models(d: dict, on_download=None) -> dict:
-    """把 robots[].model 的 zoo://key 替换成 menagerie 缓存绝对路径。
+    """把 robots[].model 的 zoo://key 替换成模型 XML 绝对路径。
 
     实现已下沉到 world/schema.py（load_world 与 MCP 路径也用同一份），
     此处 re-export 保持原调用兼容（scene_agent 的存量引用/测试不破）。

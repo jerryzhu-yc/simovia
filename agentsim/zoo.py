@@ -1,11 +1,12 @@
 """机器人模型库：MuJoCo Menagerie 官方模型一键接入（M4）。
 
-预配置 13 个著名机器人（四足/人形/机械臂/灵巧手/双臂/移动操作）。
+预配置 14 个著名机器人（四足/人形/机械臂/灵巧手/双臂/移动操作）。
 generate() 生成可编辑的世界 YAML + 控制器模板——用户改控制律即编程，
 GUI/CLI/MCP zoo_create 三路同构。
 
-依赖：pip install mujoco-menagerie（官方包；首次用某模型时下载一次到
-~/.cache/mujoco_menagerie/，之后永久离线可用）。
+模型资产随仓库自带（models/zoo/<key>/，约 346MB，含 mesh 与 LICENSE），
+装好即离线可用、首次使用零联网；仓库内缺失时回退到 mujoco-menagerie
+缓存（~/.cache/mujoco_menagerie/）或该包的下载能力。
 """
 from __future__ import annotations
 
@@ -15,6 +16,9 @@ import pathlib
 import yaml
 
 from agentsim.errors import WorldError
+
+# 随仓库自带的模型目录：<repo>/models/zoo/<key>/<xml> + assets/
+BUNDLED_DIR = pathlib.Path(__file__).resolve().parents[1] / "models" / "zoo"
 
 
 # ================================================================ 演示动作配置
@@ -259,15 +263,27 @@ MODELS: dict[str, dict] = {
 }
 
 
+def bundled_model(key: str) -> pathlib.Path | None:
+    """仓库自带模型目录里的入口 XML（不存在返 None）。"""
+    p = BUNDLED_DIR / key / MODELS[key]["xml"]
+    return p if p.exists() else None
+
+
 def ensure_model(key: str) -> pathlib.Path:
-    """确保模型 XML 在本地缓存（未下载则触发一次下载），返回其路径。"""
+    """返回模型 XML 路径：优先仓库自带（离线即用），缺失时回退
+    mujoco-menagerie 缓存 / 下载。"""
     if key not in MODELS:
         raise WorldError(f"模型库没有 '{key}'，可用: {sorted(MODELS)}")
+    hit = bundled_model(key)
+    if hit is not None:
+        return hit
     try:
         import mujoco_menagerie as mm
     except ImportError:
         raise WorldError(
-            "模型库依赖 mujoco-menagerie，请安装：pip install mujoco-menagerie"
+            f"模型库 '{key}' 的资产缺失（仓库 models/zoo/ 里没有），"
+            "且未安装回退依赖 mujoco-menagerie——请重新 clone 仓库，"
+            "或 pip install mujoco-menagerie"
         ) from None
     entry = mm.get(key)
     xml_name = MODELS[key]["xml"]

@@ -499,12 +499,12 @@ def parse_world(d: dict, path: str = "world") -> WorldSpec:
 
 
 def resolve_zoo_models(d: dict, on_download=None) -> dict:
-    """把 robots[].model 的 zoo://key 替换成 menagerie 缓存绝对路径。
+    """把 robots[].model 的 zoo://key 替换成模型 XML 绝对路径。
 
     zoo:// 是模型库一等公民引用：AI 生成、模板、手写世界 YAML 通用，
-    load_world 与 MCP load_world(yaml_text) 都在此解析（首次联网下载
-    一次，之后永久离线）。
-    on_download(key)：下载前回调（进度提示），load_world 路径静默。
+    load_world 与 MCP load_world(yaml_text) 都在此解析。资产随仓库自带
+    （models/zoo/），离线即用；仅资产缺失时才回退 menagerie 下载。
+    on_download(key)：解析前回调（进度提示），load_world 路径静默。
     就地修改并返回 d（链式）。未知 key 抛 WorldError（可读）。
     路径统一正斜杠（as_posix）：Windows 反斜杠进 YAML 也安全。
     """
@@ -525,7 +525,7 @@ def resolve_zoo_models(d: dict, on_download=None) -> dict:
 
 def load_world(yaml_path: str | pathlib.Path) -> WorldSpec:
     """从 YAML 文件加载世界。路径（model/controller）按世界文件所在目录解析；
-    robots[].model 支持 zoo://<key> 模型库引用（首次自动下载）。"""
+    robots[].model 支持 zoo://<key> 模型库引用（资产随仓库自带，离线即用）。"""
     yaml_path = pathlib.Path(yaml_path)
     if not yaml_path.exists():
         raise WorldError(f"世界文件不存在: {yaml_path}")

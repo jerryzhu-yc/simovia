@@ -1,7 +1,6 @@
-"""M4 验收：机器人模型库（Menagerie 接入）。
+"""M4 验收：机器人模型库（Menagerie 接入，资产随仓库自带）。
 
-网络保护：go2 已缓存才跑（generate 内部 build_world 已验编译，端到端只测
-生成的世界能经 MCP 会话层跑起来零 crash）。
+资产在仓库 models/zoo/，装好即离线可用；缺失则跳过相应用例。
 """
 import os
 import pathlib
@@ -12,9 +11,6 @@ import pytest  # noqa: E402
 
 from agentsim.errors import WorldError  # noqa: E402
 
-mm = pytest.importorskip("mujoco_menagerie",
-                         reason="未安装 mujoco-menagerie")
-
 
 @pytest.fixture(scope="module")
 def qapp():
@@ -23,15 +19,17 @@ def qapp():
 
 
 def _cached(key: str, xml: str) -> bool:
-    try:
-        return any(f.name == xml and f.exists() for f in mm.get(key).files())
-    except Exception:
-        return False
+    """自带资产或 menagerie 缓存命中即可跑（离线优先）。"""
+    from agentsim.zoo import bundled_model
+    if bundled_model(key) is not None:
+        return True
+    return bool(list(pathlib.Path.home().glob(
+        f".cache/mujoco_menagerie/models/{key}-*/{xml}")))
 
 
 pytestmark = pytest.mark.skipif(
     not _cached("unitree_go2", "go2.xml"),
-    reason="go2 未缓存（首次使用需网络下载）")
+    reason="go2 资产缺失（仓库 models/zoo/ 不完整）")
 
 
 def test_ensure_model_cached_and_unknown():
@@ -42,6 +40,20 @@ def test_ensure_model_cached_and_unknown():
     assert "unitree_go2" in MODELS
     with pytest.raises(WorldError, match="可用"):
         ensure_model("no_such_robot")
+
+
+def test_all_models_bundled_offline():
+    """T1b：14 个模型资产随仓库自带（离线即用，不依赖 mujoco-menagerie）。"""
+    from agentsim.zoo import BUNDLED_DIR, MODELS, ensure_model
+    missing = [k for k in MODELS
+               if not (BUNDLED_DIR / k / MODELS[k]["xml"]).exists()]
+    assert not missing, f"仓库缺模型资产: {missing}"
+    for key, m in MODELS.items():
+        d = BUNDLED_DIR / key
+        assert (d / "LICENSE").exists(), f"{key} 缺 LICENSE（模型许可要求）"
+        assert (d / "assets").is_dir(), f"{key} 缺 assets 目录"
+        p = ensure_model(key)              # 命中自带路径，不触发下载
+        assert p == d / m["xml"], f"{key} 未优先使用自带资产: {p}"
 
 
 def test_generate_products(tmp_path):
@@ -198,13 +210,8 @@ def test_demo_panda_moves(tmp_path):
 
 
 def _cached_path(key: str, xml: str) -> bool:
-    """files() 清单可能滞后，解压目录存在也算缓存命中。"""
-    import glob as _glob
-    if _cached(key, xml):
-        return True
-    return bool(_glob.glob(
-        os.path.expanduser(
-            f"~/.cache/mujoco_menagerie/models/{key}-*/{xml}")))
+    """自带资产或 menagerie 缓存（files() 清单可能滞后，查目录兜底）。"""
+    return _cached(key, xml)
 
 
 @pytest.mark.skipif(not _cached_path("universal_robots_ur10e", "ur10e.xml"),

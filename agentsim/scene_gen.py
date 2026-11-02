@@ -37,8 +37,8 @@ def _robot(name: str, model_file: str, base: pathlib.Path,
            pos: tuple, controller: str | None = None,
            gripper: str | None = None) -> dict:
     """组装 robot 段。model_file：仓库 models/ 下文件名，或 zoo://key
-    模型库引用（load_world 时解析成 menagerie 缓存绝对路径，产物
-    跨机器可移植，首次使用自动下载）。"""
+    模型库引用（load_world 时解析成模型 XML 绝对路径，产物跨机器可
+    移植；资产随仓库自带，离线即用）。"""
     if model_file.startswith("zoo://"):
         model = model_file
     else:
