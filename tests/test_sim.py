@@ -81,6 +81,28 @@ while robot.step():
             time.sleep(0.02)
         assert "[arm] hello-from-controller" in text
 
+    def test_close_not_blocked_by_leaked_child(self, tmp_path):
+        """控制器留下继承 stdout 的子进程时，close() 不能阻塞。
+
+        收尾若从主线程关 stdout，会撞上读线程持有的缓冲区锁：控制器进程
+        退出了、但孙进程还开着写端，就永远等不到 EOF——实测 close 卡死。
+        """
+        import time
+
+        ctrl = _write_controller(tmp_path, """
+import subprocess, sys
+from agentsim.controller import Robot
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+robot = Robot()
+while robot.step():
+    pass
+""")
+        spec = parse_world(_world_dict(ctrl))
+        t0 = time.time()
+        with Simulation(spec) as sim:
+            sim.run(max_ticks=3)
+        assert time.time() - t0 < 3      # 卡死时是无限等
+
     def test_ctrl_matches_reference(self, tmp_path):
         """控制量一致性：内核推进的轨迹与进程内参考实现逐位一致"""
         ctrl_path = _write_controller(tmp_path, f"""

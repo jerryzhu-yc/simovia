@@ -131,9 +131,10 @@ def _inspect(args):
             print(f"  夹爪: {rd.gripper.model}")
     task = spec.task
     if task.success is not None:
+        limit = task.max_ticks if task.max_ticks is not None else "不限"
         print(f"\n任务: 成功条件 {task.success.body} ∈ zone "
               f"min={list(task.success.zone.min)} max={list(task.success.zone.max)}，"
-              f"奖励 {len(task.reward)} 项，最多 {task.max_ticks} ticks")
+              f"奖励 {len(task.reward)} 项，最多 {limit} ticks")
 
 
 def _run(args):

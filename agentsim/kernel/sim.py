@@ -58,6 +58,7 @@ class Simulation:
         # robot name -> 运行时状态
         self._st: dict[str, dict] = {}
         self._procs: dict[str, subprocess.Popen] = {}
+        self._pumps: dict[str, threading.Thread] = {}   # stdout 转投线程
         self._ident: dict[bytes, str] = {}      # zmq identity -> robot name
         # Supervisor 快照（__init__ 在 reset 用）
         self._snaps: dict[str, tuple] = {}
@@ -101,21 +102,35 @@ class Simulation:
                  "--sock", self._addr, "--robot", rd.name],
                 env=env, stdout=subprocess.PIPE, stderr=None)
             self._procs[rd.name] = proc
-            self._pump_stdout(rd.name, proc)
+            self._pumps[rd.name] = self._pump_stdout(rd.name, proc)
 
     @staticmethod
-    def _pump_stdout(name: str, proc: subprocess.Popen) -> None:
-        """把控制器 stdout 逐行转投到内核 stderr，前缀标注机器人名。"""
+    def _pump_stdout(name: str, proc: subprocess.Popen) -> threading.Thread:
+        """把控制器 stdout 逐行转投到内核 stderr，前缀标注机器人名。
+
+        管道读端由这个线程独占关闭：close() 若从主线程关，会撞上读线程
+        持有的缓冲区锁而阻塞（控制器留下继承 stdout 的子进程时永远等
+        不到 EOF，整个 close 卡死）。
+        """
         def pump():
             try:
                 for raw in iter(proc.stdout.readline, b""):
+                    if sys.stderr is None:        # pythonw 无控制台
+                        continue
                     sys.stderr.write(
                         f"[{name}] {raw.decode('utf-8', 'replace')}")
                     sys.stderr.flush()
             except (ValueError, OSError):
                 pass          # 解释器收尾/文件被关，忽略
-        threading.Thread(target=pump, name=f"ctrl-out-{name}",
-                         daemon=True).start()
+            finally:
+                try:
+                    proc.stdout.close()
+                except (ValueError, OSError):
+                    pass
+        thread = threading.Thread(target=pump, name=f"ctrl-out-{name}",
+                                  daemon=True)
+        thread.start()
+        return thread
 
     # ---------------------------------------------------------------- 收发
 
@@ -503,8 +518,8 @@ class Simulation:
                     proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-            if proc.stdout is not None:
-                proc.stdout.close()      # 收尾 stdout 读线程（EOF / 关闭异常都算结束）
+        # stdout 读端由 _pump_stdout 线程自己关（主线程关会撞锁卡死）；
+        # 控制器留下继承 stdout 的子进程时该线程会一直挂着，daemon 无妨
         self._router.close(0)
         self._ctx.term()
 
