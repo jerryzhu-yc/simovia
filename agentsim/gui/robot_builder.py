@@ -494,7 +494,9 @@ class RobotBuilderDialog(QDialog):
         QMessageBox.information(
             self, "已保存",
             f"机器人已保存到:\n{p}\n\n在世界 YAML 里这样引用:\n"
-            f"robots:\n  - name: {self.robot.name}\n    model: {p}")
+            f"robots:\n  - name: {self.robot.name}\n"
+            # 统一正斜杠：Windows 反斜杠路径跨平台重开易出解析问题
+            f"    model: {pathlib.Path(p).as_posix()}")
 
     # ------------------------------------------------------------ 矩阵显示
 

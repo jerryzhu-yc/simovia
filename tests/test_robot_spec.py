@@ -181,3 +181,16 @@ def test_no_actuator_flag():
     ]}
     model = build_robot_spec(parse_robot(d)).compile()
     assert model.nu == 0
+
+
+def test_load_robot_gbk_fallback(tmp_path):
+    """中文 Windows 记事本存的 GBK 机器人 YAML 也能读（utf-8 优先兜底）。"""
+    import yaml
+    doc = {"name": "中文臂", "links": [
+        {"name": "底座", "geom": {"type": "box", "size": [0.05] * 3}},
+    ]}
+    p = tmp_path / "gbk.yaml"
+    p.write_bytes(yaml.safe_dump(doc, allow_unicode=True).encode("gbk"))
+    r = load_robot(p)
+    assert r.name == "中文臂"
+    assert r.links[0].name == "底座"

@@ -300,13 +300,21 @@ def _validate_tree(robot: RobotDoc) -> None:
 
 
 def load_robot(path: str | pathlib.Path) -> RobotDoc:
-    """读机器人 YAML 文件（.yaml / .yml / .robot.yaml 均可）。"""
+    """读机器人 YAML 文件（.yaml / .yml / .robot.yaml 均可）。
+
+    Windows 适配：中文 Windows 的记事本等工具常把带中文注释的 YAML 存成
+    GBK（ANSI），utf-8 解码失败时回退 GBK，避免用户一打开就报编码错误。
+    """
     import yaml
     p = pathlib.Path(path)
     if not p.exists():
         raise WorldError(f"机器人描述文件不存在: {p}")
     try:
-        doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+        text = p.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = p.read_text(encoding="gbk", errors="replace")
+    try:
+        doc = yaml.safe_load(text)
     except yaml.YAMLError as e:
         raise WorldError(f"机器人 YAML 解析失败 ({p}): {e}") from e
     return parse_robot(doc, p.parent)
