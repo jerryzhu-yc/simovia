@@ -113,7 +113,8 @@ class SceneTreePanel(QWidget):
         rob_root = QTreeWidgetItem(["机器人", f"{len(spec.robots)} 个"])
         root.addChild(rob_root)
         for rd in spec.robots:
-            rnode = QTreeWidgetItem([rd.name, rd.model.split("/")[-1]])
+            rnode = QTreeWidgetItem(
+                [rd.name, rd.model.split("/")[-1] if rd.model else "连杆树"])
             rnode.setData(0, _NODE_KIND, ("robot", rd.name, rd))
             rob_root.addChild(rnode)
             for six in rd.sensors:

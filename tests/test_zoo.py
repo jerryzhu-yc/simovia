@@ -43,7 +43,7 @@ def test_ensure_model_cached_and_unknown():
 
 
 def test_all_models_bundled_offline():
-    """T1b：14 个模型资产随仓库自带（离线即用，不依赖 mujoco-menagerie）。"""
+    """T1b：34 个模型资产随仓库自带（离线即用，不依赖 mujoco-menagerie）。"""
     from agentsim.zoo import BUNDLED_DIR, MODELS, ensure_model
     missing = [k for k in MODELS
                if not (BUNDLED_DIR / k / MODELS[k]["xml"]).exists()]
@@ -117,7 +117,7 @@ def test_zoo_dialog_offscreen(qapp):
     from agentsim.gui.app import ZooDialog
     dlg = ZooDialog()
     try:
-        assert dlg.listw.count() >= 13
+        assert dlg.listw.count() >= 34
         dlg.listw.setCurrentRow(1)
         assert dlg.selected_key        # 任一 key 可取即 UI 链路通
     finally:
@@ -129,19 +129,22 @@ def test_zoo_dialog_offscreen(qapp):
 def test_demo_config_full_coverage():
     """T1：模型库全部带 demo 配置，kind/字段完整（纯离线，零缓存依赖）。"""
     from agentsim.zoo import MODELS
-    assert len(MODELS) >= 13               # 13 基线 + M6 起新增 ur10e
+    assert len(MODELS) >= 34              # 34 基线（含 M7 扩至 34 个模型）
     assert all(m.get("demo") for m in MODELS.values())
     kinds = {m["demo"]["kind"] for m in MODELS.values()}
     assert kinds <= {"trot", "osc", "balance"}
-    # 四足全走 trot 且控制要素齐备；其余走 osc/balance
+    # 四足优先 trot（关节命名匹配 <LEG>_hip/_thigh/_calf），命名不匹配的
+    # 退回 osc——两者都要控制要素齐备；其余走 osc/balance
     quads = [m for m in MODELS.values() if m["cat"] == "四足"]
-    assert len(quads) == 4
+    assert len(quads) == 6
     for m in quads:
         d = m["demo"]
-        assert d["kind"] == "trot"
-        assert len(d["legs"]) == 4 and len(d["kinds"]) == 3
-        for f in ("home", "amp", "freq", "settle", "ramp", "lag"):
-            assert d[f] or d[f] == 0.0, (m["title"], f)
+        if d["kind"] == "trot":
+            assert len(d["legs"]) == 4 and len(d["kinds"]) == 3
+            for f in ("home", "amp", "freq", "settle", "ramp", "lag"):
+                assert d[f] or d[f] == 0.0, (m["title"], f)
+        else:
+            assert d["kind"] == "osc", (m["title"], d["kind"])
 
 
 def test_demo_generate_products(tmp_path):

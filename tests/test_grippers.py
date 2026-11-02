@@ -1,4 +1,4 @@
-"""M6 P1：2FG7 夹爪 site-attach 到四台 menagerie 机械臂。
+"""M6 P1：夹爪 site-attach 到四台 menagerie 机械臂。
 
 覆盖：
 - 四臂（ur5e/ur10e/xarm7_nohand/panda_nohand）挂爪均编译成功
@@ -6,6 +6,7 @@
 - 物理：ctrl=close 后两 slide 实际闭合（qpos>0.015），open 回 0
 - 触觉传感器可引用夹爪手指 body（先挂爪再注传感器的顺序保证）
 - mount 未标定的机器人给清晰错误
+- 新增夹爪（Robotiq 2F85 / UMI / LEAP Hand）编译、四臂挂载、贴合与驱动
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ import numpy as np
 import pytest
 
 from agentsim.errors import WorldError
-from agentsim.grippers import GRIPPERS, GRIPPER_PREFIX
+from agentsim.grippers import GRIPPERS, GRIPPER_PREFIX, ensure_gripper
 from agentsim.world.builder import build_world
 from agentsim.world.schema import parse_world
 from agentsim.zoo import ensure_model
@@ -35,11 +36,22 @@ ARMS = [
     ("panda", "franka_emika_panda"),
 ]
 
+NEW_GRIPPERS = ["robotiq_2f85", "umi_gripper", "leap_hand"]
 
-def _world_dict(arm_xml: str, gripper=True, sensors=()) -> dict:
-    robot = {"name": "arm", "model": arm_xml, "pos": [0, 0, 0]}
+# 新增夹爪的“朝向探针”：四臂挂载后这些 body/site 应在 site +z 方向伸出。
+# 2F85 用两指 pad body；UMI 用 TCP site（两指中点前方）；LEAP 用三指远端 body。
+Z_PROBES = {
+    "robotiq_2f85": ("body", ["left_pad", "right_pad"]),
+    "umi_gripper": ("site", ["gripper_tcp"]),
+    "leap_hand": ("body", ["if_ds", "mf_ds", "rf_ds"]),
+}
+
+
+def _world_dict(arm_xml: str, gripper=True, sensors=(),
+                gripper_key="onrobot_2fg7", pos=(0, 0, 0)) -> dict:
+    robot = {"name": "arm", "model": arm_xml, "pos": list(pos)}
     if gripper:
-        robot["gripper"] = {"model": "onrobot_2fg7"}
+        robot["gripper"] = {"model": gripper_key}
     if sensors:
         robot["sensors"] = list(sensors)
     return {"name": "gripper_test",
@@ -47,6 +59,50 @@ def _world_dict(arm_xml: str, gripper=True, sensors=()) -> dict:
             "integrator": "implicitfast", "impratio": 100,
             "scene": {"floor": {"size": [2.0, 2.0]}},
             "robots": [robot]}
+
+
+def _site_frame(model, data):
+    sid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE,
+                            "arm/attachment_site")
+    return data.site_xpos[sid], data.site_xmat[sid].reshape(3, 3)
+
+
+def _geom_points(model, data, gid, n=30000):
+    """geom 表面点集（mesh 取真实顶点；基本体采样），世界系。"""
+    rng = np.random.default_rng(0)
+    mid = model.geom_dataid[gid]
+    if mid >= 0:
+        v = model.mesh_vert[
+            model.mesh_vertadr[mid]:
+            model.mesh_vertadr[mid] + model.mesh_vertnum[mid]]
+        return (data.geom_xmat[gid].reshape(3, 3) @ v.T).T \
+            + data.geom_xpos[gid]
+    ty = int(model.geom_type[gid])
+    sz = model.geom_size[gid]
+    a = rng.uniform(0, 2 * np.pi, n)
+    if ty == int(mujoco.mjtGeom.mjGEOM_BOX):
+        q = rng.uniform(-1, 1, (n, 3)) * sz
+    elif ty == int(mujoco.mjtGeom.mjGEOM_CYLINDER):
+        z = rng.uniform(-sz[1], sz[1], n)
+        q = np.c_[sz[0] * np.cos(a), sz[0] * np.sin(a), z]
+    elif ty == int(mujoco.mjtGeom.mjGEOM_CAPSULE):
+        r, hh = sz[0], sz[1]
+        z = rng.uniform(-(hh + r), hh + r, n)
+        t = np.clip(np.abs(z) - hh, 0, r)
+        rad = np.sqrt(np.clip(r * r - t * t, 0, None))
+        q = np.c_[rad * np.cos(a), rad * np.sin(a), z]
+    elif ty == int(mujoco.mjtGeom.mjGEOM_SPHERE):
+        u = rng.normal(size=(n, 3))
+        u /= np.linalg.norm(u, axis=1)[:, None]
+        q = u * sz[0]
+    elif ty == int(mujoco.mjtGeom.mjGEOM_ELLIPSOID):
+        u = rng.normal(size=(n, 3))
+        u /= np.linalg.norm(u, axis=1)[:, None]
+        q = u * sz
+    else:
+        return None
+    return (data.geom_xmat[gid].reshape(3, 3) @ q.T).T \
+        + data.geom_xpos[gid]
 
 
 @pytest.mark.parametrize("label,key", ARMS)
@@ -155,31 +211,7 @@ def test_gripper_mount_flushes_on_flange(label, key):
         return (points - sp) @ sq
 
     def geom_points(gid, n=30000):
-        """geom 表面点集（mesh 取真实顶点；圆柱/胶囊实心采样），世界系。"""
-        rng = np.random.default_rng(0)
-        mid = model.geom_dataid[gid]
-        if mid >= 0:
-            v = model.mesh_vert[
-                model.mesh_vertadr[mid]:
-                model.mesh_vertadr[mid] + model.mesh_vertnum[mid]]
-            return (data.geom_xmat[gid].reshape(3, 3) @ v.T).T \
-                + data.geom_xpos[gid]
-        ty = int(model.geom_type[gid])
-        sz = model.geom_size[gid]
-        a = rng.uniform(0, 2 * np.pi, n)
-        if ty == int(mujoco.mjtGeom.mjGEOM_CYLINDER):
-            z = rng.uniform(-sz[1], sz[1], n)
-            q = np.c_[sz[0] * np.cos(a), sz[0] * np.sin(a), z]
-        elif ty == int(mujoco.mjtGeom.mjGEOM_CAPSULE):
-            r, hh = sz[0], sz[1]
-            z = rng.uniform(-(hh + r), hh + r, n)
-            t = np.clip(np.abs(z) - hh, 0, r)
-            rad = np.sqrt(np.clip(r * r - t * t, 0, None))
-            q = np.c_[rad * np.cos(a), rad * np.sin(a), z]
-        else:
-            return None
-        return (data.geom_xmat[gid].reshape(3, 3) @ q.T).T \
-            + data.geom_xpos[gid]
+        return _geom_points(model, data, gid, n)
 
     # 腕部：site 所在 body 及其父 body（panda 挂点是空 body，法兰在 link7）
     wrist_bodies = {model.site_bodyid[sid],
@@ -334,5 +366,257 @@ def test_manifest_gripper_none_when_bare():
         arm = s.call_tool("get_robot_manifest", {})["robots"][0]
         assert arm["gripper"] is None
         assert "attachment_site" in arm["sites"]
+    finally:
+        s.close()
+
+
+# ---------------------------------------------------------------- 新增夹爪
+
+@pytest.mark.parametrize("key", NEW_GRIPPERS)
+def test_new_gripper_model_compiles(key):
+    """三个自包含夹爪 XML 可独立编译，root body 为 gripper_base。"""
+    path = ensure_gripper(key)
+    model = mujoco.MjModel.from_xml_path(str(path))
+    body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "gripper_base")
+    assert body > 0 and model.body_parentid[body] == 0, (
+        f"{key}: 应只有一个 gripper_base 根 body，实际 id={body}")
+    info = GRIPPERS[key]
+    n_act = 1 if "actuator" in info else len(info["actuators"])
+    assert model.nu == n_act
+    for j in info["joints"]:
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, j) >= 0
+
+
+@pytest.mark.parametrize("key", NEW_GRIPPERS)
+@pytest.mark.parametrize("label,arm_key", ARMS)
+def test_new_gripper_attaches_to_four_arms(label, arm_key, key):
+    """四臂挂三个新夹爪均编译成功，执行器/关节并入 gripper/ 命名空间。"""
+    xml = _menagerie_xml(arm_key)
+    _, index = build_world(
+        parse_world(_world_dict(xml, gripper_key=key)))
+    ridx = index.robots["arm"]
+    info = GRIPPERS[key]
+
+    assert f"arm/{GRIPPER_PREFIX}gripper_base" in index.bodies
+    acts = ([info["actuator"]] if "actuator" in info else info["actuators"])
+    for a in acts:
+        assert f"{GRIPPER_PREFIX}{a}" in ridx.actuators, (label, key, a)
+    for j in info["joints"]:
+        assert f"{GRIPPER_PREFIX}{j}" in ridx.joints, (label, key, j)
+
+
+@pytest.mark.parametrize("key", NEW_GRIPPERS)
+@pytest.mark.parametrize("label,arm_key", ARMS)
+def test_new_gripper_mount_flushes_and_axis_aligned(label, arm_key, key):
+    """新夹爪安装后：与法兰同轴（x=y=0）、贴合（|gap|<2mm 且不穿透）、
+    手指沿挂点 +z 伸出。"""
+    xml = _menagerie_xml(arm_key)
+    model, _ = build_world(
+        parse_world(_world_dict(xml, gripper_key=key)))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    sid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE,
+                            "arm/attachment_site")
+    sp, sq = _site_frame(model, data)
+
+    # 1) 两法兰同轴：root body 原点落在 site z 轴上
+    base = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY,
+                             "arm/gripper/gripper_base")
+    bp = (data.xpos[base] - sp) @ sq
+    assert abs(bp[0]) < 1e-6 and abs(bp[1]) < 1e-6, (label, key, bp)
+
+    # 2) 贴合：中央对接面（半径 3cm 内）vs 腕部法兰面
+    wrist_bodies = {model.site_bodyid[sid],
+                    model.body_parentid[model.site_bodyid[sid]]}
+    wrist_z, wrist_plane_r, grip_s = [], [], []
+    for gid in range(model.ngeom):
+        bn = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY,
+                               model.geom_bodyid[gid]) or ""
+        pts = _geom_points(model, data, gid)
+        if pts is None:
+            continue
+        s = (pts - sp) @ sq
+        r = np.hypot(s[:, 0], s[:, 1])
+        if model.geom_bodyid[gid] in wrist_bodies:
+            wrist_z.append(s[r < 0.030, 2])
+            wrist_plane_r.append(r[np.abs(s[:, 2]) < 0.010])
+        if "/gripper/" in bn:
+            grip_s.append(s)
+    wrist_front = np.max(np.concatenate(wrist_z))
+    gs = np.concatenate(grip_s)
+    grip_back = np.min(gs[np.hypot(gs[:, 0], gs[:, 1]) < 0.030, 2])
+    gap = grip_back - wrist_front
+    assert -0.002 <= gap <= 0.004, (
+        f"{label}/{key}: 夹爪中央后端面与法兰面间距 {gap:.4f}m，应≈0 且不穿透")
+
+    # 2b) 不穿透：越过法兰平面的夹爪点必须落在腕部壳体半径之外
+    wrist_r_max = np.max(np.concatenate(wrist_plane_r))
+    pen = gs[:, 2] < -0.0005
+    if pen.any():
+        pen_r = np.hypot(gs[pen, 0], gs[pen, 1])
+        assert np.all(pen_r > wrist_r_max + 0.005), (
+            f"{label}/{key}: 夹爪在腕部半径内穿入法兰，r={pen_r.min():.4f}")
+
+    # 3) 手指沿 site +z 伸出：探针 z 足够大且明显大于横向偏移
+    kind, names = Z_PROBES[key]
+    for name in names:
+        obj = (mujoco.mjtObj.mjOBJ_SITE if kind == "site"
+               else mujoco.mjtObj.mjOBJ_BODY)
+        oid = mujoco.mj_name2id(model, obj, f"arm/gripper/{name}")
+        assert oid >= 0, (key, name)
+        xyz = ((data.site_xpos[oid] - sp) @ sq if kind == "site"
+               else (data.xpos[oid] - sp) @ sq)
+        assert xyz[2] > 0.10, (label, key, name, xyz)
+        assert xyz[2] > 2.0 * max(abs(xyz[0]), abs(xyz[1])), (
+            label, key, name, xyz)
+
+
+def _hold_arm(model, data, ridx):
+    for short, aid in ridx.actuators.items():
+        if not short.startswith(GRIPPER_PREFIX) \
+                and int(model.actuator_trntype[aid]) == 0:
+            jid = model.actuator_trnid[aid, 0]
+            data.ctrl[aid] = data.qpos[model.jnt_qposadr[jid]]
+
+
+@pytest.mark.parametrize("key", ["robotiq_2f85", "umi_gripper"])
+def test_parallel_gripper_actuator_moves_fingers(key):
+    """单执行器平行夹爪：open→close 两指实际相向移动（位移>2cm）。"""
+    xml = _menagerie_xml("universal_robots_ur5e")
+    model, index = build_world(
+        parse_world(_world_dict(xml, gripper_key=key, pos=(0, 0, 0.8))))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    ridx = index.robots["arm"]
+    info = GRIPPERS[key]
+    aid = ridx.actuators[f"{GRIPPER_PREFIX}{info['actuator']}"]
+    fingers = {
+        "robotiq_2f85": ["left_pad", "right_pad"],
+        "umi_gripper": ["left_finger_holder", "right_finger_holder"],
+    }[key]
+    bids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY,
+                              f"arm/gripper/{b}") for b in fingers]
+
+    def settle(value, steps=900):
+        _hold_arm(model, data, ridx)
+        data.ctrl[aid] = value
+        for _ in range(steps):
+            mujoco.mj_step(model, data)
+        return [data.xpos[b].copy() for b in bids]
+
+    po = settle(info["open"])
+    pc = settle(info["close"])
+    d = [np.linalg.norm(a - b) for a, b in zip(po, pc)]
+    assert all(x > 0.02 for x in d), (key, d)
+    sep_o = np.linalg.norm(po[0] - po[1])
+    sep_c = np.linalg.norm(pc[0] - pc[1])
+    # 2F85 开爪时 pad 间距更大；UMI 的指 body 原点在 qpos=0 重合、闭合后分开，
+    # 两者都体现为“开合两态间距变化显著”
+    assert abs(sep_o - sep_c) > 0.03, (key, sep_o, sep_c)
+
+
+def test_leap_all_actuators_drive_joints():
+    """LEAP 16 个执行器逐个可驱动，全部关节跟随到目标附近。"""
+    xml = _menagerie_xml("universal_robots_ur5e")
+    model, index = build_world(
+        parse_world(_world_dict(xml, gripper_key="leap_hand",
+                                pos=(0, 0, 0.8))))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    ridx = index.robots["arm"]
+    _hold_arm(model, data, ridx)
+    info = GRIPPERS["leap_hand"]
+    for a in info["actuators"]:
+        data.ctrl[ridx.actuators[f"{GRIPPER_PREFIX}{a}"]] = 0.5
+    for _ in range(1200):
+        mujoco.mj_step(model, data)
+    qpos = {
+        j: float(data.qpos[model.jnt_qposadr[ridx.joints[f"{GRIPPER_PREFIX}{j}"]]])
+        for j in info["joints"]
+    }
+    assert all(q > 0.40 for q in qpos.values()), qpos
+
+
+GRIPPER_CONTROLLER = """\
+from agentsim.controller import Robot
+
+robot = Robot()
+for name, value in {targets!r}.items():
+    robot.set(name, value)
+while robot.step():
+    pass
+robot.close()
+"""
+
+
+@pytest.mark.parametrize("key", NEW_GRIPPERS)
+def test_controller_can_drive_gripper_actuators(key, tmp_path):
+    """控制器 robot.set("gripper/...") 可直接驱动新夹爪（真实子进程）。"""
+    from agentsim.kernel.sim import Simulation
+
+    info = GRIPPERS[key]
+    if "actuator" in info:
+        targets = {f"gripper/{info['actuator']}": info["close"]}
+    else:
+        targets = {f"gripper/{a}": 0.5 for a in info["actuators"]}
+    ctrl = tmp_path / f"ctrl_{key}.py"
+    ctrl.write_text(GRIPPER_CONTROLLER.format(targets=targets),
+                    encoding="utf-8")
+
+    xml = _menagerie_xml("universal_robots_ur5e")
+    wd = _world_dict(xml, gripper_key=key, pos=(0, 0, 0.8))
+    wd["gravity"] = [0, 0, 0]          # 无重力：无需保持臂姿态即可隔离夹爪
+    wd["robots"][0]["controller"] = str(ctrl)
+    spec = parse_world(wd)
+    with Simulation(spec) as sim:
+        stats = sim.run(max_ticks=400)
+        qpos = {
+            j: float(sim.data.qpos[
+                sim.model.jnt_qposadr[
+                    sim.index.robots["arm"].joints[f"{GRIPPER_PREFIX}{j}"]]])
+            for j in info["joints"]
+        }
+    assert stats["ticks"] == 400, stats
+    assert stats["crashed"] == [], stats
+    if key == "robotiq_2f85":
+        # 耦合机构里 coupler 是随动关节（闭合时仍近零），只看两个主动关节
+        for j in ("right_driver_joint", "left_driver_joint"):
+            assert abs(qpos[j]) > 0.2, qpos
+    elif key == "umi_gripper":
+        assert all(q > 0.03 for q in qpos.values()), qpos
+    else:
+        assert all(q > 0.40 for q in qpos.values()), qpos
+
+
+def test_manifest_reports_multi_actuator_gripper():
+    """LEAP 在 manifest 中以 actuators/poses 展开；2FG7 单执行器接口不变。"""
+    import yaml as _yaml
+    from agentsim.mcp_server import AgentSimSession
+
+    xml = _menagerie_xml("universal_robots_ur5e")
+    text = _yaml.safe_dump(
+        _world_dict(xml, gripper_key="leap_hand"), sort_keys=False)
+    s = AgentSimSession()
+    try:
+        s.call_tool("load_world", {"yaml_text": text, "base_dir": "/tmp"})
+        m = s.call_tool("get_robot_manifest", {})
+        info = m["robots"][0]["gripper"]["info"]
+        assert info["key"] == "leap_hand"
+        assert info["actuators"] == [
+            f"gripper/{a}" for a in GRIPPERS["leap_hand"]["actuators"]]
+        assert info["poses"] == GRIPPERS["leap_hand"]["poses"]
+        assert "actuator" not in info
+
+        cat = {g["key"]: g for g in m["gripper_catalog"]}
+        for key in NEW_GRIPPERS:
+            assert key in cat
+            assert len(cat[key]["supported_robots"]) == 4
+        assert "actuators" in cat["leap_hand"]
+        assert "poses" in cat["leap_hand"]
+        # 现有 2FG7 仍是单执行器 open/close 描述，行为不变
+        assert cat["onrobot_2fg7"]["open"] == GRIPPERS["onrobot_2fg7"]["open"]
+        assert cat["onrobot_2fg7"]["close"] == GRIPPERS["onrobot_2fg7"]["close"]
+        assert "actuators" not in cat["onrobot_2fg7"]
     finally:
         s.close()

@@ -1,10 +1,11 @@
 """机器人模型库：MuJoCo Menagerie 官方模型一键接入（M4）。
 
-预配置 14 个著名机器人（四足/人形/机械臂/灵巧手/双臂/移动操作）。
+预配置 34 个著名机器人（四足/人形/双足/机械臂/灵巧手/双臂/移动操作/
+无人机）。
 generate() 生成可编辑的世界 YAML + 控制器模板——用户改控制律即编程，
 GUI/CLI/MCP zoo_create 三路同构。
 
-模型资产随仓库自带（models/zoo/<key>/，约 346MB，含 mesh 与 LICENSE），
+模型资产随仓库自带（models/zoo/<key>/，约 600MB，含 mesh 与 LICENSE），
 装好即离线可用、首次使用零联网；仓库内缺失时回退到 mujoco-menagerie
 缓存（~/.cache/mujoco_menagerie/）或该包的下载能力。
 """
@@ -161,6 +162,26 @@ MODELS: dict[str, dict] = {
                  # kp/kd 原生值（执行器不动，声明只为触发 demo_model.xml
                  # 路径以备后续补丁）
                  "act_patch": {"kp": [("", 500.0)], "kd": [("", 40.0)]}}},
+    "unitree_a1": {
+        "title": "Unitree A1", "cat": "四足", "xml": "a1.xml",
+        # 出生贴地：qpos0 直腿脚底 -0.420（相对 root）+ 2mm 缓冲
+        "pos": [0, 0, 0.422], "desc": "宇树 A1，12 关节（hip/thigh/calf × 4 腿）",
+        # 关节命名与 go1/go2 同构（FR/FL/RR/RL + _hip/_thigh/_calf），
+        # 套用 go1 实测参数；ramp=1 出生即站姿。实测 amp 0.35/0.55 会
+        # 趴地（rootz 0.06），0.2/0.3 稳定（rootz 0.30 / 600 tick 5.7m）
+        "demo": _trot(["FR", "FL", "RR", "RL"],
+                      {"hip": "_hip", "thigh": "_thigh", "calf": "_calf"},
+                      {"hip": 0.0, "thigh": 0.9, "calf": -1.8},
+                      {"hip": 0.0, "thigh": 0.2, "calf": 0.3},
+                      freq=2.4, ramp=1,
+                      lag={"hip": 0.0, "thigh": 0.0, "calf": 0.9})},
+    "google_barkour_vb": {
+        "title": "Google Barkour VB", "cat": "四足", "xml": "barkour_vb.xml",
+        # 出生贴地：qpos0 脚底 -0.0955（相对 root）+ 2mm 缓冲
+        "pos": [0, 0, 0.0975], "desc": "Google Barkour VB，12 关节四足",
+        # 关节名为 abduction/hip/knee_front_left 式，不匹配 <LEG>_hip/_thigh/
+        # _calf，故退回 osc 关节扫掠（不套 trot）
+        "demo": _osc(sweep_frac=0.3, freq=0.4, settle=20)},
     # ---- 人形机器人 ----
     "unitree_h1": {
         "title": "Unitree H1", "cat": "人形", "xml": "h1.xml",
@@ -223,6 +244,47 @@ MODELS: dict[str, dict] = {
                          ankles=["left_ankle_roll_link", "right_ankle_roll_link"],
                          bx=(2.0, 0.4), by=(1.5, 0.3),
                          freq=0.6, settle=30, desc="站立平衡 + 摆臂（踝策略）")},
+    "robotis_op3": {
+        "title": "ROBOTIS OP3", "cat": "人形", "xml": "op3.xml",
+        # 出生贴地：qpos0 脚底 -0.2792（相对 root）+ 2mm 缓冲
+        "pos": [0, 0, 0.2812], "desc": "ROBOTIS OP3，20 自由度小型人形",
+        "demo": _osc(sweep_frac=0.3, freq=0.4)},
+    "berkeley_humanoid": {
+        "title": "Berkeley Humanoid", "cat": "人形", "xml": "berkeley_humanoid.xml",
+        # 出生贴地：qpos0 脚底 -0.5658（相对 root）+ 2mm 缓冲
+        "pos": [0, 0, 0.5678], "desc": "Berkeley Humanoid，12 关节人形",
+        "demo": _osc(sweep_frac=0.3, freq=0.4)},
+    "pal_talos": {
+        "title": "PAL TALOS", "cat": "人形", "xml": "talos_position.xml",
+        # 出生贴地：qpos0 脚底 -1.0834（相对 root）+ 2mm 缓冲。
+        # talos.xml 本身无执行器，入口用同目录 position 变体（menagerie
+        # 的 kind=robot 入口，32 个位置执行器）
+        "pos": [0, 0, 1.0854], "desc": "PAL TALOS，32 自由度人形",
+        "demo": _osc(sweep_frac=0.3, freq=0.4)},
+    "booster_t1": {
+        "title": "Booster T1", "cat": "人形", "xml": "t1.xml",
+        # 出生贴地：qpos0 脚底 -0.6744（相对 root）+ 2mm 缓冲
+        "pos": [0, 0, 0.6764], "desc": "Booster T1，23 自由度人形",
+        "demo": _osc(sweep_frac=0.3, freq=0.4)},
+    # ---- 双足机器人 ----
+    "agility_cassie": {
+        "title": "Agility Cassie", "cat": "双足", "xml": "cassie.xml",
+        # 出生贴地：qpos0 脚底 -1.1048（相对 root）+ 2mm 缓冲
+        "pos": [0, 0, 1.1068], "desc": "Agility Cassie，10 驱动双足",
+        # 力矩执行器（biastype=none），osc 走 PD 跟踪；摆幅取小值防
+        # ctrlrange（力矩）被当成角度幅值放大
+        "demo": _osc(sweep_frac=0.05, freq=0.4, kp=40.0, kd=2.0)},
+    # ---- 无人机 ----
+    "skydio_x2": {
+        "title": "Skydio X2", "cat": "无人机", "xml": "x2.xml",
+        # 出生贴地：qpos0 机体最低点 -0.0052（相对 root）+ 2mm 缓冲
+        "pos": [0, 0, 0.0072], "desc": "Skydio X2 四旋翼无人机",
+        "demo": _osc(sweep_frac=0.3, freq=0.4)},
+    "bitcraze_crazyflie_2": {
+        "title": "Bitcraze Crazyflie 2", "cat": "无人机", "xml": "cf2.xml",
+        # 出生贴地：qpos0 机体最低点 -0.0125（相对 root）+ 2mm 缓冲
+        "pos": [0, 0, 0.0145], "desc": "Bitcraze Crazyflie 2 微型四旋翼",
+        "demo": _osc(sweep_frac=0.3, freq=0.4)},
     # ---- 机械臂 ----
     "franka_emika_panda": {
         "title": "Franka Emika Panda", "cat": "机械臂", "xml": "panda_nohand.xml",
@@ -240,6 +302,45 @@ MODELS: dict[str, dict] = {
     "ufactory_xarm7": {
         "title": "UFACTORY xArm7", "cat": "机械臂", "xml": "xarm7_nohand.xml",
         "pos": [0, 0, 0], "desc": "xArm7 7 轴臂（含手变体 xarm7.xml）",
+        "demo": _osc(sweep_frac=0.4)},
+    "franka_fr3": {
+        "title": "Franka FR3", "cat": "机械臂", "xml": "fr3.xml",
+        "pos": [0, 0, 0], "desc": "Franka Research 3，7 轴协作臂",
+        "demo": _osc(sweep_frac=0.4)},
+    "kuka_iiwa_14": {
+        "title": "KUKA LBR iiwa 14", "cat": "机械臂", "xml": "iiwa14.xml",
+        # 基座球体半径 0.12、球心 z=0.03，原生模型会穿地 9cm；抬高 0.092
+        "pos": [0, 0, 0.092], "desc": "KUKA LBR iiwa 14，7 轴协作臂",
+        "demo": _osc(sweep_frac=0.4)},
+    "kinova_gen3": {
+        "title": "Kinova Gen3", "cat": "机械臂", "xml": "gen3.xml",
+        "pos": [0, 0, 0], "desc": "Kinova Gen3，7 轴轻量协作臂",
+        "demo": _osc(sweep_frac=0.4)},
+    "ufactory_lite6": {
+        "title": "UFACTORY Lite 6", "cat": "机械臂", "xml": "lite6.xml",
+        "pos": [0, 0, 0], "desc": "UFACTORY Lite 6，6 轴轻量协作臂",
+        "demo": _osc(sweep_frac=0.4)},
+    "trossen_wx250s": {
+        "title": "Trossen WidowX 250s", "cat": "机械臂", "xml": "wx250s.xml",
+        "pos": [0, 0, 0], "desc": "Trossen WidowX 250s，6 轴臂 + 夹爪",
+        "demo": _osc(sweep_frac=0.4)},
+    "dynamixel_2r": {
+        "title": "Dynamixel 2R", "cat": "机械臂", "xml": "dynamixel_2r.xml",
+        # 桌面安装构型：全部 geom 为 visual（无碰撞），基座离地 0.115 属
+        # 原生设计（menagerie scene 同样悬空），保持 [0,0,0]
+        "pos": [0, 0, 0], "desc": "Dynamixel 2R，桌面 2 轴臂",
+        "demo": _osc(sweep_frac=0.4)},
+    "trs_so_arm100": {
+        "title": "SO-ARM100", "cat": "机械臂", "xml": "so_arm100.xml",
+        "pos": [0, 0, 0], "desc": "The Robot Studio SO-ARM100，5 轴臂 + 夹爪",
+        "demo": _osc(sweep_frac=0.4)},
+    "arx_l5": {
+        "title": "ARX L5", "cat": "机械臂", "xml": "arx_l5.xml",
+        "pos": [0, 0, 0], "desc": "ARX L5，6 轴臂 + 夹爪",
+        "demo": _osc(sweep_frac=0.4)},
+    "agilex_piper": {
+        "title": "AgileX Piper", "cat": "机械臂", "xml": "piper.xml",
+        "pos": [0, 0, 0], "desc": "AgileX Piper，6 轴轻量臂 + 夹爪",
         "demo": _osc(sweep_frac=0.4)},
     # ---- 灵巧手 ----
     "shadow_hand": {
@@ -259,6 +360,19 @@ MODELS: dict[str, dict] = {
     "hello_robot_stretch_3": {
         "title": "Hello Robot Stretch 3", "cat": "移动操作", "xml": "stretch.xml",
         "pos": [0, 0, 0], "desc": "Stretch 3 家庭服务移动机器人",
+        "demo": _osc(sweep_frac=0.3, freq=0.5, desc="底盘行进 + 升降/臂展示")},
+    "pal_tiago": {
+        "title": "PAL TIAGo", "cat": "移动操作", "xml": "tiago_position.xml",
+        # 出生贴地：qpos0 轮底 -0.0001（相对 root）+ 2mm 缓冲。
+        # tiago.xml 本身无执行器，入口用同目录 position 变体（含轮速驱动）
+        "pos": [0, 0, 0.0021],
+        "desc": "PAL TIAGo，差分轮底盘 + 7 轴臂移动操作平台",
+        "demo": _osc(sweep_frac=0.3, freq=0.5, desc="底盘行进 + 升降/臂展示")},
+    "stanford_tidybot": {
+        "title": "Stanford TidyBot", "cat": "移动操作", "xml": "tidybot.xml",
+        # 底盘 mesh 底缘在 root 上方 0.0266，下移贴地（原始 pos 会悬空）
+        "pos": [0, 0, -0.0246],
+        "desc": "Stanford TidyBot，平面底盘 + Gen3 臂移动操作平台",
         "demo": _osc(sweep_frac=0.3, freq=0.5, desc="底盘行进 + 升降/臂展示")},
 }
 
@@ -685,8 +799,10 @@ while robot.step():
     obs = robot.obs
     q, qd = obs["qpos"], obs["qvel"]
     if HOME is None:
-        HOME = {{a["name"]: (q[a["qi"]] if a["mode"] != "velocity" else 0.0)
-                 for a in ACTS}}
+        # raw（site 传输，如无人机推力）与 velocity（轮子）没有关节位置，
+        # 摆动中心取 0
+        HOME = {{a["name"]: (q[a["qi"]] if a["mode"] not in ("velocity", "raw")
+                              else 0.0) for a in ACTS}}
     t = (robot.tick - SETTLE) * DT
     for a in ACTS:
         h = HOME[a["name"]]

@@ -100,7 +100,8 @@ def _inspect(args):
                   f"pos={list(od.pos)} {tag}")
     for rd in spec.robots:
         ridx = index.robots[rd.name]
-        print(f"\n机器人 '{rd.name}'  模型 {rd.model}")
+        print(f"\n机器人 '{rd.name}'  模型 "
+              f"{rd.model or '内联连杆树（spec）'}")
         if rd.controller:
             print(f"  控制器: {rd.controller}")
         else:

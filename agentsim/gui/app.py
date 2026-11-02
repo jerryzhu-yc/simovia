@@ -39,6 +39,7 @@ from agentsim.gui.panels import (AgentConfigDialog, AgentPanel, CodePanel,
                                  ConsolePanel, GearPanel, ObsPanel,
                                  PropertiesPanel, SceneTreePanel)
 from agentsim.gui.render_view import RenderView, _CAM_PRESETS
+from agentsim.gui.robot_builder import RobotBuilderDialog
 from agentsim.gui.state import UiState
 from agentsim.world.schema import load_world as parse_world_file
 from agentsim.world.schema import parse_world
@@ -426,6 +427,7 @@ class MainWindow(QMainWindow):
         self._world_path = None          # 当前世界来源文件（保存/最近打开用；
                                          # 拖动/位姿提交的 yaml_text 重载不换它）
         self._zoo_dlg: ZooDialog | None = None
+        self._builder_dlg: RobotBuilderDialog | None = None
         self._busy = False              # load_world 在途（防重入提交）
         self._sel_node = None           # 当前选中 (kind, name)（删除按钮用）
 
@@ -558,6 +560,10 @@ class MainWindow(QMainWindow):
         self.act_new_scene = mk("新建场景…", "Ctrl+N", "从参数化模板生成场景"
                                 "（含码垛分区 pallet）")
         self.act_zoo = mk("机器人模型库…", "Ctrl+M", "从官方模型库生成项目")
+        self.act_robot_builder = mk(
+            "造机器人…", "Ctrl+B",
+            "从零搭建机器人：编辑连杆树（parent / pos / rpy / 几何 / 关节），"
+            "实时预览并查看每个连杆的旋转矩阵")
         self.act_import = mk("导入模型…", "Ctrl+I",
                              "导入本地机器人模型（URDF / MJCF）到当前场景"
                              "或新世界——SolidWorks 经 sw2urdf 插件导出的 "
@@ -623,6 +629,7 @@ class MainWindow(QMainWindow):
         self._recent_menu = m_file.addMenu("最近打开")
         m_file.addAction(self.act_new_scene)
         m_file.addAction(self.act_zoo)
+        m_file.addAction(self.act_robot_builder)
         m_file.addAction(self.act_import)
         m_file.addAction(self.act_scene_agent)
         m_file.addSeparator()
@@ -676,6 +683,7 @@ class MainWindow(QMainWindow):
         tb.setIconSize(tb.iconSize())
         tb.addAction(self.act_open)
         tb.addAction(self.act_zoo)
+        tb.addAction(self.act_robot_builder)
         tb.addSeparator()
         tb.addAction(self.act_reset)
         tb.addAction(self.act_run)
@@ -700,6 +708,7 @@ class MainWindow(QMainWindow):
         self.act_open.triggered.connect(self._on_load)
         self.act_new_scene.triggered.connect(self._on_new_scene)
         self.act_zoo.triggered.connect(self._on_zoo)
+        self.act_robot_builder.triggered.connect(self._on_robot_builder)
         self.act_reset.triggered.connect(self._on_reset)
         self.act_run.triggered.connect(self._on_run)
         self.act_step.triggered.connect(self._on_run_n)
@@ -962,6 +971,14 @@ class MainWindow(QMainWindow):
             "Ctrl+左键拖动 调高度</p>")
 
     # ============================================================ 模型库
+
+    def _on_robot_builder(self):
+        """非模态「造机器人」面板：连杆树 + 位姿/几何/关节 + 旋转矩阵预览。"""
+        if self._builder_dlg is None:
+            self._builder_dlg = RobotBuilderDialog(self)
+        self._builder_dlg.show()
+        self._builder_dlg.raise_()
+        self._builder_dlg.activateWindow()
 
     def _on_zoo(self):
         """非模态模型库：可拖条目到 3D 视口放置，或选中后生成/添加。"""

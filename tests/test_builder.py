@@ -196,6 +196,55 @@ class TestSmoke:
         assert np.allclose(data.body("b/base").xpos, [0.6, 0, 0.05])
 
 
+class TestDiyRobot:
+    """从零造机器人：robots[].spec 内联连杆树 / robots[].model 指向 .yaml。"""
+
+    LINKS = {
+        "name": "diy",
+        "links": [
+            {"name": "base", "pos": [0, 0, 0.1],
+             "geom": {"type": "cylinder", "size": [0.06, 0.05],
+                      "pos": [0, 0, 0.05]}},
+            {"name": "arm", "parent": "base", "pos": [0, 0, 0.1],
+             "joint": {"type": "revolute", "axis": [0, 0, 1],
+                       "range": [-90, 90]},
+             "geom": {"type": "box", "size": [0.02, 0.02, 0.1],
+                      "pos": [0, 0, 0.1]}},
+        ],
+    }
+
+    def test_inline_spec_world(self):
+        """内联连杆树直接进世界：执行器/关节索引可用，root 位姿由 pos 决定。"""
+        d = {"name": "diy", "robots": [{"name": "r", "spec": self.LINKS}]}
+        model, index = build_world(parse_world(d))
+        assert set(index.robots["r"].actuators) == {"arm"}
+        assert set(index.robots["r"].joints) == {"arm"}
+        assert model.nu == 1
+        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "r/base")
+        assert np.allclose(model.body_pos[bid], [0, 0, 0])   # 清零吸收进 pos
+
+    def test_yaml_model_file(self, tmp_path):
+        """robots[].model 指向 .yaml：按世界文件目录解析并编译。"""
+        import yaml
+        (tmp_path / "diy.yaml").write_text(
+            yaml.safe_dump(self.LINKS, allow_unicode=True), encoding="utf-8")
+        w = tmp_path / "world.yaml"
+        w.write_text(yaml.safe_dump(
+            {"name": "diy", "robots": [{"name": "r", "model": "diy.yaml"}]},
+            allow_unicode=True), encoding="utf-8")
+        model, index = build_world(load_world(w))
+        assert set(index.robots["r"].actuators) == {"arm"}
+        assert model.njnt >= 1
+
+    def test_model_spec_exclusive(self):
+        """model 与 spec 必须二选一，缺/多都报可读错误。"""
+        with pytest.raises(WorldError, match="二选一"):
+            parse_world({"name": "x", "robots": [{"name": "r"}]})
+        with pytest.raises(WorldError, match="二选一"):
+            parse_world({"name": "x", "robots": [
+                {"name": "r", "model": "a.xml", "spec": self.LINKS}]})
+
+
 class TestEmptyWorld:
     """任务 D：GUI 启动默认加载的纯空场景 + 白天 skybox 背景 + 网格地面。"""
 

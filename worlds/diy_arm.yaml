@@ -1,0 +1,167 @@
+# =============================================================================
+# 从零造机器人 · 三段式机械臂（教学示例）
+# =============================================================================
+# 运行：     python -m agentsim run worlds/diy_arm.yaml
+# 看设备名： python -m agentsim inspect worlds/diy_arm.yaml
+# GUI 里：   文件 → 打开 worlds/diy_arm.yaml；或 文件 → 造机器人（Ctrl+B）
+#
+# 实时日志
+# --------
+# 控制器 controllers/diy_arm_log.py 每 log_every 个 tick 打印一次：
+#   - 每个关节的 q（弧度 / 度）与目标 ctrl
+#   - 每个连杆的 R_world（含关节角，所以会随摆动实时变化）
+#   - 每个连杆的 p_world，并与仿真下发的 body 位置对账
+# 启动时还会先打一遍每个连杆的静态 R_rel（只由 rpy 决定）。
+# 日志间隔 / 摆动速度可在下面 robots[].args 里改。
+#
+# 三个概念
+# --------
+# link（连杆）   ：刚体。links 列表里的一项就是一个连杆，有名字、几何、质量。
+# child（子连杆）：通过 parent 字段指回父连杆。没有 parent 的是根连杆（root），
+#                  整棵树必须恰好有一个根。
+# 位姿（pos+rpy）：只描述“本连杆原点相对父连杆坐标系”的位姿，不影响父连杆。
+#
+# 旋转矩阵
+# --------
+# rpy = [roll, pitch, yaw]，单位是“度”，按
+#     R = Rz(yaw) · Ry(pitch) · Rx(roll)
+# 转成 3×3 旋转矩阵；连同平移 p 组成齐次变换 T = [R | p]。
+# R 的三列 = 本连杆的 x / y / z 轴在父坐标系里的方向。
+# 世界位姿沿链路逐级相乘：
+#     R_world(child) = R_world(parent) · R_rel(child)
+#     p_world(child) = p_world(parent) + R_world(parent) · p_rel(child)
+# 也可以写 quat: [w, x, y, z] 代替 rpy（二选一）；例如 Rz(90°) 的四元数是
+# [cos45°, 0, 0, sin45°] = [0.7071, 0, 0, 0.7071]。
+#
+# 本示例的连杆树（箭头 = child，括号里是相对父系的旋转）
+# ------------------------------------------------------
+#   base（根，固定）
+#     └─ turret  (Rz  90°)  偏航
+#          └─ upper  (Ry -90°)  俯仰
+#               └─ wrist  (Rx  90°)  滚转
+#
+# 逐级算出来的矩阵（GUI 造机器人面板会实时显示同样的 R_rel / R_world）
+# ----------------------------------------------------------------
+#   turret  R_rel = R_world = [ 0 -1  0 ]      p_world = [0, 0.00, 0.10]
+#                            [ 1  0  0 ]
+#                            [ 0  0  1 ]
+#   upper   R_rel = [ 0  0 -1 ]  R_world = [ 0 -1  0 ]  p_world = [0, 0.16, 0.10]
+#                   [ 0  1  0 ]            [ 0  0 -1 ]
+#                   [ 1  0  0 ]            [ 1  0  0 ]
+#   wrist   R_rel = [ 1  0  0 ]  R_world = [ 0  0  1 ]  p_world = [0, 0.16, 0.32]
+#                   [ 0  0 -1 ]            [ 0 -1  0 ]
+#                   [ 0  1  0 ]            [ 1  0  0 ]
+# =============================================================================
+name: diy_arm
+timestep: 0.002
+ctrl_period: 32
+gravity: [0, 0, -9.81]
+integrator: euler            # 教学臂用默认 euler 即可：kd 落在关节阻尼上，稳定
+
+scene:
+  floor:
+    size: [2.0, 2.0]
+    texture: grid
+  lights:
+    - {pos: [0, 0, 3]}
+
+robots:
+  - name: arm
+    pos: [0, 0, 0]                   # 机器人根（base）在世界里的出生位姿
+    quat: [1, 0, 0, 0]
+    controller: ../controllers/diy_arm_log.py  # 随机摆动 + 实时打印矩阵/位姿
+    args:
+      log_every: 50                  # 每 50 tick（≈3.2s）打印一次
+      speed: 0.15                    # 每个 tick 目标最多变化 0.15 rad
+    spec:                            # 内联连杆树；也可写成 model: diy_robot.yaml
+      name: diy_arm
+      links:
+        # ----------------------------------------------------------------
+        # 根连杆：base —— 没有 parent，整棵树的起点
+        # ----------------------------------------------------------------
+        - name: base
+          pos: [0, 0, 0]             # 根连杆入世界后的位姿由 robots[].pos/quat 决定
+          geom:
+            type: cylinder           # box / sphere / cylinder / capsule / ellipsoid
+            size: [0.06, 0.05]       # cylinder = [半径, 半高]（box 是三个半边长）
+            pos: [0, 0, 0.05]        # 几何中心在本连杆坐标系里的位置
+            color: "#4A90D9"
+
+        # ----------------------------------------------------------------
+        # 子连杆 1：turret —— base 的 child，绕 z 轴偏航
+        #   R_rel = Rz(90°) = [ 0 -1 0 ]
+        #                     [ 1  0 0 ]
+        #                     [ 0  0 1 ]
+        # ----------------------------------------------------------------
+        - name: turret
+          parent: base               # ← 本连杆是 base 的 child
+          pos: [0, 0, 0.10]          # 在 base 坐标系里：抬高 10cm
+          rpy: [0, 0, 90]            # 绕 z 转 90°，即上面的 R_rel
+          mass: 1.2
+          joint:
+            type: revolute           # 转动关节（fixed / prismatic / free / ball 也可）
+            axis: [0, 0, 1]          # 转轴：本连杆 +z；此处恰好也是世界 +z
+            range: [-180, 180]       # 限位：revolute 用度，prismatic 用米
+            kp: 80                   # 位置执行器刚度
+            kd: 2                    # 关节阻尼
+          geom:
+            type: box
+            size: [0.08, 0.03, 0.03] # 半边长：长 16cm、宽高各 6cm
+            pos: [0.08, 0, 0]        # 沿本连杆 +x 伸出（世界方向 = Rz(90°)·x = +y）
+            color: "#E8833A"
+
+        # ----------------------------------------------------------------
+        # 子连杆 2：upper —— turret 的 child，绕 y 轴俯仰
+        #   R_rel   = Ry(-90°) = [ 0 0 -1 ]
+        #                        [ 0 1  0 ]
+        #                        [ 1 0  0 ]
+        #   R_world = Rz(90°)·Ry(-90°) = [ 0 -1 0 ]
+        #                                [ 0  0 -1 ]
+        #                                [ 1  0  0 ]
+        #   p_world = [0,0,0.10] + Rz(90°)·[0.16,0,0] = [0, 0.16, 0.10]
+        # ----------------------------------------------------------------
+        - name: upper
+          parent: turret             # ← turret 的 child
+          pos: [0.16, 0, 0]          # 在 turret 坐标系里沿 +x 走 16cm
+          rpy: [0, -90, 0]           # 本连杆 +x 轴因此变成世界 +z（手臂立起来）
+          mass: 0.8
+          joint:
+            type: revolute
+            axis: [0, 1, 0]          # 本连杆 +y；换到世界是 R_world·y = [-1, 0, 0]
+            range: [-120, 120]
+            kp: 60
+            kd: 1.5
+          geom:
+            type: box
+            size: [0.11, 0.02, 0.02] # 沿局部 +x 长 22cm
+            pos: [0.11, 0, 0]        # 世界效果：从 turret 末端竖直向上
+            color: "#57A773"
+
+        # ----------------------------------------------------------------
+        # 子连杆 3：wrist —— upper 的 child，绕 x 轴滚转
+        #   R_rel   = Rx(90°) = [ 1  0  0 ]
+        #                       [ 0  0 -1 ]
+        #                       [ 0  1  0 ]
+        #   R_world = 上一级 R_world · Rx(90°) = [ 0 0  1 ]
+        #                                        [ 0 -1 0 ]
+        #                                        [ 1 0  0 ]
+        #   p_world = [0,0.16,0.10] + R_world(upper)·[0.22,0,0] = [0, 0.16, 0.32]
+        # ----------------------------------------------------------------
+        - name: wrist
+          parent: upper              # ← upper 的 child
+          pos: [0.22, 0, 0]          # 在 upper 坐标系里，正好在上臂末端
+          rpy: [90, 0, 0]            # 绕 x 转 90°
+          mass: 0.3
+          joint:
+            type: revolute
+            axis: [1, 0, 0]          # 本连杆 +x；换到世界是 R_world·x = [0, 0, 1]
+            range: [-90, 90]
+            kp: 30
+            kd: 0.8
+          geom:
+            type: sphere
+            size: [0.035]            # sphere = [半径]
+            color: "#B45F9D"
+
+task:
+  max_ticks: 600                     # 默认跑 600 tick（≈38s 仿真）后正常收尾

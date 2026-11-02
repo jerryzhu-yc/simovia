@@ -467,9 +467,16 @@ class AgentSimSession:
                 info = None
                 if rd.gripper.model in _GRIPPERS:
                     gi = _GRIPPERS[rd.gripper.model]
-                    info = {"key": rd.gripper.model, "title": gi["title"],
+                    info = {"key": rd.gripper.model, "title": gi["title"]}
+                    if "actuator" in gi:       # 单执行器（平行夹爪）
+                        info.update({
                             "actuator": f"gripper/{gi['actuator']}",
-                            "open": gi["open"], "close": gi["close"]}
+                            "open": gi["open"], "close": gi["close"]})
+                    else:                       # 多执行器（灵巧手）
+                        info.update({
+                            "actuators": [f"gripper/{a}"
+                                          for a in gi["actuators"]],
+                            "poses": gi["poses"]})
                 gripper = {"model": rd.gripper.model,
                            "site": rd.gripper.site, "info": info}
 
@@ -495,7 +502,11 @@ class AgentSimSession:
                         for o in self.spec.scene.objects],
             "gripper_catalog": [
                 {"key": k, "title": v["title"], "cat": v["cat"],
-                 "open": v["open"], "close": v["close"],
+                 # 单执行器条目照旧给 open/close；多执行器给 actuators/poses
+                 **({"open": v["open"], "close": v["close"]}
+                    if "actuator" in v else
+                    {"actuators": list(v["actuators"]),
+                     "poses": v["poses"]}),
                  "supported_robots": sorted(v["mounts"])}
                 for k, v in _GRIPPERS.items()],
         }

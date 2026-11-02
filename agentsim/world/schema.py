@@ -98,7 +98,10 @@ class GripperSpec:
 @dataclass
 class RobotSpec:
     name: str
-    model: str                      # MJCF 路径（相对世界文件）
+    model: str | None = None        # 模型文件（相对世界文件）：MJCF / URDF /
+                                    # 或机器人连杆树 YAML（.yaml/.yml）
+    spec: dict | None = None        # 内联连杆树（agentsim/robot_spec.py 格式）
+                                    # model 与 spec 二选一
     pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
     quat: tuple[float, float, float, float] | None = None   # root 绝对朝向
                                     # （wxyz；模型自带 quat 被清零吸收进此处）
@@ -334,7 +337,15 @@ def _parse_robots(d, path: str, seen: dict) -> list[RobotSpec]:
         p = f"{path}.robots[{i}]"
         name = _str(_req(rd, "name", p), f"{p}.name")
         _name_unique(name, seen, f"{p}.name")
-        model = _str(_req(rd, "model", p), f"{p}.model")
+        model = rd.get("model")
+        if model is not None:
+            model = _str(model, f"{p}.model")
+        inline = rd.get("spec")
+        if inline is not None and not isinstance(inline, dict):
+            raise _err(f"{p}.spec", f"需要字典（连杆树），实际是: {inline!r}")
+        if (model is None) == (inline is None):
+            raise _err(p, "model 与 spec 必须二选一：model 写模型文件路径"
+                          "（.xml/.urdf/.yaml 连杆树），spec 写内联连杆树")
         pos = _vec(rd.get("pos", [0, 0, 0]), 3, f"{p}.pos")
         quat = rd.get("quat")
         if quat is not None:
@@ -347,8 +358,8 @@ def _parse_robots(d, path: str, seen: dict) -> list[RobotSpec]:
             raise _err(f"{p}.args", f"需要字典，实际是: {args!r}")
         sensors = _parse_sensors(rd, p)
         gripper = _parse_gripper(rd.get("gripper"), f"{p}.gripper")
-        robots.append(RobotSpec(name=name, model=model, pos=pos, quat=quat,
-                                controller=controller, args=args,
+        robots.append(RobotSpec(name=name, model=model, spec=inline, pos=pos,
+                                quat=quat, controller=controller, args=args,
                                 sensors=sensors, gripper=gripper))
     return robots
 

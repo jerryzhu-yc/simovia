@@ -302,14 +302,25 @@ def _assemble_robot_child(spec: WorldSpec,
     传感器可以引用夹爪手指 body（body 名以 "gripper/" 开头）。
     返回 (合并后的 child spec, 全部执行器短名列表)。
     """
-    model_path = _resolve_path(spec.base_dir, robot.model, "机器人模型")
-    try:
-        child = _load_robot_spec(model_path)
-    except WorldError:
-        raise
-    except Exception as e:
-        raise WorldError(
-            f"机器人 '{robot.name}' 模型解析失败 ({model_path}): {e}") from e
+    if robot.spec is not None:
+        # 内联连杆树（GUI「造机器人」/ 世界 YAML 里直接写 links）
+        from agentsim.robot_spec import build_robot_spec, parse_robot
+        try:
+            child = build_robot_spec(parse_robot(robot.spec))
+        except WorldError:
+            raise
+        except Exception as e:
+            raise WorldError(
+                f"机器人 '{robot.name}' 内联连杆树解析失败: {e}") from e
+    else:
+        model_path = _resolve_path(spec.base_dir, robot.model, "机器人模型")
+        try:
+            child = _load_robot_spec(model_path)
+        except WorldError:
+            raise
+        except Exception as e:
+            raise WorldError(
+                f"机器人 '{robot.name}' 模型解析失败 ({model_path}): {e}") from e
 
     # ---- 夹爪 site-attach 到机器人腕部挂点 ----
     if robot.gripper is not None:
@@ -332,7 +343,7 @@ def _assemble_robot_child(spec: WorldSpec,
                 f"机器人 '{robot.name}' 模型里没有挂点 site '{site_name}'，"
                 f"可用: {sorted(site_names)}（夹爪 {g.model}）")
         if g.model in GRIPPERS:
-            xf = mount_for(g.model, robot.model, g.pos, g.quat)
+            xf = mount_for(g.model, robot.model or "", g.pos, g.quat)
         elif g.pos is None or g.quat is None:
             raise WorldError(
                 f"自定义夹爪 '{g.model}' 不在夹爪库、无标定 mount，必须在 "
@@ -363,7 +374,7 @@ def _assemble_robot_child(spec: WorldSpec,
 
 
 def _load_robot_spec(model_path: pathlib.Path) -> mujoco.MjSpec:
-    """读机器人模型：MJCF 直接读；URDF 做导入适配。
+    """读机器人模型：MJCF 直接读；URDF 做导入适配；.yaml 走连杆树编译。
 
     URDF 与 SolidWorks 工作流（sw2urdf 插件导出）的差异由这里吸收：
     - mesh 路径：MuJoCo 的 from_string 无文件目录上下文，先把全部
@@ -383,6 +394,9 @@ def _load_robot_spec(model_path: pathlib.Path) -> mujoco.MjSpec:
     - 重写结果统一正斜杠（.as_posix()）：XML 属性 / YAML / 跨平台
       三处都安全，MuJoCo 在 Windows 上也接受正斜杠
     """
+    if model_path.suffix.lower() in (".yaml", ".yml"):
+        from agentsim.robot_spec import build_robot_spec, load_robot
+        return build_robot_spec(load_robot(model_path))
     if model_path.suffix.lower() != ".urdf":
         return mujoco.MjSpec.from_file(str(model_path))
 
@@ -512,7 +526,8 @@ def _child_actuator_names(spec: WorldSpec, rd: RobotSpec) -> list[str]:
     _, names = _assemble_robot_child(spec, rd)
     if not names:
         raise WorldError(
-            f"机器人 '{rd.name}' 模型里没有任何执行器 ({rd.model})，"
+            f"机器人 '{rd.name}' 模型里没有任何执行器 "
+            f"({rd.model or '内联连杆树'})，"
             f"无法建立设备索引")
     return names
 
