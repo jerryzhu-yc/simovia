@@ -197,7 +197,7 @@ class TestSmoke:
 
 
 class TestEmptyWorld:
-    """任务 D：GUI 启动默认加载的纯空场景 + 白天 skybox 背景。"""
+    """任务 D：GUI 启动默认加载的纯空场景 + 白天 skybox 背景 + 网格地面。"""
 
     def test_empty_world_builds_runs_skybox(self):
         spec = load_world(ROOT / "worlds" / "empty.yaml")
@@ -213,3 +213,23 @@ class TestEmptyWorld:
         for _ in range(100):
             mujoco.mj_step(model, data)
         assert np.all(np.isfinite(data.qpos))
+
+    def test_floor_grid_texture(self):
+        """floor.texture="grid" 时地面真的贴上 2D 网格贴图（RGB 角色非 -1）。"""
+        model, _ = build_world(load_world(ROOT / "worlds" / "empty.yaml"))
+        assert int(mujoco.mjtTexture.mjTEXTURE_2D) in {int(t) for t in model.tex_type}
+        matid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MATERIAL, "floor_mat")
+        assert matid >= 0
+        # 角色下标：mjTEXROLE_USER=0，mjTEXROLE_RGB=1
+        assert model.mat_texid[matid][mujoco.mjtTextureRole.mjTEXROLE_RGB] >= 0
+        assert model.mat_texuniform[matid] == 1     # 格子按世界尺寸，与地面大小无关
+        geoid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        assert model.geom_matid[geoid] == matid
+
+    def test_floor_solid_fallback(self):
+        """texture 不是仓库内置贴图时退回纯色，不因缺文件报错。"""
+        d = {"name": "solid", "scene": {"floor": {"size": [2, 2],
+                                                   "texture": "no_such_texture"}}}
+        model, _ = build_world(parse_world(d))
+        geoid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        assert model.geom_matid[geoid] == -1

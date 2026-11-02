@@ -40,3 +40,24 @@ def test_encode_png_rejects_wrong_shape():
     import pytest
     with pytest.raises(ValueError, match="RGB"):
         encode_png(np.zeros((4, 4), dtype=np.uint8))
+
+
+def test_sync_lights_positions_scene_lights():
+    """刚 load 就截图：mj_kinematics 不刷灯位姿，必须单独补齐，
+    否则灯全停在原点，画面只剩 headlight（整片发暗、无投影）。"""
+    import pathlib
+
+    import mujoco
+
+    from agentsim.render import _sync_lights
+    from agentsim.world.builder import build_world
+    from agentsim.world.schema import load_world
+
+    root = pathlib.Path(__file__).parent.parent
+    model, _ = build_world(load_world(root / "worlds" / "pick_cube.yaml"))
+    data = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, data)
+    _sync_lights(model, data)
+    # 世界灯在 (0,0,3) 朝下；与 mj_forward 结果一致
+    assert np.allclose(data.light_xpos[0], [0, 0, 3])
+    assert np.allclose(data.light_xdir[0], [0, 0, -1])

@@ -31,6 +31,9 @@ _GEOM_TYPE_MAP = {
     "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER,
 }
 
+# 地面贴图目录（仓库 models/textures/<floor.texture>.png）
+_TEXTURE_DIR = pathlib.Path(__file__).resolve().parents[2] / "models" / "textures"
+
 
 # ---------------------------------------------------------------- 名字索引
 
@@ -133,22 +136,43 @@ def _resolve_path(base: pathlib.Path, rel: str, what: str) -> pathlib.Path:
 
 def _build_scene(spec: WorldSpec, mj: mujoco.MjSpec):
     sc = spec.scene
-    # 白天背景：内置渐变 skybox（上方浅天蓝，地平方向近白）。
+    # 白天背景：内置渐变 skybox（rgb1=天顶，rgb2=地平线方向）。
     # MuJoCo 3.13 classic 渲染器清屏色硬编码为黑色，只有 skybox 能给出非黑背景。
     mj.add_texture(
         name="sky", type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
         builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
-        rgb1=[0.72, 0.82, 0.92], rgb2=[0.97, 0.98, 1.0],
+        rgb1=[0.49, 0.71, 0.91], rgb2=[0.97, 0.98, 0.99],
         width=512, height=3072,
     )
-    # 地面
-    mj.worldbody.add_geom(
+    # 白天明亮基调：headlight 是跟随相机的匀光补光，抬高它背光面不发暗。
+    # 留一点 specular 让机器人塑料壳有高光，形体边界更清楚；地面材质另外
+    # 把 specular 归零，所以这片高光不会糊在地板上。
+    mj.visual.headlight.ambient = [0.30, 0.31, 0.33]
+    mj.visual.headlight.diffuse = [0.34, 0.34, 0.34]
+    mj.visual.headlight.specular = [0.15, 0.15, 0.15]
+    # 地面：floor.texture="grid" 时贴网格贴图（一瓦片 2m，内含 0.5m 细格）；
+    # 贴图缺失或其它取值时退回纯色。texuniform=True 让格子按世界尺寸走，
+    # 不同大小的地面格子一样大（texrepeat 实测 1.0 = 2m 瓦片）。
+    floor_kwargs = dict(
         name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE,
         size=[sc.floor.size[0], sc.floor.size[1], 0.1],
-        rgba=[0.45, 0.47, 0.52, 1.0],
         friction=[sc.floor.friction, 0.005, 0.0001],
     )
-    # 灯光
+    floor_tex = _TEXTURE_DIR / f"{sc.floor.texture}.png"
+    if sc.floor.texture != "solid" and floor_tex.exists():
+        mj.add_texture(name="floor_tex", type=mujoco.mjtTexture.mjTEXTURE_2D,
+                       file=str(floor_tex))
+        # textures 列表按纹理角色下标排列，RGB 角色在下标 1。
+        # specular/shininess 归零：地面是大平面，任何高光都会摊成一片白，
+        # 把网格线冲淡（高光只在机器人这类曲面上才有意义）。
+        mj.add_material(name="floor_mat", textures=["", "floor_tex"],
+                        texrepeat=[1.0, 1.0], texuniform=True,
+                        specular=0.0, shininess=0.0)
+        floor_kwargs["material"] = "floor_mat"
+    else:
+        floor_kwargs["rgba"] = [0.45, 0.47, 0.52, 1.0]
+    mj.worldbody.add_geom(**floor_kwargs)
+    # 场景灯（亮度/角度/阴影由 _normalize_lights 统一）
     if not sc.lights:
         mj.worldbody.add_light(pos=[0, 0, 3], dir=[0, 0, -1])
     for i, light in enumerate(sc.lights):
@@ -499,6 +523,35 @@ def _child_joint_names(spec: WorldSpec, rd: RobotSpec) -> list[str]:
     return [j.name for j in child.joints if j.name]
 
 
+def _normalize_lights(mj: mujoco.MjSpec) -> None:
+    """把所有灯统一成柔和天光：宽角、无聚光衰减、只有第 0 盏投影。
+
+    机器人/夹爪模型自带的光源参数各不相同（menagerie 常见 cutoff=45、
+    exponent=10、specular=0.5），在亮色网格地面上会形成刺眼亮斑和锯齿
+    阴影；统一后场景光照一致。第 0 盏一定是世界灯（_build_scene 保底
+    加了一盏），只让它投一份影子把物体"压"在地面上——多盏灯各投一份
+    会叠成脏斑。specular 留 0.20（不是 0）：机器人塑料壳靠这点高光才
+    看得出曲面，地面材质已单独归零不会受影响。纯渲染参数，不影响物理。
+    """
+    for i, light in enumerate(mj.lights):
+        light.cutoff = 90
+        light.exponent = 2.0
+        light.diffuse = [0.28, 0.28, 0.28]
+        light.specular = [0.20, 0.20, 0.20]
+        light.castshadow = 1 if i == 0 else 0
+
+
+def _smooth_meshes(mj: mujoco.MjSpec) -> None:
+    """所有 mesh 改用平滑法线（smoothnormal=True）。
+
+    menagerie 的机器人网格普遍是低多边形 STL，默认 flat shading 会让圆柱
+    面出现一条条棱面，远看就是"糊/毛"。这是编译期选项，必须在 compile
+    前设置；对 STL 只影响渲染法线，不动碰撞几何。
+    """
+    for mesh in mj.meshes:
+        mesh.smoothnormal = True
+
+
 def build_world(spec: WorldSpec) -> tuple[mujoco.MjModel, NameIndex]:
     """WorldSpec -> (MjModel, NameIndex)。schema 校验必须已完成（load_world 保证）。"""
     mj = mujoco.MjSpec()
@@ -519,11 +572,20 @@ def build_world(spec: WorldSpec) -> tuple[mujoco.MjModel, NameIndex]:
     _build_scene(spec, mj)
     for rd in spec.robots:
         _attach_robot(spec, rd, mj)
+    # 机器人模型自带的灯（cutoff=45/exponent=10/castshadow）会在亮色地面上
+    # 打出刺眼亮斑和锯齿阴影，合并后统一归一化成柔和天光
+    _normalize_lights(mj)
+    _smooth_meshes(mj)
 
     try:
         model = mj.compile()
     except Exception as e:
         raise WorldError(f"世界 '{spec.name}' 编译失败: {e}") from e
+
+    # 离屏 MSAA：默认 4 份采样，机器人轮廓/细长构件仍有明显锯齿，翻倍到 8。
+    # 必须赶在 mujoco.Renderer 建帧缓冲之前设置（GUI/截图都是建 Renderer 前
+    # 先拿 model），实测 960x720 每帧代价 <0.2ms
+    model.vis.quality.offsamples = 8
 
     index = _build_index(model, spec)
 

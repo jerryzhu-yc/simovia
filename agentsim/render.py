@@ -18,6 +18,21 @@ _FREE_AZIMUTH = 135.0
 _FREE_ELEVATION = -30.0
 
 
+def _sync_lights(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    """补齐灯的派生位姿（mj_kinematics 只算 body/geom/site/camera）。
+
+    灯的 xpos/xdir 是 mj_forward 才算的；刚 load 或 load_state 后直接截图，
+    所有灯都停在原点（z=0 的地面里），画面只剩 headlight——整片发暗、没有
+    投影。这里按 body 位姿手算一遍，与 mj_forward 的灯部分等价，但只写
+    light_xpos/light_xdir，不碰 warmstart（load 后不能 forward）。
+    """
+    for i in range(model.nlight):
+        b = model.light_bodyid[i]
+        rot = data.xmat[b].reshape(3, 3)
+        data.light_xpos[i] = data.xpos[b] + rot @ model.light_pos[i]
+        data.light_xdir[i] = rot @ model.light_dir[i]
+
+
 def render_offscreen(model: mujoco.MjModel, data: mujoco.MjData,
                      width: int, height: int,
                      camera: str | None = None,
@@ -30,6 +45,7 @@ def render_offscreen(model: mujoco.MjModel, data: mujoco.MjData,
     - renderer：传入则复用（session 按 (w,h) 缓存），不传入则自建自毁
     """
     mujoco.mj_kinematics(model, data)      # 只重算运动学，不碰 warmstart
+    _sync_lights(model, data)              # 灯位姿不在 kinematics 里，单独补
     own = renderer is None
     if own:
         renderer = mujoco.Renderer(model, height, width)
