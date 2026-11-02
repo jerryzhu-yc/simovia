@@ -52,6 +52,35 @@ class TestAcceptance:
 
 
 class TestCtrlPlumbing:
+    def test_controller_stdout_visible_with_prefix(self, tmp_path, capsys):
+        """控制器 print 必须可见（转投 stderr + "[机器人名] " 前缀）。
+
+        新手调试控制律基本靠 print；曾经是 DEVNULL，现象是"只有 stderr
+        能看到、print 全是空的"，极易误判控制器没跑起来。
+        """
+        import time
+
+        ctrl = _write_controller(tmp_path, """
+from agentsim.controller import Robot
+robot = Robot()
+n = 0
+while robot.step():
+    n += 1
+    if n == 1:
+        print("hello-from-controller", flush=True)
+""")
+        spec = parse_world(_world_dict(ctrl))
+        with Simulation(spec) as sim:
+            sim.run(max_ticks=5)
+        text = ""
+        deadline = time.time() + 3
+        while time.time() < deadline:      # 读线程异步，轮询等它写完
+            text += capsys.readouterr().err
+            if "hello-from-controller" in text:
+                break
+            time.sleep(0.02)
+        assert "[arm] hello-from-controller" in text
+
     def test_ctrl_matches_reference(self, tmp_path):
         """控制量一致性：内核推进的轨迹与进程内参考实现逐位一致"""
         ctrl_path = _write_controller(tmp_path, f"""

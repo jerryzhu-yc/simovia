@@ -35,6 +35,7 @@ AgentSim 把"世界"做成代码（World as Code：一份 YAML 即一个完整�
 - **机器人模型库（资产自带）**：MuJoCo Menagerie 官方模型一键接入——预配置 14 个著名机器人（Unitree Go1/Go2/H1/G1、ANYmal C、Spot、Franka Panda、UR5e/UR10e、xArm7、Shadow Hand、ALOHA 等），**模型资产随仓库自带（`models/zoo/`），clone 完即离线可用、无需下载**；GUI 点"模型库"选模型即生成世界 + 控制器模板并自动打开编辑器，改完控制律点 Run 即跑；AI Agent 走同一条 `zoo_create` 工具
 - **夹爪装配工作台**：内置 OnRobot 2FG7 平行夹爪，GUI"装备"页点选即可给 UR5e / UR10e / xArm7 / Panda 四臂挂爪/拆爪，并可视化挂点、关节、body 清单；同一页表单式添加五类传感器（encoder/IMU/触觉/关节力矩/相机），全部改 YAML 自动重载，不手写配置。夹爪安装位姿（mount）按各臂腕部几何逐臂标定，夹爪后法兰与机器人法兰同轴贴合、指尖沿法兰法向伸出；自带"码垛分区"场景模板（UR5e+2FG7，A 区取料→B 区码放）
 - **RL 训练接口**：一个 YAML 世界 = 一个确定性 gymnasium.Env——动作空间 = 执行器拼接、观测 = qpos/qvel/传感器、reset 逐位一致（同 YAML 跑两遍轨迹逐 bit 相同，eval 可复现），单进程直驱不起 ZMQ，训练吞吐优先
+- **明亮场景观感**：每个世界自动带白天渐变天空 + 网格地面（2m 主格 / 0.5m 细格，贴图按世界尺寸走，地面多大格子都一样大，`floor.texture: solid` 可退回纯色），场景灯统一归一化成柔和天光、只有一盏投影，机器人模型自带的刺眼聚光灯不会再打斑；机器人网格统一开平滑法线 + 保留高光 + 离屏 8× MSAA，低多边形模型看起来也是干净的塑料壳而不是一片糊
 - **Supervisor 能力**：save/load 内存快照（物理状态逐位恢复）、teleport、reset——快照包含 `mjSTATE_FULLPHYSICS | mjSTATE_WARMSTART`，保证轨迹级可复现
 - **场景生成器**：6 个确定性模板（tabletop / push / maze / race / pallet / empty），同一命令 + 同一参数 = 逐字节相同的输出
 - **AI 场景生成**：自然语言需求 → LLM 直接生成世界 YAML → 本地 schema+编译双重校验，失败自动回喂重试（Ctrl+G）；机器人经 `zoo://key` 引用模型库，无需知道任何文件路径
@@ -172,6 +173,8 @@ cp build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so \
 
 ### 1. 跑一个内置任务（人类用户）
 
+> 以下命令都在**仓库根目录**执行（包未打包安装，`python -m agentsim` 依赖当前目录，换目录会报 `No module named agentsim`）；已装好依赖时也可以统一用 `./start.sh <子命令>`。
+
 ```bash
 python -m agentsim run worlds/pick_cube.yaml
 ```
@@ -180,6 +183,7 @@ python -m agentsim run worlds/pick_cube.yaml
 
 ```
 世界 'pick_cube'：2 物体，1 机器人
+  控制器 arm: ../controllers/pick_place.py
 运行 297 ticks（墙钟 0.212s，仿真 19.008s）
 物理状态: 正常
 任务: 成功（reward 0.0074）
@@ -187,7 +191,15 @@ python -m agentsim run worlds/pick_cube.yaml
   cube 最终位置: (+0.553, -0.002, +0.841)
 ```
 
-加 `--json` 得到机器可读输出，加 `--ticks N` 限定最大步数。
+加 `--json` 得到机器可读输出，加 `--ticks N` 限定最大步数。场景没配控制器时，`run` 会明确提示"机器人保持初始位姿不动"而不是只报"任务未完成"。
+
+### 1.5 写控制器前先 `inspect`
+
+```bash
+python -m agentsim inspect worlds/pick_cube.yaml
+```
+
+打印这个世界的全部设备清单：每个机器人的执行器名 + `ctrlrange`、关节名 + 类型 + 限位、传感器名 + 维度、相机、夹爪，以及场景物体名（= 控制器里 `obs["objects"]` 的键）和任务成功条件——不用去翻 XML 就知道 `robot.set(...)` 该写什么名字、范围多少。
 
 ### 2. 让 AI Agent 驱动仿真（MCP）
 
@@ -277,6 +289,7 @@ impratio: 10
 scene:
   floor:
     size: [2.0, 2.0]      # 半尺寸
+    texture: grid         # 网格贴图（2m 主格/0.5m 细格）；solid = 纯色
     friction: 1.0         # 滑动摩擦（MuJoCo 语义：接触对取 max，需双方都低才能滑）
   lights:
     - {pos: [0, 0, 3]}
@@ -379,6 +392,8 @@ while robot.step():                 # 推进一 tick，返回观测；内核叫�
 
 控制器与内核是独立进程锁步（每个 step 请求有且只有一个回复）。控制器可以无限等待内核开跑（Agent 的"思考时间"不会杀死控制器）；内核会在 run 结束时通知控制器收尾。
 
+控制器里的 `print` 会原样出现在终端/后端日志里并带机器人名前缀（`[arm] ...`）——多机器人时能分清是谁打的；调试控制律直接 print 即可。内核 stdout 是 MCP 协议通道，所以这些输出统一走 stderr，不会污染协议。
+
 ## RL 训练接口（gymnasium）
 
 一个 YAML 世界 = 一个确定性 gym 环境。`reset` 重建 `MjData`，同 YAML 跑两遍轨迹逐 bit 相同——eval 可复现是 AgentSim 的差异化卖点：
@@ -409,7 +424,7 @@ obs, reward, terminated, truncated, info = env.step(action)
 
 **GUI 闭环**（`python -m agentsim gui`）：点"模型库"按钮 → 选模型（资产随仓库自带，离线即用）→ 自动生成世界 + 控制器模板 → 自动加载并打开编辑器 → 改完控制律点 Run 重跑。
 
-**Agent / CLI 闭环**（与 GUI 同一条 MCP 工具）：
+**Agent 闭环**（走 MCP 工具，与 GUI 按钮同一条）——注意这是 MCP/`tools.*` 接口，CLI 没有对应的 `zoo` 子命令，人类用户请用 GUI 的"模型库"：
 
 ```python
 r = tools.zoo_create(key="unitree_go2")   # 或 key="list" 先列清单
@@ -624,7 +639,7 @@ agentsim/
 │   │                        # worker）+ scene_agent（AI 场景生成闭环）
 │   ├── gui/               # PySide6 桌面工作台（app/render_view/panels[含装备页]/mcp_client）
 │   ├── scene_gen.py       # 6 个确定性场景模板（含码垛分区 pallet）
-│   └── cli.py             # run / mcp / gui / scenegen 命令行
+│   └── cli.py             # run / inspect / mcp / gui / scenegen 命令行
 ├── models/                # 机器人 MJCF（demo_arm 三指臂、diff_car）+ grippers/2FG7
 │                          # + zoo/<key>/：14 个 Menagerie 模型资产随仓库自带（离线即用）
 ├── controllers/           # 示例控制器（pick_place 桌面抓取相位机等）

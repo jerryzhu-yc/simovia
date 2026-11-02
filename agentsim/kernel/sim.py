@@ -16,6 +16,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import threading
 import time
 
 import mujoco
@@ -89,14 +90,32 @@ class Simulation:
                 path = self.spec.base_dir / path
             if not path.exists():
                 raise WorldError(f"机器人 '{rd.name}' 的控制器不存在: {path}")
-            # stdout 必须吞掉：内核若在 MCP 后端里跑，stdout 是 JSON-RPC
-            # 协议通道，控制器 print 会污染协议流。stderr 直通继承——
-            # 控制器起不来（import 报错等）的真相必须可见，否则
-            # Windows 上"无报错但卡死"无从诊断（GUI 控制台/后端日志链路）。
-            self._procs[rd.name] = subprocess.Popen(
+            # stdout 不能直通：内核若在 MCP 后端里跑，stdout 是 JSON-RPC
+            # 协议通道，控制器 print 会污染协议流。改用管道收进来再转投
+            # stderr（带 "[机器人名] " 前缀）——既不污染协议，新手又能用
+            # print 调试控制律。stderr 直通继承——控制器起不来（import
+            # 报错等）的真相必须可见，否则 Windows 上"无报错但卡死"无从
+            # 诊断（GUI 控制台/后端日志链路）。
+            proc = subprocess.Popen(
                 [sys.executable, str(path),
                  "--sock", self._addr, "--robot", rd.name],
-                env=env, stdout=subprocess.DEVNULL, stderr=None)
+                env=env, stdout=subprocess.PIPE, stderr=None)
+            self._procs[rd.name] = proc
+            self._pump_stdout(rd.name, proc)
+
+    @staticmethod
+    def _pump_stdout(name: str, proc: subprocess.Popen) -> None:
+        """把控制器 stdout 逐行转投到内核 stderr，前缀标注机器人名。"""
+        def pump():
+            try:
+                for raw in iter(proc.stdout.readline, b""):
+                    sys.stderr.write(
+                        f"[{name}] {raw.decode('utf-8', 'replace')}")
+                    sys.stderr.flush()
+            except (ValueError, OSError):
+                pass          # 解释器收尾/文件被关，忽略
+        threading.Thread(target=pump, name=f"ctrl-out-{name}",
+                         daemon=True).start()
 
     # ---------------------------------------------------------------- 收发
 
@@ -484,6 +503,8 @@ class Simulation:
                     proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+            if proc.stdout is not None:
+                proc.stdout.close()      # 收尾 stdout 读线程（EOF / 关闭异常都算结束）
         self._router.close(0)
         self._ctx.term()
 

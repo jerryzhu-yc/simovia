@@ -2,8 +2,9 @@
 
 用法：
     python -m agentsim run worlds/pick_cube.yaml [--ticks N]
+    python -m agentsim inspect worlds/pick_cube.yaml   # 看执行器/关节/传感器清单
     python -m agentsim mcp                     # MCP stdio 服务器（AI Agent 接入）
-    python -m agentsim gui                     # 桌面 GUI（PySide6，需装 PySide6-Essentials）
+    python -m agentsim gui                     # 桌面 GUI（PySide6）
 """
 import argparse
 import json
@@ -18,6 +19,8 @@ def main(argv=None):
                        help="最大 tick 数（缺省用世界 task.max_ticks）")
     run_p.add_argument("--json", action="store_true",
                        help="以 JSON 输出统计（机器可读）")
+    in_p = sub.add_parser("inspect", help="打印世界的机器人/物体清单（写控制器前先看这里）")
+    in_p.add_argument("world", help="世界 YAML 文件路径")
     sub.add_parser("mcp", help="启动 MCP stdio 服务器")
     sub.add_parser("gui", help="启动桌面 GUI（可视化 + 观测面板）")
     gen_p = sub.add_parser("scenegen", help="从模板生成世界 YAML")
@@ -31,6 +34,8 @@ def main(argv=None):
 
     if args.cmd == "run":
         _run(args)
+    elif args.cmd == "inspect":
+        _inspect(args)
     elif args.cmd == "mcp":
         from agentsim.mcp_server import serve
         serve()
@@ -70,6 +75,67 @@ def _scenegen(args, argv=None):
         print(text, end="")
 
 
+def _inspect(args):
+    """打印世界的设备清单：写控制器前先知道执行器/关节叫什么、范围多少。"""
+    import mujoco
+
+    from agentsim.world.builder import build_world
+    from agentsim.world.schema import load_world
+
+    try:
+        spec = load_world(args.world)
+        model, index = build_world(spec)
+    except Exception as e:
+        raise SystemExit(f"世界加载失败: {e}")
+
+    print(f"世界 '{spec.name}'：{len(spec.scene.objects)} 物体，"
+          f"{len(spec.robots)} 机器人"
+          f"（timestep {spec.timestep}s，每 tick 执行 {spec.ctrl_period} 步）")
+    if spec.scene.objects:
+        print("场景物体（obs['objects'] 的键）:")
+        for od in spec.scene.objects:
+            tag = "static" if od.static else (
+                f"mass {od.mass}" if od.mass is not None else "mass 按密度")
+            print(f"  {od.name:<12} {od.type:<9} size={list(od.size)} "
+                  f"pos={list(od.pos)} {tag}")
+    for rd in spec.robots:
+        ridx = index.robots[rd.name]
+        print(f"\n机器人 '{rd.name}'  模型 {rd.model}")
+        if rd.controller:
+            print(f"  控制器: {rd.controller}")
+        else:
+            print("  控制器: 未配置（不会动）—— 参考 controllers/random_arm.py，"
+                  "把脚本路径填进 YAML 的 robots[].controller")
+        print(f"  执行器（{len(ridx.actuators)}）——robot.set(名字, 值):")
+        for name, aid in ridx.actuators.items():
+            lo, hi = model.actuator_ctrlrange[aid]
+            print(f"    {name:<24} ctrlrange [{lo:+.3f}, {hi:+.3f}]")
+        if ridx.joints:
+            print(f"  关节（{len(ridx.joints)}）:")
+            for name, jid in ridx.joints.items():
+                jtype = mujoco.mjtJoint(model.jnt_type[jid]).name
+                jtype = jtype.replace("mjJNT_", "").lower()
+                rng = (f"[{model.jnt_range[jid][0]:+.3f}, "
+                       f"{model.jnt_range[jid][1]:+.3f}]"
+                       if model.jnt_limited[jid] else "无限位")
+                print(f"    {name:<24} {jtype:<10} {rng}")
+        if ridx.sensors:
+            print(f"  传感器（{len(ridx.sensors)}）——robot.sensor(名字):")
+            for six in ridx.sensors.values():
+                print(f"    {six.name:<24} {six.kind:<14} {six.dim} 维")
+        else:
+            print("  传感器: 无")
+        if ridx.cameras:
+            print(f"  相机: {', '.join(ridx.cameras)}")
+        if rd.gripper is not None:
+            print(f"  夹爪: {rd.gripper.model}")
+    task = spec.task
+    if task.success is not None:
+        print(f"\n任务: 成功条件 {task.success.body} ∈ zone "
+              f"min={list(task.success.zone.min)} max={list(task.success.zone.max)}，"
+              f"奖励 {len(task.reward)} 项，最多 {task.max_ticks} ticks")
+
+
 def _run(args):
     from agentsim.kernel.sim import Simulation
     from agentsim.world.schema import load_world
@@ -89,6 +155,12 @@ def _run(args):
         return
     print(f"世界 '{spec.name}'：{len(spec.scene.objects)} 物体，"
           f"{len(spec.robots)} 机器人")
+    for rd in spec.robots:
+        print(f"  控制器 {rd.name}: {rd.controller or '未配置'}")
+    if spec.robots and not any(rd.controller for rd in spec.robots):
+        print("  提示: 本场景没有控制器，机器人保持初始位姿不动。"
+              "参考 controllers/random_arm.py 写一个，"
+              "填到 YAML 的 robots[].controller 后重跑")
     print(f"运行 {stats['ticks']} ticks（墙钟 {stats['wall_time']}s，"
           f"仿真 {stats['sim_time']}s）")
     if stats["lag"]:
