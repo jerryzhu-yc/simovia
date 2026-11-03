@@ -44,9 +44,14 @@ _SAMPLE_HZ = 60.0
 
 
 class Simulation:
-    """单实例一次仿真。__init__ 起进程，run 驱动，close 收尾。"""
+    """单实例一次仿真。__init__ 起进程，run 驱动，close 收尾。
 
-    def __init__(self, spec: WorldSpec):
+    autostart_controllers=False：不起控制器进程，只编译世界。遥操作由
+    会话层每 tick 直接写 data.ctrl（见 simovia/teleop.py），控制器进程
+    不参与；普通 run 仍走多进程栅栏。
+    """
+
+    def __init__(self, spec: WorldSpec, autostart_controllers: bool = True):
         self.spec = spec
         self.model, self.index = build_world(spec)
         self.task = resolve_task(spec.task, self.index)
@@ -70,7 +75,8 @@ class Simulation:
         self._snaps: dict[str, tuple] = {}
         supervisor.save_state(self.model, self.data, self._snaps,
                               supervisor.INIT_TAG, tick=0, internal=True)
-        self._spawn_controllers()
+        if autostart_controllers:
+            self._spawn_controllers()
 
     # ---------------------------------------------------------------- 子进程
 
@@ -350,7 +356,8 @@ class Simulation:
             on_tick: "callable | None" = None,
             realtime: bool | None = None,
             stop_check: "callable | None" = None,
-            on_sample: "callable | None" = None) -> dict:
+            on_sample: "callable | None" = None,
+            ctrl_fn: "callable | None" = None) -> dict:
         """推进仿真，返回统计。max_ticks 缺省用世界 task.max_ticks（再缺省 10000）。
 
         on_tick(tick)：每个控制 tick 推进后的回调（GUI/MCP 用来抽观测快照）。
@@ -366,6 +373,10 @@ class Simulation:
         on_sample()：实时模式下按约 _SAMPLE_HZ 把控制 tick 内的物理步切片，
         每片对齐墙钟后回调一次（给 GUI 出中间帧）。非实时模式不切片。
         不传时行为与旧版一致（只在 on_tick 出帧）。
+
+        ctrl_fn(model, data)：仅无控制器进程（autostart_controllers=False 的
+        遥操作 / 无 controller 世界）时使用——每个控制 tick 推进前调用一次，
+        由它写 data.ctrl。有控制器进程时忽略（控制权在控制器脚本）。
         """
         if max_ticks is None:
             max_ticks = self.spec.task.max_ticks
@@ -397,6 +408,8 @@ class Simulation:
             for _ in range(max_ticks):
                 if stop_check is not None and stop_check():
                     break
+                if ctrl_fn is not None:
+                    ctrl_fn(self.model, self.data)
                 for i in range(1, self.spec.ctrl_period + 1):
                     mujoco.mj_step(self.model, self.data)
                     if on_sample is not None and sample_stride is not None \

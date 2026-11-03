@@ -284,6 +284,9 @@ def test_mount_table_per_arm_values():
         q = mount_for("onrobot_2fg7", f"x/{arm}")["quat"]
         assert abs(q[0] - 0.7071) < 1e-3 and abs(q[1] + 0.7071) < 1e-3
         assert q[2] == 0 and q[3] == 0
+    # Windows 风格反斜杠路径同样按 basename 命中（跨平台 YAML 复制）
+    assert mount_for("onrobot_2fg7",
+                     r"C:\models\zoo\ur5e\ur5e.xml")["pos"] == [0, 0, 0.1094]
 
 
 def test_unknown_mount_robot_raises():

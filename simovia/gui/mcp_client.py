@@ -10,6 +10,7 @@ GUI 与 AI Agent 同构：都只是 MCP 客户端，走同一套工具。
 """
 from __future__ import annotations
 
+import base64
 import json
 import sys
 
@@ -57,14 +58,24 @@ def tool_response(resp: dict):
     """把 JSON-RPC 响应解析成 (is_error, data)。
 
     data：run/get_observation 等 dict 工具解析为 dict；read_world 等
-    str 工具原样返回；协议层错误返回 message 字符串。
+    str 工具原样返回；image content（screenshot/camera_frame）解析为
+    {"image": bytes, "mime": str}；协议层错误返回 message 字符串。
     """
     if "error" in resp:
         return True, str(resp["error"].get("message", resp["error"]))
     result = resp.get("result", {})
+    content = result.get("content") or [{}]
     if result.get("isError"):
-        return True, result.get("content", [{}])[0].get("text", "")
-    text = result.get("content", [{}])[0].get("text", "")
+        return True, content[0].get("text", "")
+    first = content[0]
+    if first.get("type") == "image":
+        try:
+            data = base64.b64decode(first.get("data", ""))
+        except (ValueError, TypeError):
+            data = b""
+        return False, {"image": data,
+                       "mime": first.get("mimeType", "image/png")}
+    text = first.get("text", "")
     try:
         return False, json.loads(text)
     except (json.JSONDecodeError, TypeError):

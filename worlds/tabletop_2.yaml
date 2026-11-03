@@ -1,0 +1,51 @@
+name: tabletop_2
+timestep: 0.002
+ctrl_period: 32
+gravity: [0, 0, -9.81]
+scene:
+  floor:
+    size: [2.0, 2.0]
+    texture: grid
+  lights:
+  - pos: [0, 0, 3]
+  objects:
+  - name: table
+    type: box
+    size: [0.2, 0.2, 0.075]
+    pos: [0.5, 0.0, 0.075]
+    color: '#6B7280'
+    static: true
+  - name: cube_0
+    type: box
+    size: [0.03, 0.03, 0.03]
+    pos: [0.35, 0.0, 0.18]
+    color: '#F59E0B'
+    mass: 0.05
+    friction: 0.6
+  - name: cube_1
+    type: box
+    size: [0.03, 0.03, 0.03]
+    pos: [0.5, 0.0, 0.18]
+    color: '#F59E0B'
+    mass: 0.05
+    friction: 0.6
+robots:
+- name: arm
+  model: zoo://franka_emika_panda
+  pos: [0.0, 0.0, 0.0]
+  gripper: {model: onrobot_2fg7}
+task:
+  success:
+    body: cube_0
+    zone: &id001
+      min: [0.4, -0.1, 0.35]
+      max: [0.6, 0.1, 0.5]
+  reward:
+  - distance: {a: cube_0, b: arm/link7, weight: -0.01}
+  - zone:
+      body: cube_0
+      zone: *id001
+      weight: 0.01
+  max_ticks: 5000
+integrator: implicitfast
+impratio: 10

@@ -83,6 +83,16 @@ _MOUNT_LEAP = {
     "panda_nohand.xml": {"pos": [0.0, 0.0, 0.0], "quat": _QUAT_ID},
 }
 
+#: 未逐臂标定时的通用安装变换（builder 在机器人末端自动生成挂点后使用）。
+#: 挂点约定：origin 在法兰对接面、+z 沿工具轴向外伸出（menagerie 惯例）。
+#: pos.z = 夹爪后端面到 root 的距离（把后端面贴到法兰面上），朝向同逐臂值。
+_MOUNT_GENERIC = {
+    "onrobot_2fg7": {"pos": [0.0, 0.0, 0.1094], "quat": _QUAT_2FG7},
+    "robotiq_2f85": {"pos": [0.0, 0.0, 0.0070], "quat": _QUAT_ID},
+    "umi_gripper": {"pos": [0.0, 0.0, -0.0031], "quat": _QUAT_ID},
+    "leap_hand": {"pos": [0.0, 0.0, 0.0], "quat": _QUAT_ID},
+}
+
 # LEAP 16 执行器顺序（与 XML actuator 段一致）：三指各 mcp/rot/pip/dip，
 # 拇指 cmc/axl/mcp/ipl；open 全零伸展，close 为包握姿态（正角弯曲）
 _LEAP_ACTUATORS = (
@@ -180,12 +190,16 @@ def gripper_info(key: str) -> dict:
 
 
 def mount_for(key: str, robot_model: str,
-              override_pos=None, override_quat=None) -> dict:
+              override_pos=None, override_quat=None,
+              allow_generic: bool = False) -> dict:
     """查夹爪挂到指定机器人模型上的安装变换。
 
     robot_model：机器人 MJCF 路径（用 basename 匹配 mount 表）。
     override_*：YAML gripper.pos/quat 显式覆盖（高级用户/非标准臂），
     覆盖时绕过 mount 表，于是任意带挂点 site 的机器人也能手动挂。
+    allow_generic：模型不在标定表时回退到通用变换（挂点约定为
+    "origin 在法兰面、+z 沿工具轴"，builder 自动生成的腕部挂点满足
+    该约定）。GUI/世界装配默认开启，手工调用默认关闭以保留报错。
     """
     info = gripper_info(key)
     if override_pos is not None or override_quat is not None:
@@ -193,10 +207,14 @@ def mount_for(key: str, robot_model: str,
                 else [0.0, 0.0, 0.0],
                 "quat": list(override_quat) if override_quat is not None
                 else [1.0, 0.0, 0.0, 0.0]}
-    base = pathlib.Path(robot_model).name
-    if base not in info["mounts"]:
-        raise WorldError(
-            f"夹爪 '{key}' 没有为机器人模型 '{base}' 标定安装位姿，"
-            f"已标定: {sorted(info['mounts'])}。可在世界 YAML 的 gripper 下"
-            f"显式写 pos/quat 手动指定，或在 grippers.py mount 表补一条。")
-    return dict(info["mounts"][base])
+    # basename 匹配：正/反斜杠都切——Windows 用户写的 C:\robots\x.xml 在
+    # Linux 上、Linux 的 /robots/x.xml 在 Windows 上都能正确命中 mount 表
+    base = str(robot_model).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if base in info["mounts"]:
+        return dict(info["mounts"][base])
+    if allow_generic and key in _MOUNT_GENERIC:
+        return dict(_MOUNT_GENERIC[key])
+    raise WorldError(
+        f"夹爪 '{key}' 没有为机器人模型 '{base}' 标定安装位姿，"
+        f"已标定: {sorted(info['mounts'])}。可在世界 YAML 的 gripper 下"
+        f"显式写 pos/quat 手动指定，或在 grippers.py mount 表补一条。")

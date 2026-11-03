@@ -194,7 +194,24 @@ python -m simovia run worlds/pick_cube.yaml
 
 加 `--json` 得到机器可读输出，加 `--ticks N` 限定最大步数。场景没配控制器时，`run` 会明确提示"机器人保持初始位姿不动"而不是只报"任务未完成"。
 
-### 1.5 写控制器前先 `inspect`
+### 1.5 录制 episode（数据采集）
+
+```bash
+# 只录数值：data.npz + meta.json
+python -m simovia run worlds/pick_cube.yaml --record episodes/pick1
+
+# 同时录相机帧：相机需先在世界 YAML 的 robots[].sensors 里声明
+python -m simovia run worlds/pick_cube.yaml --record episodes/pick1_img \
+  --record-images --record-camera wrist_cam \
+  --record-width 640 --record-height 480 --record-image-stride 2
+```
+
+- 相机挂在机器人 body 上，随 body 刚性运动（第一视角/腕部视角）；`pos`/`quat` 是 body 局部系的挂载位姿。
+- `--record-camera` 支持 YAML 传感器短名（`wrist_cam`）或全名（`arm/wrist_cam`），`inspect` 可查看世界里已声明的相机；名字错误会直接报错并列出可用相机。
+- 产物：`data.npz`（观测/动作/root 位姿/物体位姿）+ `meta.json`（契约、统计、`images` 里的相机全名、挂载 body/pos/quat、分辨率、步长、帧数）+ `frames/frame_000000.png`。
+- 当前保存 PNG 帧序列，需要视频时可用 `ffmpeg -framerate 30 -i frames/frame_%06d.png -c:v libx264 out.mp4` 合成。
+
+### 1.6 写控制器前先 `inspect`
 
 ```bash
 python -m simovia inspect worlds/pick_cube.yaml

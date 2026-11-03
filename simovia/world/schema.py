@@ -64,8 +64,10 @@ class SensorSpec:
     - imu / tactile：引用 body（builder 自动在 body 上建挂点 site；
       imu = 陀螺 3 + 加速度计 3 共 6 维；tactile 用 mjSENS_TOUCH 标量接触力，
       不是 MuJoCo 的 mjSENS_TACTILE 网格阵列）
-    - camera：引用 body（仅声明 mj 相机 viewpoint，供 screenshot 按名渲染；
-      不进 obs 数值流——每 tick 渲染图像太重）
+    - camera：引用 body（仅声明 mj 相机 viewpoint，供 screenshot/实时画面
+      按名渲染；不进 obs 数值流——每 tick 渲染图像太重）。fovy=视场角
+      （度，缺省用 MuJoCo 默认 45）；depth=true 时实时画面/录制帧可输出
+      深度伪彩；near/far 是深度渲染的裁剪面（米），只影响深度精度。
 
     tactile 的 radius：MuJoCo 3.x 的 touch 只统计接触点落在以挂点 site 为球心、
     site size 为半径的球内的接触力（site size 默认 0 → 恒 0 的坑由此而来）。
@@ -78,6 +80,11 @@ class SensorSpec:
     pos: tuple[float, float, float] = (0.0, 0.0, 0.0)   # body 局部系挂点偏移
     quat: tuple[float, float, float, float] | None = None  # 仅 camera
     radius: float | None = None     # 仅 tactile：touch 接触过滤球半径(米)
+    # ---- 仅 camera ----
+    fovy: float | None = None       # 垂直视场角（度），None = MuJoCo 默认
+    depth: bool = False             # 深度相机（实时画面可切伪彩）
+    near: float = 0.01              # 深度渲染近裁剪面（米）
+    far: float = 50.0               # 深度渲染远裁剪面（米）
 
 
 @dataclass
@@ -109,6 +116,10 @@ class RobotSpec:
     args: dict = field(default_factory=dict)
     sensors: list[SensorSpec] = field(default_factory=list)
     gripper: GripperSpec | None = None
+    #: 删除机器人自带末端（人形灵巧手/夹爪）：true=全部，
+    #: 或列出自带末端 key（如 ["left_hand"]）。删除后 builder 在腕部
+    #: 自动生成挂点 site，可再挂夹爪库里的末端。
+    strip_hands: bool | list[str] = False
 
 
 @dataclass
@@ -326,8 +337,27 @@ def _parse_sensors(rd: dict, p: str) -> list[SensorSpec]:
                 raise _err(f"{sp}.radius", f"必须为正数(米)，实际是: {radius}")
         if stype == "tactile" and radius is None:
             radius = 0.06
+        # ---- 仅 camera：视场角/深度/裁剪面 ----
+        fovy = None
+        depth = False
+        near = 0.01
+        far = 50.0
+        if stype == "camera":
+            if "fovy" in sd:
+                fovy = _num(sd["fovy"], f"{sp}.fovy")
+                if not 1.0 <= fovy <= 179.0:
+                    raise _err(f"{sp}.fovy", f"视场角需在 1..179 度内，实际是: {fovy}")
+            depth = sd.get("depth", False)
+            if not isinstance(depth, bool):
+                raise _err(f"{sp}.depth", f"需要 true/false，实际是: {depth!r}")
+            near = _num(sd.get("near", 0.01), f"{sp}.near")
+            far = _num(sd.get("far", 50.0), f"{sp}.far")
+            if near <= 0 or far <= near:
+                raise _err(f"{sp}.near/far",
+                           f"深度裁剪面需要 0 < near < far，实际 near={near}, far={far}")
         sensors.append(SensorSpec(name=name, type=stype, joint=joint, body=body,
-                                  pos=pos, quat=quat, radius=radius))
+                                  pos=pos, quat=quat, radius=radius,
+                                  fovy=fovy, depth=depth, near=near, far=far))
     return sensors
 
 
@@ -358,10 +388,26 @@ def _parse_robots(d, path: str, seen: dict) -> list[RobotSpec]:
             raise _err(f"{p}.args", f"需要字典，实际是: {args!r}")
         sensors = _parse_sensors(rd, p)
         gripper = _parse_gripper(rd.get("gripper"), f"{p}.gripper")
+        strip_hands = _parse_strip_hands(rd.get("strip_hands"), f"{p}.strip_hands")
         robots.append(RobotSpec(name=name, model=model, spec=inline, pos=pos,
                                 quat=quat, controller=controller, args=args,
-                                sensors=sensors, gripper=gripper))
+                                sensors=sensors, gripper=gripper,
+                                strip_hands=strip_hands))
     return robots
+
+
+def _parse_strip_hands(v, path: str) -> "bool | list[str]":
+    """strip_hands：true/false 或自带末端 key 列表（如 ["left_hand"]）。"""
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, list):
+        keys = []
+        for i, k in enumerate(v):
+            keys.append(_str(k, f"{path}[{i}]"))
+        return keys
+    raise _err(path, f"需要 true/false 或字符串列表，实际是: {v!r}")
 
 
 def _parse_gripper(gd, path: str) -> "GripperSpec | None":

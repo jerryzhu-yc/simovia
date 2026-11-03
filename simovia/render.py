@@ -36,33 +36,70 @@ def _sync_lights(model: mujoco.MjModel, data: mujoco.MjData) -> None:
 def render_offscreen(model: mujoco.MjModel, data: mujoco.MjData,
                      width: int, height: int,
                      camera: str | None = None,
-                     renderer: mujoco.Renderer | None = None) -> np.ndarray:
-    """渲染当前状态，返回 (height, width, 3) uint8 RGB。
+                     renderer: mujoco.Renderer | None = None,
+                     free_cam: "mujoco.MjvCamera | None" = None,
+                     depth: bool = False,
+                     near: float | None = None,
+                     far: float | None = None) -> np.ndarray:
+    """渲染当前状态，返回 RGB (h,w,3 uint8) 或深度 (h,w float32 米)。
 
     - 先 mj_kinematics：刚 load / load_state 后 xpos 等派生量是过期/零值
     - camera=None：自由机位（GUI 同款默认视角）；str：模型里的相机名
       （manifest 短名需先解析成带机器人前缀的全名）
     - renderer：传入则复用（session 按 (w,h) 缓存），不传入则自建自毁
+    - free_cam：自由机位的替代机位（遥操作时跟随末端 TCP 用）
+    - depth=True：返回深度图（MuJoCo 深度渲染，单位米）；near/far 设置
+      裁剪面（影响深度精度，None 保持渲染器默认）
     """
     mujoco.mj_kinematics(model, data)      # 只重算运动学，不碰 warmstart
     _sync_lights(model, data)              # 灯位姿不在 kinematics 里，单独补
     own = renderer is None
     if own:
         renderer = mujoco.Renderer(model, height, width)
+    if depth:
+        renderer.enable_depth_rendering()
     try:
         if camera is None:
-            cam = mujoco.MjvCamera()
-            cam.lookat[:] = _FREE_LOOKAT
-            cam.distance = _FREE_DISTANCE
-            cam.azimuth = _FREE_AZIMUTH
-            cam.elevation = _FREE_ELEVATION
-            renderer.update_scene(data, camera=cam)
+            if free_cam is not None:
+                renderer.update_scene(data, camera=free_cam)
+            else:
+                cam = mujoco.MjvCamera()
+                cam.lookat[:] = _FREE_LOOKAT
+                cam.distance = _FREE_DISTANCE
+                cam.azimuth = _FREE_AZIMUTH
+                cam.elevation = _FREE_ELEVATION
+                renderer.update_scene(data, camera=cam)
         else:
             renderer.update_scene(data, camera=camera)
+        if near is not None or far is not None:
+            for cam in renderer.scene.camera:
+                if near is not None:
+                    cam.frustum_near = float(near)
+                if far is not None:
+                    cam.frustum_far = float(far)
         return renderer.render()
     finally:
+        if depth:
+            renderer.disable_depth_rendering()
         if own:
             renderer.close()
+
+
+def depth_to_rgb(depth: np.ndarray, near: float = 0.01,
+                 far: float = 50.0) -> np.ndarray:
+    """深度图 -> 近红远蓝伪彩（无效/超远像素涂黑），便于实时观察。"""
+    d = np.asarray(depth, dtype=np.float32)
+    valid = np.isfinite(d) & (d > 0) & (d < far)
+    span = max(float(far) - float(near), 1e-6)
+    t = np.clip((d - float(near)) / span, 0.0, 1.0)
+    # 0=近(红) -> 1=远(蓝)
+    r = np.clip(1.5 - 2.0 * t, 0.0, 1.0)
+    g = np.clip(1.0 - np.abs(2.0 * t - 1.0), 0.0, 1.0)
+    b = np.clip(2.0 * t - 0.5, 0.0, 1.0)
+    rgb = np.stack([r, g, b], axis=-1)
+    rgb = (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+    rgb[~valid] = 0
+    return rgb
 
 
 def encode_png(rgb: np.ndarray) -> bytes:

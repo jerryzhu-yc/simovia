@@ -25,14 +25,15 @@ import time
 
 import numpy as np
 import yaml
-from PySide6.QtCore import Qt, QSettings, QSize, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import (QEvent, Qt, QSettings, QSize, QThread, QTimer,
+                            QUrl, Signal)
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
-                               QDialog, QDockWidget, QFileDialog, QFormLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QMainWindow,
-                               QMessageBox, QPlainTextEdit, QPushButton,
-                               QSpinBox, QTabWidget, QVBoxLayout)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
+                               QComboBox, QDialog, QDockWidget, QFileDialog,
+                               QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+                               QLineEdit, QListWidget, QListWidgetItem,
+                               QMainWindow, QMessageBox, QPlainTextEdit,
+                               QPushButton, QSpinBox, QTabWidget, QVBoxLayout)
 
 from simovia.gui import theme
 from simovia.gui.mcp_client import McpClient
@@ -43,8 +44,19 @@ from simovia.gui.render_view import (DEFAULT_QUALITY, RenderView,
                                       _CAM_PRESETS, _QUALITY_PRESETS)
 from simovia.gui.robot_builder import RobotBuilderDialog
 from simovia.gui.state import UiState
+from simovia.gui.teleop_panel import TeleopPanel
 from simovia.world.schema import load_world as parse_world_file
 from simovia.world.schema import parse_world
+
+# 遥操作键位：键 -> (轴, 方向)。方向按机器人基座坐标系（vx 前 / vy 左 / vz 上）。
+_TELEOP_KEYS = {
+    Qt.Key.Key_W: ("vx", 1.0), Qt.Key.Key_S: ("vx", -1.0),
+    Qt.Key.Key_Up: ("vx", 1.0), Qt.Key.Key_Down: ("vx", -1.0),
+    Qt.Key.Key_A: ("vy", 1.0), Qt.Key.Key_D: ("vy", -1.0),
+    Qt.Key.Key_Left: ("vy", 1.0), Qt.Key.Key_Right: ("vy", -1.0),
+    Qt.Key.Key_Q: ("vz", 1.0), Qt.Key.Key_E: ("vz", -1.0),
+    Qt.Key.Key_J: ("wz", 1.0), Qt.Key.Key_L: ("wz", -1.0),
+}
 
 
 def _import_spawn_z(p) -> float:
@@ -426,12 +438,20 @@ class MainWindow(QMainWindow):
         # ---- 编辑态数据：当前世界 spec / YAML 基准目录 / 模型库对话框
         self._spec = None
         self._base_dir = None
+        self._manifest = None
         self._world_path = None          # 当前世界来源文件（保存/最近打开用；
                                          # 拖动/位姿提交的 yaml_text 重载不换它）
         self._zoo_dlg: ZooDialog | None = None
         self._builder_dlg: RobotBuilderDialog | None = None
         self._busy = False              # load_world 在途（防重入提交）
         self._sel_node = None           # 当前选中 (kind, name)（删除按钮用）
+
+        # ---- 遥操作状态（按键集合 + 最近一次下发指令，只在变化时发 MCP）
+        self._teleop_active = False
+        self._teleop_keys: set = set()
+        self._teleop_last: dict = {}
+        self._teleop_grip = 1.0         # 1=张开 / 0=闭合（空格切换）
+        self._cam_pending = False
 
         # ---- 后端 MCP 客户端
         self.client = McpClient(self)
@@ -466,6 +486,11 @@ class MainWindow(QMainWindow):
         self.gear.apply_gripper.connect(self._on_gear_gripper)
         self.gear.add_sensor.connect(self._on_gear_add_sensor)
         self.gear.remove_sensor.connect(self._on_gear_remove_sensor)
+        self.gear.set_hand.connect(self._on_gear_set_hand)
+        self.gear.update_sensor.connect(self._on_gear_update_sensor)
+        self.teleop = TeleopPanel()
+        self.teleop.startRequested.connect(self._on_teleop_start)
+        self.teleop.stopRequested.connect(self._on_teleop_stop)
 
         self.tabs = QTabWidget()
 
@@ -508,10 +533,21 @@ class MainWindow(QMainWindow):
                                           Qt.DockWidgetArea.RightDockWidgetArea)
         self.dock_console = self._make_dock("控制台", self.console,
                                             Qt.DockWidgetArea.BottomDockWidgetArea)
+        # 遥操作面板同样包滚动区：相机预览 + 表单的 minimumSizeHint 会把
+        # dock 顶死（拖分隔条/浮动都没反应），包一层后 dock 可任意拖动缩放
+        self.teleop.setMinimumWidth(0)
+        self.dock_teleop = self._make_dock(
+            "遥操作 / 实时画面", _scrollable(self.teleop),
+            Qt.DockWidgetArea.RightDockWidgetArea)
+        self.dock_teleop.setMinimumWidth(200)
+        self.splitDockWidget(self.dock_right, self.dock_teleop,
+                             Qt.Orientation.Vertical)
         self.dock_right.setMinimumWidth(240)   # 可拖更窄（内容出滚动条）
         self.resizeDocks([self.dock_scene, self.dock_right], [280, 340],
                          Qt.Orientation.Horizontal)
         self.resizeDocks([self.dock_console], [200], Qt.Orientation.Vertical)
+        self.resizeDocks([self.dock_right, self.dock_teleop], [420, 380],
+                         Qt.Orientation.Vertical)
 
         self._build_actions()
         self._build_menubar()
@@ -534,6 +570,12 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(16)
         self.timer.timeout.connect(self._poll)
         self.timer.start()
+
+        # ---- 相机预览轮询：遥操作时按 15Hz 取 camera_frame（image content），
+        # QPixmap 绘制在主线程；后端渲染在推进线程，互不阻塞
+        self._cam_timer = QTimer(self)
+        self._cam_timer.setInterval(66)
+        self._cam_timer.timeout.connect(self._fetch_camera_frame)
 
         # ---- 启动即加载纯空场景（只有地面的默认工作台）
         empty_world = (pathlib.Path(__file__).resolve().parents[2]
@@ -1570,10 +1612,16 @@ class MainWindow(QMainWindow):
                 self._do_run(self._run_args())
         # 刷新装备面板（夹爪目录 + 机器人挂点/关节/body 清单）
         self.client.call_tool("get_robot_manifest", {}, self._on_manifest)
+        # 新世界：遥操作面板回到待开始状态
+        self.teleop.clear_frame()
+        self.teleop.set_status(f"已加载 {spec.name}：点「开始遥操作」"
+                               "边看相机画面边操作")
 
     def _on_manifest(self, err, data):
         if not err and data:
+            self._manifest = data
             self.gear.set_manifest(data, str(self._base_dir))
+            self.teleop.set_manifest(data)
 
     # ============================================================ 装备面板
 
@@ -1661,6 +1709,89 @@ class MainWindow(QMainWindow):
             self._pending_select = ("robot", robot_name)
             self._reload_yaml(new_text,
                               ok_msg=f"{robot_name} 已删除传感器 {sensor_name}")
+
+        self.client.call_tool("read_world", {}, got_yaml)
+
+    def _on_gear_set_hand(self, robot_name: str, key: str, stripped: bool):
+        """删除/恢复自带末端（灵巧手/夹爪）：写 robots[i].strip_hands 后重载。"""
+        if self._spec is None or self._edit_blocked("编辑自带末端"):
+            return
+        keys = []
+        for r in (self._manifest or {}).get("robots", []):
+            if r.get("name") == robot_name:
+                keys = [e["key"] for e in r.get("end_effectors", [])]
+                break
+        if not keys:
+            self._log(f"{robot_name} 没有检测到自带末端", "warn")
+            return
+
+        def got_yaml(err, text):
+            if err:
+                self._log(f"read_world 失败: {text}", "error"); return
+            try:
+                d = yaml.safe_load(text)
+                rd = next((r for r in d.get("robots") or []
+                           if r.get("name") == robot_name), None)
+                if rd is None:
+                    self._log(f"世界 YAML 里没找到机器人 '{robot_name}'", "warn")
+                    return
+                cur = rd.get("strip_hands", False)
+                if isinstance(cur, bool):
+                    base = set(keys) if cur else set()
+                else:
+                    base = set(cur)
+                if stripped:
+                    base.add(key)
+                else:
+                    base.discard(key)
+                if not base:
+                    rd.pop("strip_hands", None)
+                elif base >= set(keys):
+                    rd["strip_hands"] = True
+                else:
+                    rd["strip_hands"] = sorted(base)
+                new_text = yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
+            except Exception as e:
+                self._log(f"YAML 修改失败: {e}", "error"); return
+            self._pending_select = ("robot", robot_name)
+            if stripped:
+                msg = (f"{robot_name} 已删除自带末端 {key}，"
+                       f"腕部已生成挂点 site（可在「挂点」下拉里选择）")
+            else:
+                msg = f"{robot_name} 已恢复自带末端 {key}"
+            self._reload_yaml(new_text, ok_msg=msg)
+
+        self.client.call_tool("read_world", {}, got_yaml)
+
+    def _on_gear_update_sensor(self, robot_name: str, sensor_name: str,
+                               patch: dict):
+        """更新相机参数（fovy/depth/near/far）：写回 YAML 后重载。"""
+        if self._spec is None or self._edit_blocked("修改相机参数"):
+            return
+
+        def got_yaml(err, text):
+            if err:
+                self._log(f"read_world 失败: {text}", "error"); return
+            try:
+                d = yaml.safe_load(text)
+                rd = next((r for r in d.get("robots") or []
+                           if r.get("name") == robot_name), None)
+                if rd is None:
+                    self._log(f"世界 YAML 里没找到机器人 '{robot_name}'", "warn")
+                    return
+                sd = next((s for s in (rd.get("sensors") or [])
+                           if s.get("name") == sensor_name), None)
+                if sd is None:
+                    self._log(f"相机传感器 '{sensor_name}' 不存在", "warn")
+                    return
+                sd.update(patch)
+                new_text = yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
+            except Exception as e:
+                self._log(f"YAML 修改失败: {e}", "error"); return
+            self._pending_select = ("robot", robot_name)
+            self._reload_yaml(
+                new_text,
+                ok_msg=f"{robot_name} 相机 {sensor_name} 参数已更新")
 
         self.client.call_tool("read_world", {}, got_yaml)
 
@@ -1761,6 +1892,157 @@ class MainWindow(QMainWindow):
                 self._log(f"控制器异常退出：{crashed}", "warn")
         self._fetch_obs()
 
+    # ============================================================ 遥操作
+
+    def _on_teleop_start(self, args: dict):
+        if self._busy:
+            return
+        if not self.state.can("run"):
+            self._log("当前状态不能开始遥操作（先停止运行中的 run）", "warn")
+            return
+        self._teleop_active = True
+        self._teleop_keys.clear()
+        self._teleop_last = {}
+        self._teleop_grip = 1.0
+        self.state.to(UiState.RUNNING)
+        self.view.set_hud_state("遥操作中")
+        self.teleop.set_running(True)
+        self.teleop.clear_frame()
+        self.teleop.set_status("正在启动遥操作…")
+        self._apply_state("遥操作中（WASD 移动，Shift 加速，空格开合夹爪）")
+        self._log("开始遥操作：右侧面板实时显示相机画面，"
+                  "点 3D 视口后使用 WASD/QE/JL 操作")
+        self._cam_pending = False
+        self._cam_timer.start()
+        self.client.call_tool("teleop_start", args, self._on_teleop_done)
+
+    def _on_teleop_done(self, err, stats):
+        """teleop_start 的延迟响应：停止后到达（或启动失败立即到达）。"""
+        self._teleop_finish_local()
+        self.state.to(UiState.FINISHED)
+        self.view.set_hud_state("已结束")
+        if err:
+            self._apply_state(f"遥操作失败: {stats}")
+            self._log(f"遥操作失败: {stats}", "error")
+            self.teleop.set_status(f"启动失败：{stats}", "error")
+        else:
+            stats = stats if isinstance(stats, dict) else {}
+            self.props.update_stats(stats)
+            self.lbl_tick.setText(f"tick {stats.get('ticks')}")
+            self._apply_state(f"遥操作结束：ticks={stats.get('ticks')}")
+            self._log(f"遥操作结束 ticks={stats.get('ticks')}", "ok")
+            self.teleop.set_status("遥操作已结束", "ok")
+            rec = stats.get("recording") or {}
+            if rec.get("error"):
+                self._log(f"录制异常：{rec['error']}", "warn")
+            if rec.get("dir"):
+                self._log(f"episode 已保存：{rec['dir']}"
+                          f"（采样 {rec.get('samples')} / "
+                          f"图片 {rec.get('images')} 张）", "ok")
+        self._fetch_obs()
+
+    def _on_teleop_stop(self):
+        if not self._teleop_active:
+            return
+        self._teleop_keys.clear()
+        self._send_teleop_cmd(extra={"release": True}, force=True)
+        self.teleop.set_status("正在停止（等本轮收尾、录制写盘）…", "warn")
+        self.client.call_tool("stop", {}, lambda e, d: None)
+
+    def _teleop_finish_local(self):
+        self._teleop_active = False
+        self._teleop_keys.clear()
+        self._teleop_last = {}
+        self._cam_timer.stop()
+        self._cam_pending = False
+        self.teleop.set_running(False)
+
+    @staticmethod
+    def _text_input_focused() -> bool:
+        """焦点在文本输入时不要抢按键（Agent/代码编辑器里的 WASD）。"""
+        return isinstance(QApplication.focusWidget(),
+                          (QLineEdit, QPlainTextEdit))
+
+    def _teleop_cmd_dict(self) -> dict:
+        axes = {"vx": 0.0, "vy": 0.0, "vz": 0.0, "wz": 0.0}
+        for key in self._teleop_keys:
+            axis, sign = _TELEOP_KEYS[key]
+            axes[axis] += sign
+        for name, value in axes.items():
+            axes[name] = max(-1.0, min(1.0, value))
+        axes["fast"] = bool(QApplication.keyboardModifiers()
+                            & Qt.KeyboardModifier.ShiftModifier)
+        return axes
+
+    def _send_teleop_cmd(self, extra: dict | None = None,
+                         force: bool = False) -> None:
+        """按键集合 -> 速度指令；只在变化时下发（避免 60Hz 指令流）。"""
+        if not self._teleop_active:
+            return
+        cmd = self._teleop_cmd_dict()
+        if extra:
+            cmd.update(extra)
+        if not force and cmd == self._teleop_last:
+            return
+        self._teleop_last = dict(cmd)
+        self.client.call_tool("teleop_cmd", cmd, lambda e, d: None)
+
+    def _fetch_camera_frame(self):
+        if not self._teleop_active or self._cam_pending:
+            return
+        self._cam_pending = True
+
+        def done(err, data):
+            self._cam_pending = False
+            if not self._teleop_active or err or not isinstance(data, dict):
+                return
+            img = data.get("image")
+            if img:
+                if self.teleop.show_frame(img):
+                    self.teleop.set_status(
+                        "遥操作中：WASD 移动 · QE 升降 · JL 偏航 · "
+                        "Shift 加速 · 空格开合", "ok")
+                return
+            if data.get("error"):
+                self.teleop.set_status(f"画面不可用：{data['error']}", "warn")
+
+        self.client.call_tool("camera_frame", self.teleop.camera_args(), done)
+
+    def keyPressEvent(self, e):
+        if self._teleop_active and not self._text_input_focused():
+            if e.key() == Qt.Key.Key_Space:
+                if not e.isAutoRepeat():
+                    self._teleop_grip = 0.0 if self._teleop_grip >= 0.5 else 1.0
+                    self._send_teleop_cmd({"grip": self._teleop_grip},
+                                          force=True)
+                e.accept()
+                return
+            if e.key() in _TELEOP_KEYS or e.key() == Qt.Key.Key_Shift:
+                if not e.isAutoRepeat():
+                    if e.key() in _TELEOP_KEYS:
+                        self._teleop_keys.add(e.key())
+                    self._send_teleop_cmd()
+                e.accept()
+                return
+        super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):
+        if self._teleop_active and not self._text_input_focused():
+            if e.key() in _TELEOP_KEYS or e.key() == Qt.Key.Key_Shift:
+                if not e.isAutoRepeat():
+                    self._teleop_keys.discard(e.key())
+                    self._send_teleop_cmd()
+                e.accept()
+                return
+        super().keyReleaseEvent(e)
+
+    def changeEvent(self, e):
+        # 窗口失焦：清空速度（否则按住键切走，机器人一直漂）
+        if e.type() == QEvent.Type.WindowDeactivate and self._teleop_active:
+            self._teleop_keys.clear()
+            self._send_teleop_cmd(extra={"release": True}, force=True)
+        super().changeEvent(e)
+
     # ============================================================ 视图/选择
 
     def _select_cam(self, name: str) -> None:
@@ -1831,6 +2113,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         self.timer.stop()
+        self._cam_timer.stop()
         try:
             self.agent_worker.stop()
             self.agent_worker.wait(2000)        # 让 QThread 退出

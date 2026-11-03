@@ -36,7 +36,8 @@ from simovia import supervisor
 from simovia.errors import WorldError
 from simovia.grippers import GRIPPERS as _GRIPPERS
 from simovia.kernel.sim import Simulation
-from simovia.render import encode_png, render_offscreen
+from simovia.render import depth_to_rgb, encode_png, render_offscreen
+from simovia.teleop import ArmTeleop
 from simovia.world.schema import load_world as _load_world_file
 from simovia.world.schema import parse_world, resolve_zoo_models
 
@@ -110,6 +111,110 @@ _TOOLS = [
                        " 正常退出（不算崩溃），已跑轨迹保持，run 的响应照常"
                        " 写回且 stats 带 stopped=true。没有 run 在跑时无操作。",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "teleop_start",
+        "description": "开启遥操作（固定基座机械臂，>=6 关节）：重建一个不启动控制器"
+                       "进程的干净世界，后台按实时推进；用 teleop_cmd 下发速度指令，"
+                       "camera_stream/camera_frame 边看相机画面边操作。"
+                       "传 record_dir 时同时录制 episode（data.npz + meta.json；"
+                       "record_images=true 另存 frames/*.png），停止时自动写盘并"
+                       "在 stats.recording 里返回路径/帧数。"
+                       "响应与 run 一样延迟到停止后返回；用 stop 结束。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "robot": {"type": "string",
+                          "description": "遥操作哪台机器人（缺省第一台）"},
+                "site": {"type": "string",
+                         "description": "TCP site（短名或 <robot>/<name>；缺省自动找"
+                                        " gripper_tcp / attachment_site）"},
+                "camera": {"type": "string",
+                           "description": "实时画面相机名（短名或 <robot>/<name>）；"
+                                          "缺省自由机位"},
+                "width": {"type": "integer", "minimum": 64, "maximum": 1280,
+                          "description": "实时画面宽度（缺省 320）"},
+                "height": {"type": "integer", "minimum": 48, "maximum": 960,
+                           "description": "实时画面高度（缺省 240）"},
+                "fps": {"type": "integer", "minimum": 1, "maximum": 60,
+                        "description": "实时画面帧率（缺省 15）"},
+                "depth": {"type": "boolean",
+                          "description": "实时画面输出深度伪彩（近红远蓝）"},
+                "near": {"type": "number",
+                         "description": "深度渲染近裁剪面（米，缺省 0.01）"},
+                "far": {"type": "number",
+                        "description": "深度渲染远裁剪面（米，缺省 50）"},
+                "record_dir": {"type": "string",
+                               "description": "episode 输出目录；缺省不录制"},
+                "record_images": {"type": "boolean",
+                                  "description": "是否保存相机帧 PNG（缺省 true）"},
+                "record_width": {"type": "integer",
+                                 "description": "录制帧宽（缺省同 width）"},
+                "record_height": {"type": "integer",
+                                  "description": "录制帧高（缺省同 height）"},
+                "image_stride": {"type": "integer", "minimum": 1,
+                                 "description": "每 N 个控制 tick 存一帧（缺省 1）"},
+                "max_ticks": {"type": "integer", "minimum": 1,
+                              "description": "遥操作 tick 上限（缺省 100000，通常用 stop）"},
+            },
+        },
+    },
+    {
+        "name": "teleop_cmd",
+        "description": "遥操作速度指令（持续状态）：vx/vy/vz 平移 -1..1（按机器人基座"
+                       "坐标系，m/s 量级）、wz 绕 z 偏航 -1..1、grip 0=闭合/1=张开、"
+                       "fast=true 加速。松开按键必须显式发 0 才停；release=true 清空"
+                       "平移/旋转速度（夹爪保持）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "vx": {"type": "number", "minimum": -1, "maximum": 1},
+                "vy": {"type": "number", "minimum": -1, "maximum": 1},
+                "vz": {"type": "number", "minimum": -1, "maximum": 1},
+                "wz": {"type": "number", "minimum": -1, "maximum": 1},
+                "grip": {"type": "number", "minimum": 0, "maximum": 1},
+                "fast": {"type": "boolean"},
+                "release": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "camera_stream",
+        "description": "开启/关闭实时相机流（遥操作时边看边操作）：按 fps 在推进线程"
+                       "渲染到缓存，camera_frame 取最新一帧。camera 传名字=开启，"
+                       "缺省 null=关闭；自由机位传 camera=''。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "camera": {"type": ["string", "null"],
+                           "description": "相机名；null 关闭，'' 自由机位"},
+                "width": {"type": "integer", "minimum": 64, "maximum": 1280,
+                          "description": "宽度（缺省 320）"},
+                "height": {"type": "integer", "minimum": 48, "maximum": 960,
+                           "description": "高度（缺省 240）"},
+                "fps": {"type": "integer", "minimum": 1, "maximum": 60,
+                        "description": "帧率（缺省 15）"},
+                "depth": {"type": "boolean",
+                          "description": "深度伪彩模式（近红远蓝）"},
+                "near": {"type": "number", "description": "深度近裁剪面（米）"},
+                "far": {"type": "number", "description": "深度远裁剪面（米）"},
+            },
+        },
+    },
+    {
+        "name": "camera_frame",
+        "description": "取相机流最新一帧（image content，base64 PNG）。还没有帧时"
+                       "返回 pending 提示（先 camera_stream 开启或等一帧）。"
+                       "depth/near/far 可在取帧时切换深度伪彩与裁剪面。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "depth": {"type": "boolean",
+                          "description": "切换深度伪彩模式（缺省沿用流设置）"},
+                "near": {"type": "number", "description": "深度近裁剪面（米）"},
+                "far": {"type": "number", "description": "深度远裁剪面（米）"},
+            },
+        },
     },
     {
         "name": "get_observation",
@@ -244,6 +349,22 @@ class SimoviaSession:
         self._run_error: BaseException | None = None
         self._last_stats: dict | None = None
         self._stop_event = threading.Event()   # stop 工具 -> run 线程提前收尾
+        # 遥操作：无控制器进程，run 线程每 tick 调 ArmTeleop.step 写 ctrl
+        self._teleop: ArmTeleop | None = None
+        self._manual_sim = False          # 当前 sim 是不起控制器的遥操作实例
+        # 录制（遥操作采集）：每个控制 tick 采样，run 结束统一写盘
+        self._recorder = None
+        self._rec_tick = -1
+        self._record_error: str | None = None
+        # 实时相机流：推进线程按 fps 渲染到 _cam_frame，camera_frame 取最新帧
+        self._cam_stream: dict | None = None
+        self._cam_frame: tuple[int, bytes] | None = None
+        self._cam_t = 0.0
+        self._cam_lock = threading.Lock()
+        self._cam_error: str | None = None    # 渲染失败原因（无 EGL 等）
+        self._cam_renderer: "mujoco.Renderer | None" = None
+        self._cam_renderer_wh: tuple[int, int] | None = None
+        self._cam_renderer_lock = threading.Lock()
 
     # ------------------------------------------------------------ 工具入口
 
@@ -265,6 +386,14 @@ class SimoviaSession:
         if self.is_running and threading.current_thread() is not self._run_thread:
             self._stop_event.set()
             self._run_thread.join(timeout=5)
+        self._finish_recording(None)          # 未收尾的录制先落盘
+        self._teleop = None
+        self._manual_sim = False
+        self._cam_stream = None
+        self._cam_error = None
+        self._close_camera_renderer()
+        with self._cam_lock:
+            self._cam_frame = None
         if self._renderer is not None:   # Renderer 绑定的 model 随 sim 一起失效
             self._renderer.close()
             self._renderer, self._renderer_wh = None, None
@@ -326,14 +455,288 @@ class SimoviaSession:
                 "note": "停止请求已发出：run 线程将在下个控制 tick 收尾，"
                         "其响应照常写回且带 stopped=true"}
 
+    # ------------------------------------------------------------ 遥操作
+
+    def _rebuild_sim(self, autostart_controllers: bool = True) -> Simulation:
+        """按当前 spec 重建仿真（控制器进程起/不起由参数决定）。"""
+        if self.spec is None:
+            raise WorldError("还没有加载世界（先 load_world）")
+        self.close()                 # 顺带收尾未落盘的录制、关渲染器
+        self.sim = Simulation(self.spec,
+                              autostart_controllers=autostart_controllers)
+        self._manual_sim = not autostart_controllers
+        return self.sim
+
+    def start_teleop(self, args: dict, req_id=None, writer=None):
+        """开启遥操作：不起控制器进程，run 线程每 tick 调 ArmTeleop.step。
+
+        响应与 run 一样延迟到停止后返回（stats 带 recording/teleop）。
+        参数校验失败（机器人/相机/关节数不足）在同步阶段抛 WorldError。
+        """
+        if self.is_running:
+            raise WorldError("已有 run/遥操作在进行中，先 stop 再开新的")
+        self._require_sim()
+        sim = self._rebuild_sim(autostart_controllers=False)
+        robot = args.get("robot")
+        if robot:
+            if robot not in sim.index.robots:
+                raise WorldError(
+                    f"机器人 '{robot}' 不存在，可用: {sorted(sim.index.robots)}")
+        else:
+            robot = next(iter(sim.index.robots), None)
+            if robot is None:
+                raise WorldError("世界没有机器人，无法遥操作")
+        try:
+            self._teleop = ArmTeleop(sim.model, sim.data, sim.index, self.spec,
+                                     robot, site=args.get("site"))
+            # 实时画面：不传 camera 也给自由机位（边看边操作是默认诉求）
+            self._start_camera_stream(
+                sim, args.get("camera"),
+                int(args.get("width") or 320),
+                int(args.get("height") or 240),
+                int(args.get("fps") or 15),
+                depth=bool(args.get("depth") or False),
+                near=args.get("near"), far=args.get("far"))
+            rec = self._start_recording(args)
+        except BaseException:
+            self._rebuild_sim(autostart_controllers=True)   # 失败回正常世界
+            raise
+
+        max_ticks = int(args.get("max_ticks") or 100_000)
+        self._run_error = None
+        self._run_req = (req_id, writer) if req_id is not None else None
+        self._snap = None
+        self._snap_t = 0.0
+        self._stop_event.clear()
+
+        def job():
+            try:
+                stats = self._teleop_job(max_ticks)
+            except BaseException as e:
+                self._run_error = e
+                stats = {"error": f"{type(e).__name__}: {e}"}
+            finally:
+                self._close_camera_renderer()
+            self._write_run_response(stats)
+
+        self._run_thread = threading.Thread(target=job, daemon=True,
+                                            name="simovia-teleop")
+        self._run_thread.start()
+        info = self._teleop.describe()
+        info.update({
+            "realtime": True,
+            "camera": (self._cam_stream or {}).get("camera"),
+            "recording": str(rec) if rec is not None else None,
+        })
+        return _DEFERRED if req_id is not None else info
+
+    def _teleop_job(self, max_ticks: int):
+        sim = self.sim
+        teleop = self._teleop
+        stats = dict(sim.run(max_ticks=max_ticks, on_tick=self._on_tick,
+                             on_sample=self._on_sample, realtime=True,
+                             stop_check=self._stop_event.is_set,
+                             ctrl_fn=teleop.step))
+        if self._stop_event.is_set():
+            stats["stopped"] = True
+        stats["objects"] = self._objects_pos(sim)
+        extra = {"source": "teleop", "teleop": teleop.describe(),
+                 "pos_error": round(float(teleop.last_pos_error), 4)}
+        rec = self._finish_recording(stats, extra=extra)
+        if rec is not None:
+            stats["recording"] = rec
+        self._last_stats = stats
+        return stats
+
+    def _tool_teleop_cmd(self, args: dict):
+        """遥操作速度指令（持续状态；release=true 清空速度、夹爪保持）。"""
+        teleop = self._teleop
+        if teleop is None:
+            raise WorldError("没有进行中的遥操作（先 teleop_start）")
+        if args.get("release"):
+            teleop.release()
+            return {"cmd": teleop.set_command({}), "released": True}
+        return {"cmd": teleop.set_command(args),
+                "pos_error": round(float(teleop.last_pos_error), 4)}
+
+    # ------------------------------------------------------------ 实时相机
+
+    def _tool_camera_stream(self, args: dict):
+        """开启/关闭实时相机流（camera=null 关闭，'' 自由机位）。"""
+        camera = args.get("camera")
+        if camera is None:
+            self._cam_stream = None
+            self._cam_error = None
+            self._close_camera_renderer()
+            with self._cam_lock:
+                self._cam_frame = None
+            return {"streaming": False}
+        sim = self._require_sim()
+        self._start_camera_stream(
+            sim, camera,
+            int(args.get("width") or 320),
+            int(args.get("height") or 240),
+            int(args.get("fps") or 15),
+            depth=bool(args.get("depth") or False),
+            near=args.get("near"), far=args.get("far"))
+        return {"streaming": True,
+                "camera": self._cam_stream["camera"] or "",
+                "width": self._cam_stream["width"],
+                "height": self._cam_stream["height"],
+                "fps": self._cam_stream["fps"],
+                "depth": self._cam_stream["depth"],
+                "near": self._cam_stream["near"],
+                "far": self._cam_stream["far"]}
+
+    def _tool_camera_frame(self, args: dict):
+        """取相机流最新一帧（image content）。可临时切换深度伪彩/裁剪面。"""
+        cfg = self._cam_stream
+        if cfg is not None:
+            if args.get("depth") is not None:
+                cfg["depth"] = bool(args["depth"])
+            if args.get("near") is not None:
+                cfg["near"] = float(args["near"])
+            if args.get("far") is not None:
+                cfg["far"] = float(args["far"])
+        with self._cam_lock:
+            frame = self._cam_frame
+            err = self._cam_error
+        if frame is None:
+            return {"pending": True, "error": err,
+                    "note": "还没有帧：先 camera_stream 开启相机，"
+                            "或等推进线程渲染出一帧"}
+        _, png = frame
+        return _RawContent([{
+            "type": "image",
+            "data": base64.b64encode(png).decode("ascii"),
+            "mimeType": "image/png",
+        }])
+
+    def _start_camera_stream(self, sim: Simulation, camera, width: int,
+                             height: int, fps: int, depth: bool = False,
+                             near=None, far=None) -> None:
+        if not (64 <= width <= 1280 and 48 <= height <= 960):
+            raise WorldError(f"画面尺寸需在 64x48..1280x960 内，"
+                             f"实际: {width}x{height}")
+        if not (1 <= fps <= 60):
+            raise WorldError(f"fps 需在 1..60 内，实际: {fps}")
+        near = float(near) if near is not None else 0.01
+        far = float(far) if far is not None else 50.0
+        if near <= 0 or far <= near:
+            raise WorldError(
+                f"深度裁剪面需要 0 < near < far，实际 near={near}, far={far}")
+        name = None
+        if camera not in (None, ""):
+            name = self._resolve_camera(sim, str(camera))
+        self._close_camera_renderer()
+        with self._cam_lock:
+            self._cam_frame = None
+            self._cam_error = None
+        self._cam_stream = {"camera": name, "width": int(width),
+                            "height": int(height), "fps": int(fps), "seq": 0,
+                            "depth": bool(depth), "near": near, "far": far}
+        self._cam_t = 0.0
+        if not self.is_running:              # 空闲：立刻出一帧预览
+            try:
+                self._capture_camera(sim, self._cam_stream)
+            except Exception as e:
+                with self._cam_lock:
+                    self._cam_error = f"{type(e).__name__}: {e}"
+
+    def _capture_camera(self, sim: Simulation, cfg: dict) -> None:
+        """推进线程内渲染一帧到缓存（调用方保证此刻 data 一致）。"""
+        w, h = cfg["width"], cfg["height"]
+        free_cam = None
+        if cfg["camera"] is None and self._teleop is not None:
+            # 自由机位但在遥操作：跟着末端 TCP，边看边操作才有意义
+            free_cam = mujoco.MjvCamera()
+            free_cam.lookat[:] = sim.data.site_xpos[self._teleop.site_id]
+            free_cam.distance = 0.9
+            free_cam.azimuth = 135.0
+            free_cam.elevation = -25.0
+        with self._cam_renderer_lock:
+            if self._cam_renderer is None or self._cam_renderer_wh != (w, h):
+                if self._cam_renderer is not None:
+                    self._cam_renderer.close()
+                self._cam_renderer = mujoco.Renderer(sim.model, h, w)
+                self._cam_renderer_wh = (w, h)
+            if cfg.get("depth"):
+                depth = render_offscreen(
+                    sim.model, sim.data, w, h, cfg["camera"],
+                    renderer=self._cam_renderer, free_cam=free_cam,
+                    depth=True, near=cfg.get("near"), far=cfg.get("far"))
+                rgb = depth_to_rgb(depth, near=cfg.get("near") or 0.01,
+                                   far=cfg.get("far") or 50.0)
+            else:
+                rgb = render_offscreen(sim.model, sim.data, w, h,
+                                       cfg["camera"],
+                                       renderer=self._cam_renderer,
+                                       free_cam=free_cam)
+        png = encode_png(rgb)
+        cfg["seq"] = cfg.get("seq", 0) + 1
+        with self._cam_lock:
+            self._cam_frame = (cfg["seq"], png)
+            self._cam_error = None
+
+    def _close_camera_renderer(self) -> None:
+        with self._cam_renderer_lock:
+            if self._cam_renderer is not None:
+                self._cam_renderer.close()
+                self._cam_renderer, self._cam_renderer_wh = None, None
+
+    # ------------------------------------------------------------ 录制
+
+    def _start_recording(self, args: dict):
+        """record_dir 存在则起 EpisodeRecorder；返回输出目录（未开录制返回 None）。"""
+        out = args.get("record_dir")
+        if not out:
+            return None
+        from simovia.recorder import EpisodeRecorder
+        sim = self._require_sim()
+        camera = args.get("camera")
+        if camera not in (None, ""):
+            camera = self._resolve_camera(sim, str(camera))
+        else:
+            camera = None
+        out_dir = _unique_dir(pathlib.Path(out).expanduser())
+        self._record_error = None
+        self._rec_tick = -1
+        self._recorder = EpisodeRecorder(
+            self.spec, sim.model, sim.index, out_dir,
+            images=bool(args.get("record_images", True)), camera=camera,
+            width=int(args.get("record_width") or args.get("width") or 320),
+            height=int(args.get("record_height") or args.get("height") or 240),
+            image_stride=int(args.get("image_stride") or 1))
+        return out_dir
+
+    def _finish_recording(self, stats, extra: dict | None = None):
+        """收尾录制并写盘；返回摘要（没录制返回 None）。异常不抛出。"""
+        rec = self._recorder
+        if rec is None:
+            return None
+        self._recorder = None
+        err = self._record_error
+        self._record_error = None
+        try:
+            out = rec.finish(stats=stats, extra=extra)
+            return {"dir": str(out), "samples": rec.sample_count,
+                    "images": rec.frame_count, "camera": rec.camera,
+                    "error": err}
+        except Exception as e:
+            return {"error": f"{type(e).__name__}: {e}"}
+
     def start_run(self, args: dict, req_id=None, writer=None, block: bool = False):
         """启动后台 run。返回 _DEFERRED（异步）或 stats dict（block=True）。
 
         WorldError（未加载世界/并发 run）同步抛出。
         """
-        sim = self._require_sim()
         if self.is_running:
             raise WorldError("已有 run 在进行中，等它结束（或完成后 reset）")
+        self._require_sim()
+        if self._manual_sim:
+            # 遥操作结束后是"不起控制器"的实例：普通 run 恢复多进程控制器
+            self._rebuild_sim(autostart_controllers=True)
+        sim = self._require_sim()
         ticks = args.get("ticks")
         max_ticks = (sim.tick + int(ticks)) if ticks is not None else None
         realtime = bool(args.get("realtime", False))
@@ -364,17 +767,52 @@ class SimoviaSession:
     def _run_job(self, max_ticks, realtime=False):
         sim = self.sim               # 线程里重取（load_world 会换实例）
         stats = dict(sim.run(max_ticks=max_ticks, on_tick=self._on_tick,
-                             on_sample=self._on_tick if realtime else None,
+                             on_sample=self._on_sample if realtime else None,
                              realtime=realtime,
                              stop_check=self._stop_event.is_set))
         if self._stop_event.is_set():
             stats["stopped"] = True       # 提前收尾（GUI 停止按钮/stop 工具）
         stats["objects"] = self._objects_pos(sim)
+        rec = self._finish_recording(stats)
+        if rec is not None:
+            stats["recording"] = rec
         self._last_stats = stats
         return stats
 
     def _on_tick(self):
-        """内核每个 tick 回调（run 线程内，data 状态一致可安全读）。"""
+        """每个控制 tick 推进完成后的回调（录制 + 快照 + 相机帧）。"""
+        self._tick_body(record=True)
+
+    def _on_sample(self):
+        """实时模式的物理子步中间帧：只出画面/快照，不重复录制。"""
+        self._tick_body(record=False)
+
+    def _tick_body(self, record: bool):
+        """run 线程内回调（data 一致，可安全读）。
+
+        录制与相机流必须每 tick 判断（不能走 10ms 快照节流）：录制按控制
+        tick 采样，相机流按自己的 fps 节流。
+        """
+        sim = self.sim
+        if sim is None:
+            return
+        if record and self._recorder is not None and sim.tick != self._rec_tick:
+            self._rec_tick = sim.tick
+            try:
+                self._recorder.add(sim.tick, sim.data)
+            except Exception as e:        # 录坏一帧不能拖垮整个 run
+                self._record_error = f"{type(e).__name__}: {e}"
+                self._recorder = None
+        cfg = self._cam_stream
+        if cfg is not None:
+            now_c = time.perf_counter()
+            if now_c - self._cam_t >= 1.0 / cfg["fps"]:
+                self._cam_t = now_c
+                try:
+                    self._capture_camera(sim, cfg)
+                except Exception as e:     # 渲染失败（无 EGL 等）不影响推进
+                    with self._cam_lock:
+                        self._cam_error = f"{type(e).__name__}: {e}"
         now = time.perf_counter()
         if now - self._snap_t < _SNAP_INTERVAL:
             return
@@ -484,6 +922,19 @@ class SimoviaSession:
                 gripper = {"model": rd.gripper.model,
                            "site": rd.gripper.site, "info": info}
 
+            sensors = []
+            by_name = {s.name: s for s in rd.sensors}
+            for six in ridx.sensors.values():
+                item = {"name": six.name, "type": six.kind, "dim": six.dim}
+                s = by_name.get(six.name)
+                if s is not None and s.type == "camera":
+                    item.update({
+                        "body": s.body, "pos": list(s.pos),
+                        "quat": list(s.quat) if s.quat is not None else None,
+                        "fovy": s.fovy, "depth": s.depth,
+                        "near": s.near, "far": s.far,
+                    })
+                sensors.append(item)
             robots.append({
                 "name": rd.name,
                 "controller": rd.controller,
@@ -492,10 +943,11 @@ class SimoviaSession:
                 "joints": joints,
                 "sites": sites,
                 "bodies": {f"{rd.name}/{short}": short for short in ridx.bodies},
-                "sensors": [{"name": six.name, "type": six.kind, "dim": six.dim}
-                            for six in ridx.sensors.values()],
+                "sensors": sensors,
                 "cameras": list(ridx.cameras),
                 "gripper": gripper,
+                "end_effectors": self.sim.index.end_effectors.get(rd.name, []),
+                "strip_hands": rd.strip_hands,
             })
         return {
             "world": self.spec.name,
@@ -692,6 +1144,17 @@ class SimoviaSession:
 
 # ---------------------------------------------------------------- JSON-RPC / MCP 协议
 
+def _unique_dir(p: pathlib.Path) -> pathlib.Path:
+    """录制目录已存在且非空时加后缀，避免覆盖上一次采集的 episode。"""
+    if not p.exists() or not any(p.iterdir()):
+        return p
+    for i in range(1, 1000):
+        cand = p.with_name(f"{p.name}_{i:03d}")
+        if not cand.exists():
+            return cand
+    raise WorldError(f"录制目录 {p} 已存在且找不到可用后缀目录")
+
+
 class _Writer:
     """线程安全写出器：serve 线程与 run 线程共用 stdout。"""
 
@@ -743,6 +1206,14 @@ def dispatch(session: SimoviaSession, method: str, params: dict, req_id,
                 return _rpc_result(req_id, {
                     "content": [{"type": "text", "text": str(e)}],
                     "isError": True})
+        if name == "teleop_start":
+            # 遥操作同样是延迟响应：停止后返回 stats（含录制摘要）
+            try:
+                return session.start_teleop(args, req_id, writer)
+            except WorldError as e:
+                return _rpc_result(req_id, {
+                    "content": [{"type": "text", "text": str(e)}],
+                    "isError": True})
         try:
             result = session.call_tool(name, args)
         except WorldError as e:
@@ -759,7 +1230,20 @@ def dispatch(session: SimoviaSession, method: str, params: dict, req_id,
 
 
 def serve(stdin=sys.stdin, stdout=sys.stdout) -> None:
-    """MCP stdio 主循环：每行一个 JSON-RPC 消息。"""
+    """MCP stdio 主循环：每行一个 JSON-RPC 消息。
+
+    stdio 固定 UTF-8：Windows 下管道默认走本地代码页（中文 cp936），而
+    GUI/Agent 客户端按 UTF-8 收发，不重配会导致中文错误信息乱码或整行
+    解析失败；Linux/macOS 本来就是 UTF-8，重配无副作用。
+    """
+    try:
+        stdin.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):     # 测试传入 StringIO 等：跳过
+        pass
+    try:
+        stdout.reconfigure(encoding="utf-8", newline="\n")
+    except (AttributeError, ValueError):
+        pass
     session = SimoviaSession()
     writer = _Writer(stdout)
     for line in stdin:

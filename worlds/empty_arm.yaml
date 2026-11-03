@@ -1,0 +1,18 @@
+name: empty_arm
+timestep: 0.002
+ctrl_period: 32
+gravity: [0, 0, -9.81]
+scene:
+  floor:
+    size: [2.0, 2.0]
+    texture: grid
+  lights:
+  - pos: [0, 0, 3]
+  objects: []
+robots:
+- name: arm
+  model: zoo://franka_emika_panda
+  pos: [0.0, 0.0, 0.0]
+  gripper: {model: onrobot_2fg7}
+integrator: implicitfast
+impratio: 10

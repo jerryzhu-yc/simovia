@@ -19,6 +19,19 @@ def main(argv=None):
                        help="最大 tick 数（缺省用世界 task.max_ticks）")
     run_p.add_argument("--json", action="store_true",
                        help="以 JSON 输出统计（机器可读）")
+    run_p.add_argument("--record", default=None, metavar="DIR",
+                       help="把本次 episode 录制到目录 DIR（data.npz + meta.json）")
+    run_p.add_argument("--record-images", action="store_true",
+                       help="录制时同时保存相机帧 PNG（需配合 --record）")
+    run_p.add_argument("--record-camera", default=None, metavar="NAME",
+                       help="录制用的相机名：YAML 传感器短名或 <robot>/<name>"
+                            "（缺省自由机位；用 inspect 查看可用相机）")
+    run_p.add_argument("--record-width", type=int, default=640, metavar="PX",
+                       help="录制图像宽度（缺省 640）")
+    run_p.add_argument("--record-height", type=int, default=480, metavar="PX",
+                       help="录制图像高度（缺省 480）")
+    run_p.add_argument("--record-image-stride", type=int, default=1,
+                       metavar="N", help="每 N 个控制 tick 存一帧（缺省 1）")
     in_p = sub.add_parser("inspect", help="打印世界的机器人/物体清单（写控制器前先看这里）")
     in_p.add_argument("world", help="世界 YAML 文件路径")
     sub.add_parser("mcp", help="启动 MCP stdio 服务器")
@@ -142,13 +155,36 @@ def _run(args):
     from simovia.kernel.sim import Simulation
     from simovia.world.schema import load_world
 
+    if args.record_images and not args.record:
+        raise SystemExit("--record-images 需要配合 --record DIR 使用")
+    if args.record_camera and not args.record_images:
+        raise SystemExit("--record-camera 需要配合 --record-images 使用")
+    if args.record_width <= 0 or args.record_height <= 0:
+        raise SystemExit("--record-width/--record-height 必须为正数")
+    if args.record_image_stride < 1:
+        raise SystemExit("--record-image-stride 必须 >= 1")
+
     try:
         spec = load_world(args.world)
     except Exception as e:
         raise SystemExit(f"世界加载失败: {e}")
 
+    recorder = None
     with Simulation(spec) as sim:
-        stats = sim.run(max_ticks=args.ticks)
+        if args.record:
+            from simovia.recorder import EpisodeRecorder
+            try:
+                recorder = EpisodeRecorder(
+                    spec, sim.model, sim.index, args.record,
+                    images=args.record_images, camera=args.record_camera,
+                    width=args.record_width, height=args.record_height,
+                    image_stride=args.record_image_stride)
+            except ValueError as e:
+                raise SystemExit(f"录制配置错误: {e}")
+        stats = sim.run(
+            max_ticks=args.ticks,
+            on_tick=(lambda: recorder.add(sim.tick, sim.data))
+            if recorder is not None else None)
         objects = {name: [round(float(x), 4) for x in sim.data.xpos[bid]]
                    for name, bid in sim.index.objects.items()}
         # 机器人 root body（每台机器人唯一一个 parent=world 的 body）：
@@ -164,9 +200,24 @@ def _run(args):
                     }
                     break
 
+    episode_dir = None
+    if recorder is not None:
+        episode_dir = recorder.finish(
+            stats=stats, extra={"world_path": str(args.world)})
+
     if args.json:
-        print(json.dumps({**stats, "objects": objects, "robots": robots},
-                         ensure_ascii=False))
+        payload = {**stats, "objects": objects, "robots": robots}
+        if episode_dir is not None:
+            payload["record"] = str(episode_dir)
+            if recorder.images:
+                payload["record_images"] = {
+                    "count": recorder.frame_count,
+                    "camera": recorder.camera,
+                    "width": recorder.width,
+                    "height": recorder.height,
+                    "stride": recorder.image_stride,
+                }
+        print(json.dumps(payload, ensure_ascii=False))
         return
     print(f"世界 '{spec.name}'：{len(spec.scene.objects)} 物体，"
           f"{len(spec.robots)} 机器人")
@@ -192,6 +243,14 @@ def _run(args):
         pos = info["pos"]
         print(f"  {info['base']} 最终位置: "
               f"({pos[0]:+.3f}, {pos[1]:+.3f}, {pos[2]:+.3f})")
+    if episode_dir is not None:
+        detail = "data.npz + meta.json"
+        if recorder.images:
+            cam = recorder.camera or "自由机位"
+            detail += (f"，{recorder.frame_count} 帧 {recorder.width}x"
+                       f"{recorder.height}（相机 {cam}，每 "
+                       f"{recorder.image_stride} tick 一帧）")
+        print(f"录制已保存: {episode_dir}（{detail}）")
 
 
 if __name__ == "__main__":

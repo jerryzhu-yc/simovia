@@ -17,12 +17,13 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import (QColor, QFont, QIcon, QKeySequence, QPixmap,
                            QShortcut, QSyntaxHighlighter, QTextCharFormat,
                            QTextCursor)
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QDoubleSpinBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QMenu, QPlainTextEdit, QPushButton,
-                               QStackedWidget, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+                               QListWidget, QListWidgetItem, QMenu,
+                               QPlainTextEdit, QPushButton, QStackedWidget,
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+                               QWidget)
 
 from simovia.gui import theme
 
@@ -869,13 +870,19 @@ class AgentConfigDialog(QDialog):
 
 
 class GearPanel(QWidget):
-    """装备面板：机器人下拉 + 夹爪配置 + 传感器列表/新增/删除。
+    """装备面板：机器人下拉 + 夹爪配置 + 自带末端 + 传感器 + 相机参数。
 
-    信号：apply_gripper/remove_gripper/add_sensor/remove_sensor
+    信号：
+      apply_gripper(robot, dict|None)   装/卸夹爪
+      add_sensor/remove_sensor          传感器增删
+      set_hand(robot, key, stripped)    删除/恢复自带灵巧手
+      update_sensor(robot, name, patch) 改相机参数（fovy/depth/near/far）
     """
     apply_gripper = Signal(str, object)   # robot_name, gripper_dict | None
     add_sensor = Signal(str, object)      # robot_name, sensor_dict
     remove_sensor = Signal(str, str)      # robot_name, sensor_name
+    set_hand = Signal(str, str, bool)     # robot_name, key, stripped
+    update_sensor = Signal(str, str, dict)  # robot_name, sensor_name, patch
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -933,6 +940,27 @@ class GearPanel(QWidget):
         gripper_btn_row.addWidget(self._bt_apply_gripper)
         gripper_lay.addRow("", gripper_btn_row)
         lay.addWidget(self._gripper_box)
+
+        # 自带末端（人形灵巧手/夹爪）组
+        self._hand_box = QGroupBox("自带末端（灵巧手 / 夹爪）")
+        hand_lay = QVBoxLayout(self._hand_box)
+        self._hand_list = QListWidget()
+        self._hand_list.setMaximumHeight(110)
+        hand_lay.addWidget(self._hand_list)
+        hand_btns = QHBoxLayout()
+        self._bt_restore_hand = QPushButton("恢复选中")
+        self._bt_restore_hand.clicked.connect(lambda: self._on_hand_toggle(False))
+        self._bt_strip_hand = QPushButton("删除选中")
+        self._bt_strip_hand.clicked.connect(lambda: self._on_hand_toggle(True))
+        hand_btns.addWidget(self._bt_restore_hand)
+        hand_btns.addStretch()
+        hand_btns.addWidget(self._bt_strip_hand)
+        hand_lay.addLayout(hand_btns)
+        hand_hint = QLabel("删除后自动在腕部生成挂点 site，可再挂夹爪库里的末端")
+        hand_hint.setWordWrap(True)
+        hand_hint.setStyleSheet(f"color:{theme.C_TEXT_DIM}; font-size:11px;")
+        hand_lay.addWidget(hand_hint)
+        lay.addWidget(self._hand_box)
 
         # 传感器组
         self._sensor_box = QGroupBox("传感器")
@@ -993,6 +1021,38 @@ class GearPanel(QWidget):
         sensor_lay.addWidget(self._add_box)
 
         lay.addWidget(self._sensor_box)
+
+        # 相机参数（视场角 / 深度 / 裁剪面）
+        self._cam_box = QGroupBox("相机参数")
+        cam_lay = QFormLayout(self._cam_box)
+        self._cam_combo = QComboBox()
+        self._cam_combo.currentIndexChanged.connect(self._on_cam_changed)
+        cam_lay.addRow("相机：", self._cam_combo)
+        self._cam_fovy = QDoubleSpinBox()
+        self._cam_fovy.setRange(1.0, 179.0); self._cam_fovy.setDecimals(1)
+        self._cam_fovy.setSingleStep(1.0); self._cam_fovy.setValue(45.0)
+        self._cam_fovy.setSuffix(" °")
+        cam_lay.addRow("视场角 fovy：", self._cam_fovy)
+        self._cam_depth = QCheckBox("深度相机（实时画面可切伪彩）")
+        cam_lay.addRow("", self._cam_depth)
+        near_far = QHBoxLayout()
+        self._cam_near = QDoubleSpinBox()
+        self._cam_near.setRange(0.001, 10.0); self._cam_near.setDecimals(3)
+        self._cam_near.setSingleStep(0.01); self._cam_near.setValue(0.01)
+        self._cam_far = QDoubleSpinBox()
+        self._cam_far.setRange(0.1, 1000.0); self._cam_far.setDecimals(1)
+        self._cam_far.setSingleStep(1.0); self._cam_far.setValue(50.0)
+        near_far.addWidget(QLabel("near:"))
+        near_far.addWidget(self._cam_near)
+        near_far.addWidget(QLabel("far:"))
+        near_far.addWidget(self._cam_far)
+        cam_lay.addRow("深度裁剪：", near_far)
+        self._bt_save_cam = QPushButton("保存相机参数")
+        self._bt_save_cam.clicked.connect(self._on_save_camera)
+        cam_btns = QHBoxLayout()
+        cam_btns.addStretch(); cam_btns.addWidget(self._bt_save_cam)
+        cam_lay.addRow("", cam_btns)
+        lay.addWidget(self._cam_box)
         lay.addStretch()
 
         self._clear()
@@ -1009,7 +1069,9 @@ class GearPanel(QWidget):
         self._robot_combo.clear()
         self._gripper_combo.clear()
         self._site_combo.clear()
+        self._hand_list.clear()
         self._sensor_list.clear()
+        self._cam_combo.clear()
         self._ref_joint.clear()
         self._ref_body.clear()
 
@@ -1022,7 +1084,9 @@ class GearPanel(QWidget):
     def _on_robot_changed(self):
         r = self._current_robot()
         self._gripper_box.setEnabled(r is not None)
+        self._hand_box.setEnabled(r is not None)
         self._sensor_box.setEnabled(r is not None)
+        self._cam_box.setEnabled(r is not None)
         if r is None:
             return
         # 填充夹爪目录
@@ -1046,6 +1110,23 @@ class GearPanel(QWidget):
         self._sensor_list.clear()
         for s in r.get("sensors", []):
             self._sensor_list.addItem(f"{s['name']} ({s['type']})")
+        # 自带末端列表（灵巧手/夹爪）
+        self._hand_list.clear()
+        for ee in r.get("end_effectors", []):
+            st = "已移除" if ee.get("stripped") else "自带"
+            item = QListWidgetItem(
+                f"{ee['key']} · {st} · 腕部 {ee['anchor']} · "
+                f"{len(ee.get('bodies', []))} body")
+            item.setData(Qt.ItemDataRole.UserRole, ee["key"])
+            item.setToolTip("挂点 site: " + str(ee.get("site")))
+            self._hand_list.addItem(item)
+        # 相机下拉（仅 camera 类型传感器）
+        self._cam_combo.clear()
+        for s in r.get("sensors", []):
+            if s.get("type") == "camera":
+                self._cam_combo.addItem(
+                    f"{s['name']} @ {s.get('body', '?')}", s["name"])
+        self._on_cam_changed()
         # 关节/body 下拉
         self._ref_joint.clear()
         self._ref_body.clear()
@@ -1125,6 +1206,69 @@ class GearPanel(QWidget):
             txt = item.text()
             name = txt.split()[0]
             self.remove_sensor.emit(r["name"], name)
+
+    def _on_hand_toggle(self, stripped: bool):
+        """删除/恢复选中的自带末端（灵巧手/夹爪），由 app 写回 YAML 重载。"""
+        r = self._current_robot()
+        item = self._hand_list.currentItem()
+        if r is None or item is None:
+            return
+        key = item.data(Qt.ItemDataRole.UserRole)
+        if not key:
+            return
+        # 已经是目标状态就不重复写
+        for ee in r.get("end_effectors", []):
+            if ee["key"] == key and bool(ee.get("stripped")) == stripped:
+                return
+        self.set_hand.emit(r["name"], key, bool(stripped))
+
+    def _selected_camera(self) -> dict | None:
+        r = self._current_robot()
+        name = self._cam_combo.currentData()
+        if r is None or not name:
+            return None
+        for s in r.get("sensors", []):
+            if s.get("name") == name and s.get("type") == "camera":
+                return s
+        return None
+
+    def _on_cam_changed(self):
+        """切相机时回填该相机的 fovy / 深度 / 裁剪面参数。"""
+        cam = self._selected_camera()
+        blocked = [self._cam_fovy, self._cam_depth]
+        for w in blocked:
+            w.blockSignals(True)
+        try:
+            if cam is None:
+                self._cam_fovy.setValue(45.0)
+                self._cam_depth.setChecked(False)
+                self._cam_near.setValue(0.01)
+                self._cam_far.setValue(50.0)
+            else:
+                fovy = cam.get("fovy")
+                self._cam_fovy.setValue(45.0 if fovy is None else float(fovy))
+                self._cam_depth.setChecked(bool(cam.get("depth")))
+                self._cam_near.setValue(float(cam.get("near") or 0.01))
+                self._cam_far.setValue(float(cam.get("far") or 50.0))
+        finally:
+            for w in blocked:
+                w.blockSignals(False)
+        self._bt_save_cam.setEnabled(cam is not None)
+
+    def _on_save_camera(self):
+        r = self._current_robot()
+        cam = self._selected_camera()
+        if r is None or cam is None:
+            return
+        near = round(self._cam_near.value(), 3)
+        far = round(self._cam_far.value(), 1)
+        if far <= near:
+            self._bt_save_cam.setToolTip("far 必须大于 near")
+            return
+        patch = {"fovy": round(self._cam_fovy.value(), 1),
+                 "depth": self._cam_depth.isChecked(),
+                 "near": near, "far": far}
+        self.update_sensor.emit(r["name"], cam["name"], patch)
 
 
 # ================================================================ 添加物体

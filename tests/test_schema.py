@@ -182,6 +182,58 @@ class TestGripperParsing:
         assert "quat" in str(e.value)
 
 
+class TestCameraAndHandsParsing:
+    """相机深度参数与自带末端删除开关（schema 层，不含物理）。"""
+
+    def _robot(self, **extra):
+        d = _base()
+        d["robots"] = [{"name": "arm", "model": "x.xml", **extra}]
+        return parse_world(d).robots[0]
+
+    def test_camera_depth_defaults(self):
+        r = self._robot(sensors=[{"name": "cam", "type": "camera",
+                                  "body": "link1"}])
+        c = r.sensors[0]
+        assert c.fovy is None and c.depth is False
+        assert c.near == 0.01 and c.far == 50.0
+
+    def test_camera_depth_fields(self):
+        c = self._robot(sensors=[{
+            "name": "cam", "type": "camera", "body": "link1",
+            "fovy": 60, "depth": True, "near": 0.05, "far": 3.0}]).sensors[0]
+        assert c.fovy == 60.0 and c.depth is True
+        assert c.near == 0.05 and c.far == 3.0
+
+    def test_camera_fovy_out_of_range(self):
+        with pytest.raises(WorldError) as e:
+            self._robot(sensors=[{"name": "cam", "type": "camera",
+                                  "body": "link1", "fovy": 200}])
+        assert "fovy" in str(e.value)
+
+    def test_camera_depth_not_bool(self):
+        with pytest.raises(WorldError) as e:
+            self._robot(sensors=[{"name": "cam", "type": "camera",
+                                  "body": "link1", "depth": "yes"}])
+        assert "depth" in str(e.value)
+
+    def test_camera_bad_clip_planes(self):
+        with pytest.raises(WorldError) as e:
+            self._robot(sensors=[{"name": "cam", "type": "camera",
+                                  "body": "link1", "near": 5, "far": 2}])
+        assert "near" in str(e.value)
+
+    def test_strip_hands_bool_and_list(self):
+        assert self._robot().strip_hands is False
+        assert self._robot(strip_hands=True).strip_hands is True
+        assert self._robot(
+            strip_hands=["left_hand"]).strip_hands == ["left_hand"]
+
+    def test_strip_hands_bad_type(self):
+        with pytest.raises(WorldError) as e:
+            self._robot(strip_hands=1)
+        assert "strip_hands" in str(e.value)
+
+
 class TestZooBirthPose:
     """zoo:// 机器人生出生态兜底：LLM 常写 pos z=0.1 导致穿地弹飞。"""
 
