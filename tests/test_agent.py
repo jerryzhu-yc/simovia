@@ -9,9 +9,9 @@ import pytest
 
 def test_config_roundtrip(tmp_path, monkeypatch):
     """配置写读往返；目录与文件权限 0600 护 api_key。"""
-    from agentsim.agent import config as cfg_mod
-    monkeypatch.setattr(cfg_mod, "CONFIG_DIR", tmp_path / ".agentsim")
-    monkeypatch.setattr(cfg_mod, "CONFIG_PATH", tmp_path / ".agentsim" / "agent.json")
+    from simovia.agent import config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "CONFIG_DIR", tmp_path / ".simovia")
+    monkeypatch.setattr(cfg_mod, "CONFIG_PATH", tmp_path / ".simovia" / "agent.json")
 
     cfg = cfg_mod.AgentConfig(
         base_url="https://api.deepseek.com/v1",
@@ -19,7 +19,7 @@ def test_config_roundtrip(tmp_path, monkeypatch):
         model="deepseek-chat")
     assert cfg.usable and cfg.chat_url().endswith("/chat/completions")
     cfg_mod.save_config(cfg)
-    p = tmp_path / ".agentsim" / "agent.json"
+    p = tmp_path / ".simovia" / "agent.json"
     assert p.exists()
     # Linux 上权限必须 0600（护 api_key；Windows chmod 静默忽略）
     if os.name == "posix":
@@ -43,7 +43,7 @@ def test_config_roundtrip(tmp_path, monkeypatch):
 
 def test_to_openai_tools_shape():
     """MCP manifest -> OpenAI tools 数组（function calling 格式）。"""
-    from agentsim.agent.bridge import to_openai_tools
+    from simovia.agent.bridge import to_openai_tools
     mcp = [{"name": "run", "description": "运行仿真",
             "inputSchema": {"type": "object",
                             "properties": {"ticks": {"type": "integer"}}}}]
@@ -55,7 +55,7 @@ def test_to_openai_tools_shape():
 
 def test_local_tools_manifest_fields():
     """本地工具 write_file/read_file 的参数 schema 完整。"""
-    from agentsim.agent.bridge import local_tools_manifest
+    from simovia.agent.bridge import local_tools_manifest
     names = {t["name"] for t in local_tools_manifest()}
     assert names == {"write_file", "read_file"}
     wf = next(t for t in local_tools_manifest() if t["name"] == "write_file")
@@ -65,7 +65,7 @@ def test_local_tools_manifest_fields():
 
 def test_system_prompt_lists_all_tools():
     """系统 prompt 列出 MCP 10 + 本地 2，且含当前世界名 + 工作流建议。"""
-    from agentsim.agent.bridge import system_prompt, local_tools_manifest
+    from simovia.agent.bridge import system_prompt, local_tools_manifest
     mcp_tools = [{"name": "zoo_create", "description": "生成世界"},
                  {"name": "load_world", "description": "加载世界"},
                  {"name": "run", "description": "运行"}]
@@ -83,7 +83,7 @@ def test_system_prompt_lists_all_tools():
 
 def test_extract_tool_calls_and_content():
     """OpenAI 响应解析：tool_calls 与 content 文本双向覆盖。"""
-    from agentsim.agent.bridge import extract_tool_calls, content_text
+    from simovia.agent.bridge import extract_tool_calls, content_text
     # 有 tool_calls
     resp = {"choices": [{"message": {
         "content": "好的，先加载世界",
@@ -112,8 +112,8 @@ def test_extract_tool_calls_and_content():
 
 def test_local_files_in_world_dir(tmp_path):
     """write_file/read_file 限定世界目录：相对/绝对路径都解析到根内。"""
-    from agentsim.agent.local_tools import LocalFiles, dispatch_local
-    from agentsim.errors import WorldError
+    from simovia.agent.local_tools import LocalFiles, dispatch_local
+    from simovia.errors import WorldError
     root = tmp_path / "world_dir"
     root.mkdir()
     f = LocalFiles(root)
@@ -143,8 +143,8 @@ def test_local_files_in_world_dir(tmp_path):
 
 def test_local_files_read_nonexistent(tmp_path):
     """读不存在文件：抛 WorldError 列出根目录。"""
-    from agentsim.agent.local_tools import LocalFiles
-    from agentsim.errors import WorldError
+    from simovia.agent.local_tools import LocalFiles
+    from simovia.errors import WorldError
     f = LocalFiles(tmp_path)
     with pytest.raises(WorldError) as e:
         f.read_file("ghost.yaml")

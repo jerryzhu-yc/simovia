@@ -9,10 +9,10 @@ import mujoco
 import numpy as np
 import pytest
 
-from agentsim.errors import WorldError
-from agentsim.kernel.sim import Simulation
-from agentsim.world.builder import build_world
-from agentsim.world.schema import load_world, parse_world
+from simovia.errors import WorldError
+from simovia.kernel.sim import Simulation
+from simovia.world.builder import build_world
+from simovia.world.schema import load_world, parse_world
 
 ROOT = pathlib.Path(__file__).parent.parent
 ARM_MODEL = str(ROOT / "models" / "demo_arm.xml")
@@ -61,7 +61,7 @@ class TestCtrlPlumbing:
         import time
 
         ctrl = _write_controller(tmp_path, """
-from agentsim.controller import Robot
+from simovia.controller import Robot
 robot = Robot()
 n = 0
 while robot.step():
@@ -91,7 +91,7 @@ while robot.step():
 
         ctrl = _write_controller(tmp_path, """
 import subprocess, sys
-from agentsim.controller import Robot
+from simovia.controller import Robot
 subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
 robot = Robot()
 while robot.step():
@@ -106,7 +106,7 @@ while robot.step():
     def test_ctrl_matches_reference(self, tmp_path):
         """控制量一致性：内核推进的轨迹与进程内参考实现逐位一致"""
         ctrl_path = _write_controller(tmp_path, f"""
-from agentsim.controller import Robot
+from simovia.controller import Robot
 robot = Robot()
 robot.set_all({[0.5, 0.3, -0.2, -0.01, 0.01]})
 while robot.step():
@@ -134,7 +134,7 @@ robot.close()
     def test_obs_contains_names_and_state(self, tmp_path):
         """观测里带关节名/位置/body 位置，控制器侧可读"""
         ctrl_path = _write_controller(tmp_path, """
-from agentsim.controller import Robot
+from simovia.controller import Robot
 robot = Robot()
 obs = robot.step()
 assert "qpos" in obs and "bodies" in obs, f"观测缺字段: {obs.keys()}"
@@ -155,7 +155,7 @@ class TestTimeoutPolicy:
         """慢控制器（0.1s/tick）+ 50ms 超时 + last_ctrl：内核补位推进，正常跑完"""
         ctrl_path = _write_controller(tmp_path, """
 import time
-from agentsim.controller import Robot
+from simovia.controller import Robot
 robot = Robot()
 while robot.step():
     time.sleep(0.1)
@@ -175,7 +175,7 @@ class TestCrash:
         """控制器跑 2 tick 后 os._exit：内核标记崩溃并优雅结束，不死锁"""
         ctrl_path = _write_controller(tmp_path, """
 import os
-from agentsim.controller import Robot
+from simovia.controller import Robot
 robot = Robot()
 robot.step()
 robot.step()
@@ -206,7 +206,7 @@ class TestStop:
         """带控制器的世界：stop_check 为真时提前收尾——控制器进程随 stop
         正常退出（不泄漏、不算崩溃），已跑 tick 数小于上限"""
         ctrl_path = _write_controller(tmp_path, """
-from agentsim.controller import Robot
+from simovia.controller import Robot
 robot = Robot()
 while robot.step():
     robot.set("a1", 0.3)
@@ -239,6 +239,66 @@ while robot.step():
         assert stats["ticks"] == 20
 
 
+class TestSubstepSampling:
+    """实时播放的子步采样：控制 tick 内按约 1/60s 切片出画面。
+
+    pick_cube 这类世界一个控制 tick 跨 32 个物理步（64ms），只在 tick
+    边界出帧时画面只有 15.6Hz；切片后 GUI 能拿到 60Hz 的中间态。
+    """
+
+    def test_sample_called_between_control_ticks(self):
+        spec = parse_world(_world_dict(None))     # 32 步/tick，dt=2ms
+        times = []
+        with Simulation(spec) as sim:
+            sim.run(max_ticks=2, realtime=True,
+                    on_sample=lambda: times.append(float(sim.data.time)))
+        # 每 tick 64ms，按 8 步（16ms）一片 -> 每 tick 4 次，2 tick 共 8 次
+        assert len(times) == 8
+        assert times[0] == pytest.approx(0.016, abs=1e-9)   # 首次在 tick 中间
+        assert times[-1] == pytest.approx(0.128, abs=1e-9)  # 末次在 tick 末尾
+
+    def test_sampling_does_not_change_trajectory(self):
+        """采样只多读状态：物理轨迹与不采样逐位一致（reproducibility）。
+
+        回调里跑 MCP 快照同款 mj_kinematics——派生量重算不得扰动 warmstart。
+        """
+        spec = parse_world(_world_dict(None))
+        with Simulation(spec) as sim:
+            sim.run(max_ticks=2, realtime=False)
+            ref = sim.data.qpos.copy()
+        with Simulation(spec) as sim2:
+            def sample():
+                mujoco.mj_kinematics(sim2.model, sim2.data)
+            sim2.run(max_ticks=2, realtime=True, on_sample=sample)
+            got = sim2.data.qpos.copy()
+        assert np.array_equal(ref, got)
+
+    def test_no_sampling_when_not_realtime(self):
+        """全速跑批（realtime=False）不切片：只保留 on_tick 出帧。"""
+        spec = parse_world(_world_dict(None))
+        times = []
+        with Simulation(spec) as sim:
+            sim.run(max_ticks=2, realtime=False,
+                    on_sample=lambda: times.append(float(sim.data.time)))
+        assert times == []
+
+    def test_sample_with_controller(self, tmp_path):
+        """带控制器的世界（pick_cube 的实际路径）同样按子步采样。"""
+        ctrl_path = _write_controller(tmp_path, """
+from simovia.controller import Robot
+robot = Robot()
+while robot.step():
+    pass
+""")
+        spec = parse_world(_world_dict(ctrl_path))
+        times = []
+        with Simulation(spec) as sim:
+            sim.run(max_ticks=1, realtime=True,
+                    on_sample=lambda: times.append(float(sim.data.time)))
+        assert len(times) == 4        # 32 步/tick，按 8 步切片
+        assert times[-1] == pytest.approx(0.064, abs=1e-9)
+
+
 class TestHandshake:
     """握手等待期的鲁棒性（Windows 卡死病灶的回归守护）。
 
@@ -248,7 +308,7 @@ class TestHandshake:
 
     def test_handshake_timeout_raises_and_kills(self, tmp_path, monkeypatch):
         """握手超时：run 抛 WorldError（带控制器名），进程被终止不泄漏"""
-        monkeypatch.setattr("agentsim.kernel.sim._HANDSHAKE_TIMEOUT", 0.3)
+        monkeypatch.setattr("simovia.kernel.sim._HANDSHAKE_TIMEOUT", 0.3)
         ctrl_path = _write_controller(tmp_path, """
 import time
 time.sleep(60)          # 活着但永不握手

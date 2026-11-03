@@ -12,9 +12,9 @@ import mujoco
 import numpy as np
 import pytest
 
-from agentsim.errors import WorldError
-from agentsim.kernel.sim import Simulation
-from agentsim.world.schema import parse_world
+from simovia.errors import WorldError
+from simovia.kernel.sim import Simulation
+from simovia.world.schema import parse_world
 
 ROOT = pathlib.Path(__file__).parent.parent
 ARM_MODEL = str(ROOT / "models" / "demo_arm.xml")
@@ -96,7 +96,7 @@ class TestInProcess:
 
         sim.reset()
         # 与全新模型逐位一致
-        from agentsim.world.builder import build_world
+        from simovia.world.builder import build_world
         m0, _ = build_world(parse_world(_world()))
         fresh = mujoco.MjData(m0)
         assert np.array_equal(sim.data.qpos, fresh.qpos)
@@ -142,7 +142,7 @@ class TestEndToEnd:
     def test_T2_save_perturb_load_bitwise(self, tmp_path):
         T, K, N = 8, 4, 10          # 8 tick 后存档，扰动 4 tick，读档后再跑 10
 
-        ctrl_a = f"""from agentsim.controller import Robot
+        ctrl_a = f"""from simovia.controller import Robot
 
 def f(t):
     return {F}
@@ -157,7 +157,7 @@ while True:
     if t == {T}:
         robot.supervise("save", tag="snap")
 """
-        ctrl_b = f"""from agentsim.controller import Robot
+        ctrl_b = f"""from simovia.controller import Robot
 
 def f(t):
     return {F}

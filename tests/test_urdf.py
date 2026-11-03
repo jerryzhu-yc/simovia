@@ -14,10 +14,10 @@ import mujoco
 import pytest
 import yaml
 
-from agentsim.errors import WorldError
-from agentsim.kernel.sim import Simulation
-from agentsim.world.builder import _load_robot_spec, build_world
-from agentsim.world.schema import load_world, parse_world
+from simovia.errors import WorldError
+from simovia.kernel.sim import Simulation
+from simovia.world.builder import _load_robot_spec, build_world
+from simovia.world.schema import load_world, parse_world
 
 # 两连杆铰接臂：base(-z 轴 box，最低点 -0.02) + j1 revolute + arm
 _URDF = """<?xml version="1.0"?>

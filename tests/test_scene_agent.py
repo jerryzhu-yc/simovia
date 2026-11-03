@@ -13,12 +13,12 @@ import json
 import pytest
 import yaml
 
-from agentsim.agent import AgentConfig
-from agentsim.agent.scene_agent import (SceneGenError, SceneGenSession,
+from simovia.agent import AgentConfig
+from simovia.agent.scene_agent import (SceneGenError, SceneGenSession,
                                         _detect_keys, _EXAMPLE, _model_manifest,
                                         extract_yaml, generate_scene,
                                         resolve_zoo_models, scene_system_prompt)
-from agentsim.errors import WorldError
+from simovia.errors import WorldError
 
 
 # ---------------------------------------------------------------- extract_yaml
@@ -52,7 +52,7 @@ def test_resolve_zoo_models(monkeypatch, tmp_path):
         {"name": "r2", "model": "/abs/path/bot.xml"},
     ]}
     seen = []
-    monkeypatch.setattr("agentsim.zoo.ensure_model",
+    monkeypatch.setattr("simovia.zoo.ensure_model",
                         lambda key: (seen.append(key),
                                      str(tmp_path / "go2.xml"))[1])
     resolve_zoo_models(d, on_download=lambda k: seen.append(f"dl:{k}"))
@@ -101,7 +101,7 @@ class _FakeHTTP:
 
 def test_generate_scene_success(monkeypatch):
     fake = _FakeHTTP([{"choices": [{"message": {"content": _GOOD}}]}])
-    monkeypatch.setattr("agentsim.agent.scene_agent._post_chat", fake)
+    monkeypatch.setattr("simovia.agent.scene_agent._post_chat", fake)
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     text, _note = generate_scene("放一个红方块", cfg)
     d = yaml.safe_load(text)
@@ -116,7 +116,7 @@ def test_generate_scene_retry_on_bad_yaml(monkeypatch):
         {"choices": [{"message": {"content": _BAD}}]},
         {"choices": [{"message": {"content": _GOOD}}]},
     ])
-    monkeypatch.setattr("agentsim.agent.scene_agent._post_chat", fake)
+    monkeypatch.setattr("simovia.agent.scene_agent._post_chat", fake)
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     text, _ = generate_scene("先错后对", cfg)
     assert yaml.safe_load(text)["name"] == "ai_scene"
@@ -133,7 +133,7 @@ def test_generate_scene_retry_on_bad_yaml(monkeypatch):
 def test_generate_scene_exhausted(monkeypatch):
     """一直坏 -> 重试耗尽抛 SceneGenError（含末次错误信息）。"""
     fake = _FakeHTTP([{"choices": [{"message": {"content": _BAD}}]}] * 5)
-    monkeypatch.setattr("agentsim.agent.scene_agent._post_chat", fake)
+    monkeypatch.setattr("simovia.agent.scene_agent._post_chat", fake)
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     with pytest.raises(SceneGenError, match="重试"):
         generate_scene("永远失败", cfg, max_retries=3)
@@ -159,7 +159,7 @@ def test_generate_scene_mjcf_gets_targeted_hint(monkeypatch):
         {"choices": [{"message": {"content": _MJCF}}]},
         {"choices": [{"message": {"content": _GOOD}}]},
     ])
-    monkeypatch.setattr("agentsim.agent.scene_agent._post_chat", fake)
+    monkeypatch.setattr("simovia.agent.scene_agent._post_chat", fake)
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     text, _ = generate_scene("一张桌子", cfg)
     assert yaml.safe_load(text)["name"] == "ai_scene"
@@ -188,7 +188,7 @@ floor: {}
 robots:
   - {name: bot, model: "zoo://unitree_go2", pos: [0, 0, 0.4]}
 ```"""
-    monkeypatch.setattr("agentsim.zoo.ensure_model",
+    monkeypatch.setattr("simovia.zoo.ensure_model",
                         lambda key: str(tmp_path / "go2.xml"))
     # 校验需要真实可编译模型：给一个最小 MJCF（带执行器）
     (tmp_path / "go2.xml").write_text(
@@ -198,7 +198,7 @@ robots:
         "</body></worldbody>"
         '<actuator><motor name="m" joint="j"/></actuator></mujoco>',
         encoding="utf-8")
-    monkeypatch.setattr("agentsim.agent.scene_agent._post_chat",
+    monkeypatch.setattr("simovia.agent.scene_agent._post_chat",
                         _FakeHTTP([{"choices": [{"message": {
                             "content": d_text}}]}]))
     cfg = AgentConfig(base_url="http://x/v1", model="m")
@@ -245,8 +245,8 @@ def test_detect_keys_pure_chinese_empty():
 
 def test_model_manifest_extracts_and_caches(monkeypatch, tmp_path):
     """首次提取 joint/body/actuator 短名并写缓存，第二次走缓存。"""
-    monkeypatch.setattr("agentsim.agent.scene_agent._MANIFEST_DIR", tmp_path)
-    monkeypatch.setattr("agentsim.zoo.ensure_model",
+    monkeypatch.setattr("simovia.agent.scene_agent._MANIFEST_DIR", tmp_path)
+    monkeypatch.setattr("simovia.zoo.ensure_model",
                         lambda key: str(_fake_mjcf(tmp_path)))
     d1 = _model_manifest("unitree_go2")
     assert d1["joints"] == ["j"]
@@ -264,8 +264,8 @@ def test_model_manifest_extracts_and_caches(monkeypatch, tmp_path):
 
 def test_system_prompt_manifest_on_demand(monkeypatch, tmp_path):
     """需求命中 go2 时 system prompt 注入该模型的 manifest 附录。"""
-    monkeypatch.setattr("agentsim.agent.scene_agent._MANIFEST_DIR", tmp_path)
-    monkeypatch.setattr("agentsim.zoo.ensure_model",
+    monkeypatch.setattr("simovia.agent.scene_agent._MANIFEST_DIR", tmp_path)
+    monkeypatch.setattr("simovia.zoo.ensure_model",
                         lambda key: str(_fake_mjcf(tmp_path)))
     s = scene_system_prompt("一只 go2 机器狗")
     assert "unitree_go2 设备清单" in s
@@ -275,7 +275,7 @@ def test_system_prompt_manifest_on_demand(monkeypatch, tmp_path):
 
 def test_system_prompt_no_manifest_for_unmatched(monkeypatch, tmp_path):
     """需求没命中任何 zoo key -> 不注入 manifest 附录。"""
-    monkeypatch.setattr("agentsim.agent.scene_agent._MANIFEST_DIR", tmp_path)
+    monkeypatch.setattr("simovia.agent.scene_agent._MANIFEST_DIR", tmp_path)
     s = scene_system_prompt("放一个红色方块")
     assert "设备清单" not in s
 
@@ -286,8 +286,8 @@ def test_few_shot_example_compiles():
     回归：曾写 zoo://ur5e（非法 key）与 reward body: arm（机器人名，
     实际只能用内部短名 base），模型照抄后连续 3 次重试全失败。
     """
-    from agentsim.world.builder import build_world
-    from agentsim.world.schema import parse_world
+    from simovia.world.builder import build_world
+    from simovia.world.schema import parse_world
     d = resolve_zoo_models(yaml.safe_load(_EXAMPLE))
     build_world(parse_world(d))
 
@@ -311,7 +311,7 @@ def test_session_refine_appends_history(monkeypatch):
         {"choices": [{"message": {"content": _GOOD}}]},           # generate
         {"choices": [{"message": {"content": _GOOD_REFINED}}]},  # refine
     ])
-    monkeypatch.setattr("agentsim.agent.scene_agent._post_chat", fake)
+    monkeypatch.setattr("simovia.agent.scene_agent._post_chat", fake)
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     sess = SceneGenSession(cfg)
     sess.generate("放一个红方块")

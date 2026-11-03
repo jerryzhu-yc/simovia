@@ -29,7 +29,7 @@ import random
 
 import numpy as np
 
-from agentsim.controller import Robot
+from simovia.controller import Robot
 
 # 内核在 run 收尾时会 terminate 控制器进程；标准输出是块缓冲，被 SIGTERM
 # 打断时缓冲区会丢。这里逐行 flush，日志才能完整转到内核 stderr。

@@ -15,7 +15,7 @@ def qapp():
 
 @pytest.fixture()
 def dlg(qapp):
-    from agentsim.gui.robot_builder import RobotBuilderDialog
+    from simovia.gui.robot_builder import RobotBuilderDialog
     d = RobotBuilderDialog()
     yield d
     d.close()
@@ -72,14 +72,14 @@ def test_delete_parent_reparents_children(dlg):
     dlg._del_link()
     names = _tree_names(dlg)
     assert "link1" not in names and "link2" in names
-    from agentsim.robot_spec import _validate_tree
+    from simovia.robot_spec import _validate_tree
     _validate_tree(dlg.robot)             # 结构仍合法
 
 
 def test_matrix_matches_kinematics(dlg):
     """面板显示的矩阵必须与 MuJoCo 编译后的 xmat 一致。"""
     import mujoco
-    from agentsim.robot_spec import build_robot_spec, link_frames
+    from simovia.robot_spec import build_robot_spec, link_frames
     dlg.sp_rpy[0].setValue(15.0)
     dlg.sp_rpy[1].setValue(-30.0)
     dlg.sp_rpy[2].setValue(45.0)
@@ -94,7 +94,7 @@ def test_matrix_matches_kinematics(dlg):
 def test_save_load_roundtrip(dlg, tmp_path):
     """保存的 YAML 能被 load_robot 原样读回，且连杆姿态一致。"""
     import yaml
-    from agentsim.robot_spec import dump_robot, load_robot
+    from simovia.robot_spec import dump_robot, load_robot
     dlg._select_link("link2")
     dlg.sp_rpy[1].setValue(30.0)
     p = tmp_path / "r.yaml"

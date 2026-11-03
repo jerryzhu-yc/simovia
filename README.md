@@ -1,8 +1,8 @@
-# AgentSim
+# Simovia
 
 **AI 第一用户、人类第二用户的轻量机器人仿真平台。**
 
-AgentSim 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿真世界），把"控制器"做成独立进程（Webots 风格的 `robot.step()` 循环），并通过标准 MCP（Model Context Protocol）把整个仿真内核暴露给 AI Agent——Agent 可以读世界、改世界、重跑、观察结果、再调整，形成完整的感知-决策闭环。
+Simovia 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿真世界），把"控制器"做成独立进程（Webots 风格的 `robot.step()` 循环），并通过标准 MCP（Model Context Protocol）把整个仿真内核暴露给 AI Agent——Agent 可以读世界、改世界、重跑、观察结果、再调整，形成完整的感知-决策闭环。
 
 ```
         ┌──────────────────────────────────────────────┐
@@ -36,7 +36,7 @@ AgentSim 把"世界"做成代码（World as Code：一份 YAML 即一个完整�
 - **夹爪装配工作台**：内置 4 款末端执行器（OnRobot 2FG7、Robotiq 2F-85、UMI Gripper 三款平行夹爪 + LEAP Hand 16 自由度灵巧手），GUI"装备"页点选即可给 UR5e / UR10e / xArm7 / Panda 四臂挂爪/拆爪，并可视化挂点、关节、body 清单；灵巧手用 `actuators` + `poses` 描述多关节开合姿态。同一页表单式添加五类传感器（encoder/IMU/触觉/关节力矩/相机），全部改 YAML 自动重载，不手写配置。夹爪安装位姿（mount）按各臂腕部几何逐臂标定，夹爪后法兰与机器人法兰同轴贴合、指尖沿法兰法向伸出；自带"码垛分区"场景模板（UR5e+2FG7，A 区取料→B 区码放）
 - **从零造机器人**：连杆树 YAML（parent / pos / rpy / 几何 / 关节）直接编译成 MJCF 挂进世界；GUI 文件 → 造机器人（Ctrl+B）提供连杆树编辑 + 实时 3D 预览 + 每个连杆的 R_rel / R_world 旋转矩阵与 RGB 坐标轴，按 `R = Rz·Ry·Rx` 直观展示角度怎么变成矩阵，适合机器人学入门
 - **RL 训练接口**：一个 YAML 世界 = 一个确定性 gymnasium.Env——动作空间 = 执行器拼接、观测 = qpos/qvel/传感器、reset 逐位一致（同 YAML 跑两遍轨迹逐 bit 相同，eval 可复现），单进程直驱不起 ZMQ，训练吞吐优先
-- **明亮场景观感**：每个世界自动带白天渐变天空 + 网格地面（2m 主格 / 0.5m 细格，贴图按世界尺寸走，地面多大格子都一样大，`floor.texture: solid` 可退回纯色），场景灯统一归一化成柔和天光、只有一盏投影，机器人模型自带的刺眼聚光灯不会再打斑；机器人网格统一开平滑法线 + 保留高光 + 离屏 8× MSAA，低多边形模型看起来也是干净的塑料壳而不是一片糊
+- **明亮场景观感**：每个世界自动带白天渐变天空 + 网格地面（2m 主格 / 0.5m 细格，贴图按世界尺寸走，地面多大格子都一样大，`floor.texture: solid` 可退回纯色），场景灯统一归一化成柔和天光、只有一盏投影，机器人模型自带的刺眼聚光灯不会再打斑；机器人网格统一开平滑法线 + 保留高光 + 离屏 8× MSAA，低多边形模型看起来也是干净的塑料壳而不是一片糊；打开世界按实体包围盒自动取景（机械臂/人形/四足整台入画），空场景给大远景铺满网格
 - **Supervisor 能力**：save/load 内存快照（物理状态逐位恢复）、teleport、reset——快照包含 `mjSTATE_FULLPHYSICS | mjSTATE_WARMSTART`，保证轨迹级可复现
 - **场景生成器**：6 个确定性模板（tabletop / push / maze / race / pallet / empty），同一命令 + 同一参数 = 逐字节相同的输出
 - **AI 场景生成**：自然语言需求 → LLM 直接生成世界 YAML → 本地 schema+编译双重校验，失败自动回喂重试（Ctrl+G）；机器人经 `zoo://key` 引用模型库，无需知道任何文件路径
@@ -48,8 +48,8 @@ AgentSim 把"世界"做成代码（World as Code：一份 YAML 即一个完整�
 要求 Python 3.10+。**Linux / macOS** 照下面三行装；**Windows 用户直接跳 [Windows 部署](#windows-部署)**（含双击启动、快捷方式与 FAQ）：
 
 ```bash
-git clone https://github.com/jerryzhu-yc/agentsim.git
-cd agentsim
+git clone https://github.com/jerryzhu-yc/simovia.git
+cd simovia
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -58,15 +58,15 @@ pip install -r requirements.txt
 
 ### Windows 部署
 
-AgentSim 全链路 Windows 兼容：内核用 `tcp://127.0.0.1` 随机端口（无 `ipc://`，Windows 不支持）；控制器子进程走 `subprocess.Popen` + `sys.executable`（无 fork）；渲染后端代码已平台自适应——**Linux/macOS 默认 EGL，Windows 默认 wgl**（`mcp_server.py` / `gui/__init__.py` 里的 `setdefault`，用户可用环境变量 `MUJOCO_GL` 覆盖）。零配置，照下面做即可：
+Simovia 全链路 Windows 兼容：内核用 `tcp://127.0.0.1` 随机端口（无 `ipc://`，Windows 不支持）；控制器子进程走 `subprocess.Popen` + `sys.executable`（无 fork）；渲染后端代码已平台自适应——**Linux/macOS 默认 EGL，Windows 默认 wgl**（`mcp_server.py` / `gui/__init__.py` 里的 `setdefault`，用户可用环境变量 `MUJOCO_GL` 覆盖）。零配置，照下面做即可：
 
 **1. 装 Python 3.10+**（python.org 安装包勾选 "Add python.exe to PATH"，或 [Miniconda](https://docs.conda.io/en/latest/miniconda.html)）
 
 **2. 克隆 + 装依赖**（PowerShell 或 CMD）：
 
 ```powershell
-git clone https://github.com/jerryzhu-yc/agentsim.git
-cd agentsim
+git clone https://github.com/jerryzhu-yc/simovia.git
+cd simovia
 python -m venv .venv
 .venv\Scripts\activate          # PowerShell 若报执行策略错误见下方 FAQ
 pip install -r requirements.txt
@@ -78,8 +78,8 @@ pip install -r requirements.txt
 
 ```powershell
 python -m pytest tests/ -q      # 全绿即环境就绪（含 GUI/传感器/RL 全量回归）
-python -m agentsim run worlds/pick_cube.yaml     # 跑一个内置任务
-python -m agentsim gui                            # 桌面工作台
+python -m simovia run worlds/pick_cube.yaml     # 跑一个内置任务
+python -m simovia gui                            # 桌面工作台
 ```
 
 **4. 桌面快捷方式（可选，推荐）**：
@@ -87,11 +87,11 @@ python -m agentsim gui                            # 桌面工作台
 仓库根目录带两个批处理（UTF-8 中文输出，自动定位 Python，无需手动激活 venv）：
 
 ```bat
-create_desktop_shortcut.bat    # 双击一次：在桌面生成 AgentSim 图标（agentsim.ico）
+create_desktop_shortcut.bat    # 双击一次：在桌面生成 Simovia 图标（simovia.ico）
 start.bat                      # 双击即启动 GUI（快捷方式即指向它）
 ```
 
-`start.bat` 按 `AGENTSIM_PYTHON` 环境变量 → 仓库内 `.venv` → PATH 里的 `python` → `py -3` 的顺序定位解释器；GUI 异常退出时窗口保留并提示装依赖，正常关闭时自动收窗。之后桌面双击 AgentSim 图标即可进入工作台，不用再开终端。
+`start.bat` 按 `SIMOVIA_PYTHON` 环境变量 → 仓库内 `.venv` → PATH 里的 `python` → `py -3` 的顺序定位解释器；GUI 异常退出时窗口保留并提示装依赖，正常关闭时自动收窗。之后桌面双击 Simovia 图标即可进入工作台，不用再开终端。
 
 **Windows 常见问题（FAQ）**：
 
@@ -99,7 +99,7 @@ start.bat                      # 双击即启动 GUI（快捷方式即指向它�
 |---|---|
 | PowerShell 激活 venv 报 "禁止运行脚本" | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` 后重试，或改用 CMD |
 | 首次运行弹 Windows 防火墙提示 | 点"允许"——内核 ZMQ 只绑 `127.0.0.1` 本机回环，不对外通信 |
-| 远程桌面（RDP）断开后 GUI 崩溃 | RDP 会话的 GPU 上下文随会话注销销毁；用控制台会话（`qwinsta` 抢 session 1）或无 GUI 的 `python -m agentsim run` |
+| 远程桌面（RDP）断开后 GUI 崩溃 | RDP 会话的 GPU 上下文随会话注销销毁；用控制台会话（`qwinsta` 抢 session 1）或无 GUI 的 `python -m simovia run` |
 | 渲染报 `wgl` 相关错误（无 GPU 的服务器） | Windows Server 无 OpenGL 驱动，装 [Mesa3D 离屏驱动](https://mesa3d.org/)（或设 `MUJOCO_GL=osmesa`），或改用 Linux 容器跑无头测试 |
 | `mujoco-menagerie` 模型下载慢/失败 | 正常不需要联网：34 个模型资产已随仓库自带（`models/zoo/`，约 600MB）。仅当该目录被删时才回退 `mujoco-menagerie` 下载——重新 clone 仓库即可恢复，无需任何网络处理 |
 | 中文/空格路径 | 完全支持（pathlib 全程处理），但建议路径不含空格避免个别工具链问题 |
@@ -136,7 +136,7 @@ python -m pytest tests/ -q               # 全绿即环境就绪（336 项）
 
 **原因**：pip 装的 PySide6 只自带 compose/ibus 输入法插件；系统 Qt 的 fcitx 插件又因 Qt 私有 ABI 必须与运行时 Qt 严格同版本而无法借用——需要针对 PySide6 捆绑的 Qt 版本单独编译一个 fcitx5 插件。
 
-**方案**：把编译好的插件装到约定目录 `~/.local/share/agentsim/qt-plugins/platforminputcontexts/`，GUI 启动时自动挂载（`agentsim/gui/__init__.py` 的 `mount_ime_plugin`，在 QApplication 之前生效）。构建全程免 root，一次约 3 分钟：
+**方案**：把编译好的插件装到约定目录 `~/.local/share/simovia/qt-plugins/platforminputcontexts/`，GUI 启动时自动挂载（`simovia/gui/__init__.py` 的 `mount_ime_plugin`，在 QApplication 之前生效）。构建全程免 root，一次约 3 分钟：
 
 ```bash
 # 0) 依赖开发包免 root 解包到 /tmp/fcitxbuild/root
@@ -163,9 +163,9 @@ cmake --build build -j$(nproc)
 # 3) 去掉构建机 rpath、装进约定目录（GUI 启动自动挂载）
 python -m pip install -q patchelf
 patchelf --remove-rpath build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so
-mkdir -p ~/.local/share/agentsim/qt-plugins/platforminputcontexts
+mkdir -p ~/.local/share/simovia/qt-plugins/platforminputcontexts
 cp build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so \
-   ~/.local/share/agentsim/qt-plugins/platforminputcontexts/
+   ~/.local/share/simovia/qt-plugins/platforminputcontexts/
 ```
 
 装好后重启 GUI 即可在 Agent 对话框用 fcitx5 打中文。注意：**升级 PySide6 后需按同版本号重跑第 1~3 步**（Qt 插件 ABI 必须与运行时 Qt 一致，版本不匹配会静默回退到英文输入）。
@@ -174,10 +174,10 @@ cp build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so \
 
 ### 1. 跑一个内置任务（人类用户）
 
-> 以下命令都在**仓库根目录**执行（包未打包安装，`python -m agentsim` 依赖当前目录，换目录会报 `No module named agentsim`）；已装好依赖时也可以统一用 `./start.sh <子命令>`。
+> 以下命令都在**仓库根目录**执行（包未打包安装，`python -m simovia` 依赖当前目录，换目录会报 `No module named simovia`）；已装好依赖时也可以统一用 `./start.sh <子命令>`。
 
 ```bash
-python -m agentsim run worlds/pick_cube.yaml
+python -m simovia run worlds/pick_cube.yaml
 ```
 
 输出示例（panda+2FG7 抓起桌面 cube、抬入空中成功区的端到端任务）：
@@ -197,7 +197,7 @@ python -m agentsim run worlds/pick_cube.yaml
 ### 1.5 写控制器前先 `inspect`
 
 ```bash
-python -m agentsim inspect worlds/pick_cube.yaml
+python -m simovia inspect worlds/pick_cube.yaml
 ```
 
 打印这个世界的全部设备清单：每个机器人的执行器名 + `ctrlrange`、关节名 + 类型 + 限位、传感器名 + 维度、相机、夹爪，以及场景物体名（= 控制器里 `obs["objects"]` 的键）和任务成功条件——不用去翻 XML 就知道 `robot.set(...)` 该写什么名字、范围多少。
@@ -205,7 +205,7 @@ python -m agentsim inspect worlds/pick_cube.yaml
 ### 2. 让 AI Agent 驱动仿真（MCP）
 
 ```bash
-python -m agentsim mcp
+python -m simovia mcp
 ```
 
 在支持 MCP 的客户端里把它注册为 stdio 服务器，Agent 即可使用 12 个工具完成闭环：
@@ -231,14 +231,14 @@ Agent 的标准闭环：`read_world` → 修改 YAML → `load_world(yaml_text)`
 ### 3. 桌面 GUI 实时可视化
 
 ```bash
-python -m agentsim gui
+python -m simovia gui
 ```
 
 （GUI 依赖 PySide6 已随 `requirements.txt` 装好，直接启动即可。）
 
 > Windows 用户可免终端：双击仓库根的 `start.bat`，或先跑一次 `create_desktop_shortcut.bat` 生成桌面图标（见 [Windows 部署](#windows-部署)）。
 
-GUI 本身就是一个 MCP 客户端（与 AI Agent 同构）：左键加载世界 YAML，后端经 stdio JSON-RPC 驱动同一个 `agentsim.mcp` 服务器——Run 时仿真跑在服务器后台线程，GUI 以 30Hz 拉取观测快照并渲染 MuJoCo 3D 画面 + 关节/物体面板。窗口里可以：
+GUI 本身就是一个 MCP 客户端（与 AI Agent 同构）：左键加载世界 YAML，后端经 stdio JSON-RPC 驱动同一个 `simovia.mcp` 服务器——Run 时仿真跑在服务器后台线程，GUI 以 60Hz 拉取观测快照并渲染 MuJoCo 3D 画面 + 关节/物体面板。窗口里可以：
 
 - **模型库**：选 Menagerie 官方模型（资产随仓库自带，离线即用）→ 自动生成世界 + 控制器模板 → 自动加载并打开编辑器——点击-打开-编程闭环
 - **装备页**：选中机器人后点选即可装配/移除夹爪（OnRobot 2FG7 / Robotiq 2F-85 / UMI Gripper / LEAP Hand，适配 UR5e/UR10e/xArm7/Panda），并按类型表单添加/删除五类传感器——所有改动写回世界 YAML 并自动重载，无需手写
@@ -252,18 +252,20 @@ GUI 本身就是一个 MCP 客户端（与 AI Agent 同构）：左键加载世�
 - **Run / Run N**：跑一整个 episode（结束后可再 Run，自动 reset）
 - **停止**：run 进行中随时可点（F6）——提前收尾当前 run，控制器正常退出、已跑轨迹保留，之后照常 Reset / 继续 Run
 - **实时勾选框**：勾选=按墙钟实时播放动画（1 仿真秒≈1 墙钟秒，MCP `run` 的 `realtime` 参数）；取消=全速推进瞬间出结果（跑批验证）
+- **画质下拉框**：高 = 8× MSAA；均衡（默认）= 4× MSAA；低 = 关 MSAA/阴影 + 75% 分辨率渲染（低配电脑选它，帧率约翻倍）；选择跨会话记忆
+- **原点坐标轴**（视图菜单，默认开）：视口原点叠加 XYZ 轴（X 红 / Y 绿 / Z 蓝），摆场景时一眼看清方位；空场景还会在视口上方给出 Ctrl+M（模型库）/ Ctrl+B（造机器人）/ Ctrl+N（模板场景）三条入口
 - **Reset**：世界回初态；渲染视角支持鼠标拖拽旋转、滚轮缩放、**F 键聚焦选中对象**；属性/观测/装备面板带滚动条，右停靠栏可自由拖窄放大视口
 
-> run 期间 `get_observation` 返回 33ms 节流的运动学快照（含物体位置 + 四元数），不影响物理轨迹。
+> run 期间 `get_observation` 返回约 16ms 节流的运动学快照（含物体位置 + 四元数），不影响物理轨迹。实时模式下内核把每个控制 tick 的物理步按约 1/60 秒切片出快照——pick_cube 这类 64ms 控制周期的世界也能以 60Hz 播放，而不是只在控制 tick 边界跳 15.6 帧/秒。
 
 ### 4. 从模板生成场景
 
 ```bash
-python -m agentsim scenegen maze --rows 4 --cols 4 --out worlds/my_maze.yaml
-python -m agentsim scenegen race --lanes 3 --out worlds/my_race.yaml
-python -m agentsim scenegen tabletop --objects 2 --out worlds/my_table.yaml
-python -m agentsim scenegen pallet --cubes 3 --out worlds/pallet.yaml
-python -m agentsim run worlds/my_maze.yaml
+python -m simovia scenegen maze --rows 4 --cols 4 --out worlds/my_maze.yaml
+python -m simovia scenegen race --lanes 3 --out worlds/my_race.yaml
+python -m simovia scenegen tabletop --objects 2 --out worlds/my_table.yaml
+python -m simovia scenegen pallet --cubes 3 --out worlds/pallet.yaml
+python -m simovia run worlds/my_maze.yaml
 ```
 
 | 模板 | 说明 | 主要参数 |
@@ -362,7 +364,7 @@ gripper:
   quat: [1, 0, 0, 0]       # 可选：覆盖标定安装朝向（wxyz）
 ```
 
-**夹爪库**（`agentsim/grippers.py`，资产随仓库自带 `models/grippers/`）：
+**夹爪库**（`simovia/grippers.py`，资产随仓库自带 `models/grippers/`）：
 
 | key | 型号 | 类型 | 执行器（短名） | 开合 ctrl 范围 |
 |---|---|---|---|---|
@@ -398,7 +400,7 @@ for name, target in zip(info["actuators"], info["poses"]["close"]):
 控制器是普通 Python 脚本，唯一要 import 的东西是 `Robot`：
 
 ```python
-from agentsim.controller import Robot
+from simovia.controller import Robot
 
 robot = Robot()                     # 自动从 --sock/--robot 参数连接内核
 while robot.step():                 # 推进一 tick，返回观测；内核叫停时返回 False
@@ -417,12 +419,12 @@ while robot.step():                 # 推进一 tick，返回观测；内核叫�
 
 ## RL 训练接口（gymnasium）
 
-一个 YAML 世界 = 一个确定性 gym 环境。`reset` 重建 `MjData`，同 YAML 跑两遍轨迹逐 bit 相同——eval 可复现是 AgentSim 的差异化卖点：
+一个 YAML 世界 = 一个确定性 gym 环境。`reset` 重建 `MjData`，同 YAML 跑两遍轨迹逐 bit 相同——eval 可复现是 Simovia 的差异化卖点：
 
 ```python
-from agentsim.rl_env import AgentSimEnv
+from simovia.rl_env import SimoviaEnv
 
-env = AgentSimEnv("worlds/pick_cube.yaml")     # YAML 路径 / dict / WorldSpec
+env = SimoviaEnv("worlds/pick_cube.yaml")     # YAML 路径 / dict / WorldSpec
 obs, info = env.reset(seed=42)
 obs, reward, terminated, truncated, info = env.step(action)
 # action  = 所有机器人执行器按声明顺序拼接（Box，界 = 各自 ctrlrange）
@@ -441,7 +443,7 @@ obs, reward, terminated, truncated, info = env.step(action)
 
 ## 机器人模型库（MuJoCo Menagerie）
 
-预配置 34 个著名机器人（`agentsim/zoo.py`），覆盖八大类：
+预配置 34 个著名机器人（`simovia/zoo.py`），覆盖八大类：
 
 - **四足（6）**：Unitree Go1 / Go2 / A1、ANYmal C、Boston Dynamics Spot、Google Barkour VB
 - **人形（6）**：Unitree H1 / G1、ROBOTIS OP3、PAL TALOS、Booster T1、Berkeley Humanoid
@@ -452,15 +454,15 @@ obs, reward, terminated, truncated, info = env.step(action)
 - **无人机（2）**：Skydio X2、Bitcraze Crazyflie 2
 - **移动操作（4）**：PAL TIAGo、Hello Robot Stretch 3、Stanford TidyBot、Google Robot
 
-全部来自 DeepMind 官方精选模型库，经 MjSpec attach 编译进 AgentSim 世界（浮动基座四足/人形/无人机实测落地稳定，出生高度按 qpos0 最低点自动贴地）。
+全部来自 DeepMind 官方精选模型库，经 MjSpec attach 编译进 Simovia 世界（浮动基座四足/人形/无人机实测落地稳定，出生高度按 qpos0 最低点自动贴地）。
 
-**GUI 闭环**（`python -m agentsim gui`）：点"模型库"按钮 → 选模型（资产随仓库自带，离线即用）→ 自动生成世界 + 控制器模板 → 自动加载并打开编辑器 → 改完控制律点 Run 重跑。
+**GUI 闭环**（`python -m simovia gui`）：点"模型库"按钮 → 选模型（资产随仓库自带，离线即用）→ 自动生成世界 + 控制器模板 → 自动加载并打开编辑器 → 改完控制律点 Run 重跑。
 
 **Agent 闭环**（走 MCP 工具，与 GUI 按钮同一条）——注意这是 MCP/`tools.*` 接口，CLI 没有对应的 `zoo` 子命令，人类用户请用 GUI 的"模型库"：
 
 ```python
 r = tools.zoo_create(key="unitree_go2")   # 或 key="list" 先列清单
-# -> {"world": "~/.agentsim/zoo/unitree_go2/world.yaml",
+# -> {"world": "~/.simovia/zoo/unitree_go2/world.yaml",
 #     "controller": ".../controller.py", "actuators": [...12 个...]}
 tools.load_world(yaml_path=r["world"])
 tools.run(ticks=200)
@@ -481,7 +483,7 @@ robots:
     pos: [0, 0, 0]
 ```
 
-URDF 与 MJCF 的差异由导入层（`agentsim/world/builder.py` 的 `_load_robot_spec`）统一吸收：
+URDF 与 MJCF 的差异由导入层（`simovia/world/builder.py` 的 `_load_robot_spec`）统一吸收：
 
 - **mesh 路径**：相对路径按 urdf 文件所在目录解析；`package://NAME/REST` 前缀自动剥除并两级就近查找（ROS / sw2urdf 导出目录惯例）；找不到时报错带原文件名
 - **执行器**：URDF 没有 `<actuator>`，每个可动关节自动补一个同名 motor（力矩控制，`ctrl` 直写）；`fixed joint` 在解析时已合并进父 body
@@ -505,7 +507,7 @@ URDF 与 MJCF 的差异由导入层（`agentsim/world/builder.py` 的 `_load_rob
 - 右侧实时预览 + 旋转矩阵表：同时给出该连杆的 **R_rel（相对父系）** 与 **R_world（世界系）**，下方 `R = Rz(yaw)·Ry(pitch)·Rx(roll)` 公式行随 rpy 实时刷新，正好对应 MuJoCo 的 `euler`（xyz）约定；选中的连杆在预览里画出 RGB 三色轴（红=x、绿=y、蓝=z，即 R 的三列）
 - "保存为机器人 YAML…" 写出的文件可直接被世界引用
 
-**YAML 格式**（`agentsim/robot_spec.py`，字段校验失败会给出 `[links[i]]` 路径）：
+**YAML 格式**（`simovia/robot_spec.py`，字段校验失败会给出 `[links[i]]` 路径）：
 
 ```yaml
 name: two_link
@@ -550,9 +552,9 @@ robots:
 
 文件 → AI 生成场景（Ctrl+G）：自然语言需求 → LLM 生成世界 YAML → 本地校验 → 加载，与参数化模板（`scenegen`）、手写 YAML 三条路径并存。
 
-- **生成闭环**（`agentsim/agent/scene_agent.py`）：LLM 输出 → 剥围栏提取 YAML → `parse_world` schema 校验 + `build_world` 编译校验 → 失败把可读错误喂回 LLM 重试（默认 3 次）→ 通过即加载
+- **生成闭环**（`simovia/agent/scene_agent.py`）：LLM 输出 → 剥围栏提取 YAML → `parse_world` schema 校验 + `build_world` 编译校验 → 失败把可读错误喂回 LLM 重试（默认 3 次）→ 通过即加载
 - **模型引用**：prompt 注入完整模型库清单，LLM 写 `zoo://unitree_go2` 引用 → 本地自动解析成模型绝对路径（资产随仓库自带，离线即用）
-- **配置复用**：与 Agent 控制台共用 `~/.agentsim/agent.json`（任意 OpenAI 兼容端点：OpenAI / DeepSeek / GLM / Ollama / vLLM）
+- **配置复用**：与 Agent 控制台共用 `~/.simovia/agent.json`（任意 OpenAI 兼容端点：OpenAI / DeepSeek / GLM / Ollama / vLLM）
 - **抗"MJCF 人设"模型**：给本地模型（如 Ollama）预设过 MJCF/XML 生成器提示词也能用——请求级 system prompt 带人设覆盖指令 + 生成规则明令禁 MJCF/mesh；模型仍输出 XML 时回喂定向纠错（"平台不加载外部 mesh，改用基本体+zoo://"），实测收敛
 - **保留手动路径**：AI 生成不取代手写——模板（`scenegen`）、手写 YAML、导入模型全部保留，AI 只是多一条"说一句话就出场景"的捷径
 
@@ -591,7 +593,7 @@ ollama run qwen2.5-coder:7b 你好    # 出话即就绪
 两种方式等价，任选其一：
 
 - **GUI 配置（推荐，全平台一致）**：Agent 页 → "配置"，填三项——`base_url` 填 `http://localhost:11434/v1`（注意带 `/v1`）、`api_key` 留空、`model` 填 `qwen2.5-coder:7b`
-- **手写配置文件**（Linux/macOS 在 `~/.agentsim/agent.json`，Windows 在 `C:\Users\<用户名>\.agentsim\agent.json`）：
+- **手写配置文件**（Linux/macOS 在 `~/.simovia/agent.json`，Windows 在 `C:\Users\<用户名>\.simovia\agent.json`）：
 
 ```json
 {
@@ -613,11 +615,11 @@ ollama run qwen2.5-coder:7b 你好    # 出话即就绪
 
 ## 桌面 GUI 智能工作台（M5）
 
-GUI（`python -m agentsim gui`）从可视化扩展为完整的机器人编程工作台——左右四块面板（场景树/属性/代码/Agent），配合模型库的运动演示与位姿编辑，覆盖"打开/写代码/调位姿/跑/让 AI 来"全闭环。
+GUI（`python -m simovia gui`）从可视化扩展为完整的机器人编程工作台——左右四块面板（场景树/属性/代码/Agent），配合模型库的运动演示与位姿编辑，覆盖"打开/写代码/调位姿/跑/让 AI 来"全闭环。
 
 ### 1. 运动演示一键播放
 
-模型库窗口选中任意机器人 → "生成演示并运行"按钮，自动生成内置运动演示并加载世界 → 自动 Run。34 个模型全部预配置运动（见 `agentsim/zoo.py`）：
+模型库窗口选中任意机器人 → "生成演示并运行"按钮，自动生成内置运动演示并加载世界 → 自动 Run。34 个模型全部预配置运动（见 `simovia/zoo.py`）：
 
 - **四足小跑（trot）**：Unitree Go1 / Go2 / A1、ANYmal C、Boston Dynamics Spot——按对角腿相位（FL-RR / FR-RL）交替摆动；CPG 控制律 `freq`/`amp`/`lag` 在 `zoo.py` 顶部 `_trot` 工厂生成，落地即稳定行走
 - **机械臂扫掠**：Franka Panda / FR3、KUKA iiwa 14、Kinova Gen3、UR5e / UR10e、xArm7、Lite 6、WidowX 250s、SO-ARM100、ARX L5、AgileX Piper 等——多关节正弦相位机，base 绕 z 旋转 + 末端周期摆动
@@ -662,7 +664,7 @@ GUI 右侧第五个 tab"Agent"：聊天式下达任务给 AI（OpenAI 兼容 cha
 - `api_key`：本地服务可空（Ollama），公开服务必填；密码模式输入
 - `model`：例如 `gpt-4o-mini`、`deepseek-chat`、`glm-4`
 
-配置保存到 `~/.agentsim/agent.json`，`chmod 0600` 保护 api_key。配好后聊天下达任务（Enter 发送，Shift+Enter 换行）：
+配置保存到 `~/.simovia/agent.json`，`chmod 0600` 保护 api_key。配好后聊天下达任务（Enter 发送，Shift+Enter 换行）：
 
 - Agent 拿到的是 OpenAI function calling 格式工具清单（`bridge.to_openai_tools`）——MCP 的 12 个工具（含 `stop` 停止仿真）+ 2 个本地文件工具（`write_file`/`read_file`，限定在世界目录内防越界）
 - 工具循环：Agent 返回文本 → 显示在聊天框；返回 tool_calls → MCP 同步等回复（QEventLoop + 30s QTimer 兜底）→ 显示工具调用与结果 → 继续下一轮直到 Agent 不再调工具
@@ -718,8 +720,8 @@ python -m pytest tests/ -q
 ## 项目结构
 
 ```
-agentsim/
-├── agentsim/
+simovia/
+├── simovia/
 │   ├── kernel/sim.py      # 仿真内核：ZMQ ROUTER + 栅栏同步推进
 │   ├── kernel/task.py    # 任务评估 + 观测组装纯函数（内核与 RL env 共用）
 │   ├── rl_env.py          # gymnasium.Env 包装（RL 训练接口）
@@ -744,7 +746,7 @@ agentsim/
 ├── controllers/           # 示例控制器（pick_place 桌面抓取相位机等）
 ├── worlds/                # 示例世界（pick_cube、twin_arms、empty——GUI 启动默认加载）
 ├── examples/             # PPO 训练示例（train_ppo_go2.py，sb3 可选依赖）
-├── start.bat / create_desktop_shortcut.bat / agentsim.ico
+├── start.bat / create_desktop_shortcut.bat / simovia.ico
 │                            # Windows 双击启动 + 桌面快捷方式（项目图标）
 └── tests/                 # 336 项测试（含 URDF 导入/AI 场景生成/夹爪/码垛/造机器人）
 ```
@@ -752,9 +754,9 @@ agentsim/
 ## Roadmap
 
 - [x] M0 仿真内核（物理 / 进程隔离 / Supervisor / MCP / 场景生成）
-- [x] M1 GUI（PySide6 可视化 + 实时观测面板）—— [实施方案](docs/M1_GUI实施计划.md)：GUI 作为 MCP 客户端（与 AI Agent 同构）+ MuJoCo 离屏渲染；run 后台线程化，30Hz 观测快照（`python -m agentsim gui`）
+- [x] M1 GUI（PySide6 可视化 + 实时观测面板）—— [实施方案](docs/M1_GUI实施计划.md)：GUI 作为 MCP 客户端（与 AI Agent 同构）+ MuJoCo 离屏渲染；run 后台线程化，60Hz 观测快照（`python -m simovia gui`）
 - [x] M2 传感器系统 + MCP screenshot —— 五类传感器（encoder / IMU / 触觉 / 关节力矩 / 相机）YAML 声明进观测流，bit 级守护保证不改变物理轨迹；`screenshot` 工具让 Agent 截取仿真画面（自由机位或声明的相机机位）
-- [x] M3 RL 训练接口 —— `AgentSimEnv`（gymnasium.Env）：YAML 世界即确定性环境，动作/观测/奖励语义与内核一处实现（`kernel/task.py`），同 YAML 两遍轨迹逐位一致
+- [x] M3 RL 训练接口 —— `SimoviaEnv`（gymnasium.Env）：YAML 世界即确定性环境，动作/观测/奖励语义与内核一处实现（`kernel/task.py`），同 YAML 两遍轨迹逐位一致
 - [x] M1 心跳机制 —— 控制器 `_recv` 100ms poller 轮询 + `getppid` 孤儿检测：内核进程一死控制器必被 init/subreaper 收养（父 pid 变化），随即 `RuntimeError("内核已退出")` 退出；思考时间无限等待语义不变
 - [x] M4 机器人模型库 —— MuJoCo Menagerie 官方模型一键接入（34 个预配置著名机器人，覆盖四足/人形/机械臂/灵巧手/双臂/无人机/移动操作），`zoo_create` 生成世界 + 控制器模板，GUI 点击-打开-编程闭环
 - [x] M5 运动演示与智能工作台 —— 34 个模型一键运动演示（四足 trot / 机械臂扫掠 / 人形摆臂 / 无人机振荡）+ GUI 位姿编辑面板（xyz+欧拉角）+ 内置 Python 代码编辑器（保存并运行）+ Agent 控制台（OpenAI 兼容 chat API 调用，AI 直接生成场景/写代码/运行验证）+ PPO 训练示例（`examples/train_ppo_go2.py`）

@@ -1,7 +1,7 @@
 """M0.6 验收：MCP 工具层（方案 5.6）。
 
 两层验证：
-1. 会话层（AgentSimSession）：Agent 闭环 read_world -> 改 YAML ->
+1. 会话层（SimoviaSession）：Agent 闭环 read_world -> 改 YAML ->
    load_world -> run -> get_observation，外加 manifest / save / load / reset
 2. 协议层（真实子进程）：stdio JSON-RPC 的 initialize / tools/list /
    tools/call 线协议
@@ -17,8 +17,8 @@ import threading
 import pytest
 import yaml
 
-from agentsim.errors import WorldError
-from agentsim.mcp_server import AgentSimSession   # 导入即 setdefault MUJOCO_GL=egl
+from simovia.errors import WorldError
+from simovia.mcp_server import SimoviaSession   # 导入即 setdefault MUJOCO_GL=egl
 
 
 def _have_offscreen_glx() -> bool:
@@ -42,7 +42,7 @@ WORLD = ROOT / "worlds" / "pick_cube.yaml"
 class TestAgentLoop:
     def test_closed_loop_end_to_end(self):
         """5.6 节闭环：load_world -> read_world -> manifest -> run -> observation"""
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             info = s.call_tool("load_world", {"yaml_path": str(WORLD)})
             assert info["world"] == "pick_cube"
@@ -83,7 +83,7 @@ class TestAgentLoop:
             "zone: {min: [0.49, -0.06, 0.80], max: [0.61, 0.06, 0.92]}",
             "zone: {min: [0.49, -0.06, 0.68], max: [0.61, 0.06, 0.80]}")
         text = text.replace("max_ticks: 5000", "max_ticks: 10")
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_text": text,
                                        "base_dir": str(ROOT / "worlds")})
@@ -96,7 +96,7 @@ class TestAgentLoop:
     def test_save_world_roundtrip(self, tmp_path):
         """save_world：GUI 拖动/位姿修改（yaml_text 链）后落盘，重开文件
         修改仍在——"改了半天白改"的守护。"""
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_path": str(WORLD)})
             # 模拟 GUI 编辑：改 cube 位置（去 controller——保存到 tmp 后
@@ -129,7 +129,7 @@ class TestAgentLoop:
             s.close()
 
     def test_state_and_reset(self):
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_path": str(WORLD)})
             stats = s.call_tool("run", {"ticks": 5})
@@ -149,7 +149,7 @@ class TestAgentLoop:
         """真实 Agent 在 load_world 与 run 之间有数秒以上"思考时间"，
         控制器必须活着等内核开跑（压测实测：旧 5s RCVTIMEO 下必死）。"""
         import time
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_path": str(WORLD)})
             time.sleep(6)                     # 超过旧的 5s hello 超时
@@ -169,7 +169,7 @@ class TestAgentLoop:
         text = text.replace(
             "controller: ../controllers/pick_place.py",
             f"controller: {bad}")
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_text": text,
                                        "base_dir": str(ROOT / "worlds")})
@@ -185,7 +185,7 @@ class TestAgentLoop:
         """控制器 bye 后内核必须回 bye_ack，进程毫秒级退出——
         否则 recv 永久阻塞，每轮 run 泄漏一个控制器进程（压测实测踩过）。"""
         import subprocess
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_path": str(WORLD)})
             stats = s.call_tool("run", {})
@@ -202,7 +202,7 @@ class TestAgentLoop:
         """run(ticks=N) 中途截断后控制器必须收到 stop 退出——
         stop 窗口竞态（step 在 run 返回后才到）曾致永久阻塞（压测实测）。"""
         import subprocess
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_path": str(WORLD)})
             stats = s.call_tool("run", {"ticks": 50})   # 截断时控制器还在相位机中
@@ -217,7 +217,7 @@ class TestAgentLoop:
 
     def test_observation_has_object_quat(self):
         """get_observation 顶层 objects 带 pos+quat（GUI 渲染写 freejoint 需要）。"""
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_path": str(WORLD)})
             obs = s.call_tool("get_observation", {})
@@ -237,7 +237,7 @@ class TestAgentLoop:
         text = WORLD.read_text(encoding="utf-8")
         text = text.replace("controller: ../controllers/pick_place.py", "controller:")
         text = text.replace("max_ticks: 5000", "max_ticks: 50000")
-        s = AgentSimSession()
+        s = SimoviaSession()
         t = None
         try:
             s.call_tool("load_world", {"yaml_text": text,
@@ -268,7 +268,7 @@ class TestAgentLoop:
         text = WORLD.read_text(encoding="utf-8")
         text = text.replace("controller: ../controllers/pick_place.py", "controller:")
         text = text.replace("max_ticks: 5000", "max_ticks: 100000")
-        s = AgentSimSession()
+        s = SimoviaSession()
         t = None
         try:
             s.call_tool("load_world", {"yaml_text": text,
@@ -306,7 +306,7 @@ class TestAgentLoop:
         import time
         root = pathlib.Path(__file__).resolve().parents[1]
         proc = subprocess.Popen(
-            [_sys.executable, "-m", "agentsim", "mcp"],
+            [_sys.executable, "-m", "simovia", "mcp"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, cwd=str(root), text=True)
         try:
@@ -351,7 +351,7 @@ class TestAgentLoop:
 class TestStdioProtocol:
     def test_jsonrpc_over_stdio(self):
         proc = subprocess.Popen(
-            [sys.executable, "-m", "agentsim", "mcp"],
+            [sys.executable, "-m", "simovia", "mcp"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             text=True, bufsize=1, cwd=str(ROOT))
 
@@ -363,7 +363,7 @@ class TestStdioProtocol:
 
         try:
             r = rpc("initialize", {"protocolVersion": "2024-11-05"})
-            assert r["result"]["serverInfo"]["name"] == "agentsim"
+            assert r["result"]["serverInfo"]["name"] == "simovia"
 
             r = rpc("tools/list")
             names = {t["name"] for t in r["result"]["tools"]}
@@ -391,7 +391,7 @@ class TestStdioProtocol:
     def test_stdio_screenshot_image_content(self):
         """stdio 线协议层：screenshot 的 image content 原样透传给 Agent。"""
         proc = subprocess.Popen(
-            [sys.executable, "-m", "agentsim", "mcp"],
+            [sys.executable, "-m", "simovia", "mcp"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             text=True, bufsize=1, cwd=str(ROOT))
 
@@ -445,7 +445,7 @@ def _png_size(data: bytes) -> tuple[int, int]:
 @pytest.mark.skipif(not _OSSCREEN, reason="本环境无离屏渲染（EGL）")
 class TestScreenshot:
     def _session(self):
-        s = AgentSimSession()
+        s = SimoviaSession()
         s.call_tool("load_world", {"yaml_text": _world_with_sensors(),
                                    "base_dir": str(ROOT / "worlds")})
         return s
@@ -498,7 +498,7 @@ class TestScreenshot:
         _require_idle 只看 _run_thread 存活状态——注入一个活跃线程与真实
         run 等价，免去真实 run 的启动窗口竞态（轮询 is_running 也可能错过）。
         """
-        s = AgentSimSession()
+        s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_path": str(WORLD)})
             stop = threading.Event()

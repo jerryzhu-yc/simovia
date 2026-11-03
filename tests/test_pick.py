@@ -9,8 +9,8 @@ import pathlib
 
 import numpy as np
 
-from agentsim.kernel.sim import Simulation
-from agentsim.world.schema import load_world
+from simovia.kernel.sim import Simulation
+from simovia.world.schema import load_world
 
 ROOT = pathlib.Path(__file__).parent.parent
 WORLD = ROOT / "worlds" / "pick_cube.yaml"

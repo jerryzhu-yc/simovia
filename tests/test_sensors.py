@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 import yaml
 
-from agentsim.errors import WorldError
-from agentsim.kernel.sim import Simulation
-from agentsim.world.builder import build_world
-from agentsim.world.schema import parse_world, resolve_zoo_models
+from simovia.errors import WorldError
+from simovia.kernel.sim import Simulation
+from simovia.world.builder import build_world
+from simovia.world.schema import parse_world, resolve_zoo_models
 
 ROOT = pathlib.Path(__file__).parent.parent
 WORLD = ROOT / "worlds" / "pick_cube.yaml"
@@ -216,7 +216,7 @@ class TestControllerProtocol:
         """真实 ZMQ 协议端到端：hello 清单 + sensor() 便捷读取（控制器进程）。"""
         ctrl = tmp_path / "assert_sensors.py"
         ctrl.write_text(
-            "from agentsim.controller import Robot\n"
+            "from simovia.controller import Robot\n"
             "r = Robot()\n"
             "names = {s['name'] for s in r.sensors}\n"
             "assert names == {'j1_enc', 'j1_tau', 'wrist_imu', 'fl_touch'}, names\n"

@@ -1,8 +1,8 @@
 # =============================================================================
 # 从零造机器人 · 三段式机械臂（教学示例）
 # =============================================================================
-# 运行：     python -m agentsim run worlds/diy_arm.yaml
-# 看设备名： python -m agentsim inspect worlds/diy_arm.yaml
+# 运行：     python -m simovia run worlds/diy_arm.yaml
+# 看设备名： python -m simovia inspect worlds/diy_arm.yaml
 # GUI 里：   文件 → 打开 worlds/diy_arm.yaml；或 文件 → 造机器人（Ctrl+B）
 #
 # 实时日志

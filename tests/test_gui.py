@@ -14,12 +14,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest  # noqa: E402
 import numpy as np  # noqa: E402
 
-from agentsim.gui import mount_ime_plugin  # noqa: E402
-from agentsim.gui.mcp_client import (LineCodec, PendingMap,  # noqa: E402
+from simovia.gui import mount_ime_plugin  # noqa: E402
+from simovia.gui.mcp_client import (LineCodec, PendingMap,  # noqa: E402
                                       tool_response)
-from agentsim.gui.render_view import RenderModel, _JNT_WIDTH  # noqa: E402
-from agentsim.gui.state import UiState  # noqa: E402
-from agentsim.world.schema import load_world  # noqa: E402
+from simovia.gui.render_view import RenderModel, _JNT_WIDTH  # noqa: E402
+from simovia.gui.state import UiState  # noqa: E402
+from simovia.world.schema import load_world, parse_world  # noqa: E402
 
 ROOT = pathlib.Path(__file__).parent.parent
 WORLD = ROOT / "worlds" / "pick_cube.yaml"
@@ -270,6 +270,130 @@ class TestRenderModel:
             rm.close()
 
 
+class TestRenderQuality:
+    """画质档位：低配机器靠降采样/关阴影换取帧率。"""
+
+    def test_presets_apply_to_model_and_renderer(self):
+        from simovia.gui.render_view import _QUALITY_PRESETS
+
+        spec = load_world(WORLD)
+        rm = RenderModel(spec, width=400, height=300)
+        try:
+            assert rm.quality == "均衡"
+            assert rm._renderer.width == 400          # 满分辨率渲染
+            rm.set_quality("低")
+            assert rm._offsamples == 0
+            assert rm._shadows is False
+            assert rm.model.vis.quality.offsamples == 0
+            # 75% 分辨率离屏渲染，再由 Qt 放大到控件尺寸
+            assert rm._renderer.width == 300
+            assert rm._renderer.height == 225
+            # 帧形状跟随实际离屏分辨率（paintEvent 负责缩放）
+            assert rm.render_frame().shape[:2] == (225, 300)
+            rm.set_quality("高")
+            assert rm.model.vis.quality.offsamples == 8
+            assert rm._renderer.width == 400
+            assert _QUALITY_PRESETS["低"]["scale"] < 1.0
+        finally:
+            rm.close()
+
+    def test_unknown_preset_falls_back(self):
+        spec = load_world(WORLD)
+        rm = RenderModel(spec, width=64, height=48)
+        try:
+            rm.set_quality("不存在")
+            assert rm.quality == "均衡"
+        finally:
+            rm.close()
+
+
+class TestScenePresentation:
+    """初始场景观感：默认取景、原点轴遮挡、主题资源齐全。"""
+
+    def test_empty_scene_framing(self):
+        """空场景取景：略俯视 + 比旧版更近，让网格铺满画面而不是大半个天空。"""
+        rm = RenderModel(load_world(ROOT / "worlds" / "empty.yaml"),
+                         width=64, height=48)
+        try:
+            assert rm.cam.elevation == pytest.approx(-34.0)
+            assert rm.cam.distance < 8.0        # 旧版 floor*1.6 = 8.0
+            assert rm.cam.distance == pytest.approx(5.0 * 1.15)
+        finally:
+            rm.close()
+
+    def test_populated_scene_frames_whole_robot(self):
+        """有实体世界按包围盒取景：整台机械臂入画（旧版固定 dist=1.8 会截顶）。"""
+        rm = RenderModel(load_world(WORLD), width=820, height=594)
+        try:
+            lo, hi = rm._scene_bbox()
+            assert np.allclose(rm.cam.lookat, (lo + hi) * 0.5)
+            radius = float(np.linalg.norm(hi - lo)) * 0.5
+            assert radius * 2.0 < rm.cam.distance < radius * 4.0
+        finally:
+            rm.close()
+
+    def test_origin_occlusion_detection(self):
+        """原点轴叠加的遮挡检测：空场景可见，原点被方块包住时判定遮挡。"""
+        empty = RenderModel(load_world(ROOT / "worlds" / "empty.yaml"),
+                            width=64, height=48)
+        try:
+            assert not empty.is_occluded(np.zeros(3))
+        finally:
+            empty.close()
+        spec = parse_world({
+            "name": "occ",
+            "scene": {"objects": [{
+                "name": "block", "type": "box", "size": [0.3, 0.3, 0.3],
+                "pos": [0.0, 0.0, 0.3], "mass": 1.0}]},
+        })
+        rm = RenderModel(spec, width=64, height=48)
+        try:
+            assert rm.is_occluded(np.zeros(3))
+        finally:
+            rm.close()
+
+    def test_theme_assets_exist(self):
+        """QSS 引用的 SVG（箭头/勾选）必须真的在仓库里，否则控件退化成无指示。"""
+        import pathlib as _pl
+
+        from simovia.gui import theme as th
+        assets = _pl.Path(th.__file__).resolve().parent / "assets"
+        for name in ("chevron-down.svg", "chevron-up.svg",
+                     "chevron-right.svg", "check.svg"):
+            assert (assets / name).is_file(), name
+            assert name in th.APP_QSS
+
+
+def test_toolbar_icons_render(qapp):
+    """矢量图标：每个名字都能画出非空 pixmap（工具栏不出现空白按钮）。"""
+    from simovia.gui import icons
+    assert len(icons._DRAW) >= 15
+    for name in icons._DRAW:
+        ico = icons.icon(name)
+        assert not ico.isNull(), name
+        assert not ico.pixmap(20, 20).isNull(), name
+
+
+def test_camera_reframes_on_world_switch(qapp):
+    """换世界重新取景（否则从空场景打开机械臂世界停在大远景）；
+    同名世界重载保留用户机位（拖动物体/改 YAML 提交画面不跳变）。"""
+    from simovia.gui.render_view import RenderView
+
+    view = RenderView()
+    try:
+        view.resize(400, 300)
+        view.set_world(load_world(ROOT / "worlds" / "empty.yaml"))
+        empty_dist = view.rm.cam.distance
+        view.set_world(load_world(WORLD))
+        assert view.rm.cam.distance != pytest.approx(empty_dist)
+        assert view.rm.cam.lookat[2] > 0.3      # 对准实体而非地面原点
+        view.rm.cam.distance = 4.2               # 用户手动调过机位
+        view.set_world(load_world(WORLD))
+        assert view.rm.cam.distance == pytest.approx(4.2)
+    finally:
+        view.deleteLater()
+
+
 class TestUiStateEdit:
     def test_edit_allowed_in_idle_and_finished(self):
         """场景编辑（拖动/位姿/装备）：FINISHED 也放行——
@@ -289,7 +413,7 @@ class TestUiStateEdit:
 
 def test_add_object_dialog_selection(qapp):
     """添加物体对话框：三种类型的 MJCF 半尺寸语义 + 颜色取值。"""
-    from agentsim.gui.panels import AddObjectDialog
+    from simovia.gui.panels import AddObjectDialog
 
     dlg = AddObjectDialog()
     try:
@@ -312,8 +436,8 @@ def test_add_object_dialog_selection(qapp):
 def test_gui_modules_importable():
     """无头 import 冒烟（不建 QApplication）。"""
     import importlib
-    for mod in ("agentsim.gui", "agentsim.gui.app", "agentsim.gui.mcp_client",
-                "agentsim.gui.panels"):
+    for mod in ("simovia.gui", "simovia.gui.app", "simovia.gui.mcp_client",
+                "simovia.gui.panels"):
         importlib.import_module(mod)
 
 
@@ -330,7 +454,7 @@ def test_dark_theme_covers_all_text_edits():
     旧版只给 #console 上深底，代码编辑器/Agent 对话框落在系统调色板——
     Windows 浅色主题下白底配深色语法高亮，代码看不清。
     """
-    from agentsim.gui import theme
+    from simovia.gui import theme
     assert "QPlainTextEdit, QTextEdit" in theme.APP_QSS
     assert "selection-background-color" in theme.APP_QSS
     assert "#console" in theme.APP_QSS      # 控制台等宽字体规则仍在
@@ -340,7 +464,7 @@ def test_apply_dark_palette(qapp):
     """apply_dark_palette：调色板 Base/Window 转深、Text 转亮。"""
     from PySide6.QtGui import QPalette
 
-    from agentsim.gui import theme
+    from simovia.gui import theme
     theme.apply_dark_palette(qapp)
     pal = qapp.palette()
     assert pal.color(QPalette.ColorRole.Base).lightness() < 40
@@ -351,7 +475,7 @@ def test_apply_dark_palette(qapp):
 
 def test_obs_panel_shows_sensors(qapp):
     """ObsPanel 收带 sensors 的 obs 后树含传感器节点（T15）。"""
-    from agentsim.gui.panels import ObsPanel
+    from simovia.gui.panels import ObsPanel
     p = ObsPanel()
     try:
         p.update_obs({"robots": {"arm": {
@@ -384,7 +508,7 @@ def test_cli_gui_help():
     import subprocess
     import sys
     proc = subprocess.run(
-        [sys.executable, "-m", "agentsim", "gui", "--help"],
+        [sys.executable, "-m", "simovia", "gui", "--help"],
         capture_output=True, text=True, cwd=str(ROOT))
     assert "usage:" in (proc.stdout + proc.stderr)
 
@@ -393,7 +517,7 @@ def test_cli_gui_help():
 
 def test_quat_euler_roundtrip():
     """T5：wxyz <-> 欧拉角(度)互逆（属性面板换算纯函数）。"""
-    from agentsim.gui.panels import quat_to_euler, euler_to_quat
+    from simovia.gui.panels import quat_to_euler, euler_to_quat
     for rpy in ((90.0, 0.0, 0.0), (0.0, -90.0, 0.0), (0.0, 0.0, 180.0),
                 (30.0, -45.0, 60.0), (0.0, 0.0, 0.0), (-179.0, 89.0, 1.0)):
         back = quat_to_euler(euler_to_quat(*rpy))
@@ -409,7 +533,7 @@ def test_quat_euler_roundtrip():
 def test_properties_pose_panel(qapp):
     """T5：位姿面板离屏——robot/object 回填 spin、应用信号 kind/pos/quat、
     None 语义。（物体也有三维坐标编辑——M7 场景自由度）"""
-    from agentsim.gui.panels import PropertiesPanel
+    from simovia.gui.panels import PropertiesPanel
 
     class _R:                      # RobotSpec 最小替身
         model = "m.xml"; controller = None; sensors = (); args = {}
@@ -467,7 +591,7 @@ def test_properties_live_pose_refresh(qapp):
     不匹配的名字不刷新；spin 正在编辑（有焦点）时不被运行帧覆盖。"""
     from PySide6.QtWidgets import QDoubleSpinBox
 
-    from agentsim.gui.panels import PropertiesPanel
+    from simovia.gui.panels import PropertiesPanel
 
     class _R:
         model = "m.xml"; controller = None; sensors = (); args = {}
@@ -533,7 +657,7 @@ def test_hud_paint_with_selection_survives(qapp):
     """
     from PySide6.QtGui import QPainter, QPixmap
 
-    from agentsim.gui.render_view import RenderView
+    from simovia.gui.render_view import RenderView
 
     spec = load_world(WORLD)
     view = RenderView()
@@ -550,6 +674,9 @@ def test_hud_paint_with_selection_survives(qapp):
         # 机器人选中：HUD 选中坐标芯片 + gizmo 绘制正常路径
         view._selection = ("robot", spec.robots[0].name)
         view._draw_hud(pt)
+        view._draw_origin_axes(pt)              # 原点轴叠加（遮挡截断）
+        view.set_origin_axes(False)
+        view._draw_origin_axes(pt)              # 关掉后是空操作
         view.edit_allowed = True
         view._draw_gizmo(pt)
         pt.end()
@@ -562,7 +689,7 @@ def test_hud_paint_with_selection_survives(qapp):
 
 def test_py_highlighter_formats(qapp):
     """T6：高亮器对字符串/注释/关键字/数字分别着色（离屏文档）。"""
-    from agentsim.gui.panels import PyHighlighter
+    from simovia.gui.panels import PyHighlighter
     from PySide6.QtGui import QTextDocument
     doc = QTextDocument()
     hl = PyHighlighter(doc)
@@ -584,7 +711,7 @@ def test_py_highlighter_formats(qapp):
 
 def test_code_panel_save_signal(qapp, tmp_path):
     """T6：代码页 set_world 填充下拉 + 编辑文本 + 保存发出 saveRequested。"""
-    from agentsim.gui.panels import CodePanel
+    from simovia.gui.panels import CodePanel
 
     class _R:                      # RobotSpec 替身
         def __init__(self, name, controller):
@@ -637,7 +764,7 @@ def _gear_manifest():
 
 
 def test_gear_panel_apply_gripper(qapp):
-    from agentsim.gui.panels import GearPanel
+    from simovia.gui.panels import GearPanel
     p = GearPanel()
     got = []
     p.apply_gripper.connect(lambda r, g: got.append((r, g)))
@@ -659,7 +786,7 @@ def test_gear_panel_apply_gripper(qapp):
 
 def test_gear_panel_gripper_with_pose(qapp):
     """填了 pos/rot 时发出的 gripper dict 带 pos/quat。"""
-    from agentsim.gui.panels import GearPanel
+    from simovia.gui.panels import GearPanel
     p = GearPanel()
     got = []
     p.apply_gripper.connect(lambda r, g: got.append(g))
@@ -685,7 +812,7 @@ def test_gear_panel_gripper_with_pose(qapp):
 
 def test_gear_panel_add_body_sensor(qapp):
     """tactile 走 body 引用，并携带 radius。"""
-    from agentsim.gui.panels import GearPanel
+    from simovia.gui.panels import GearPanel
     p = GearPanel()
     got = []
     p.add_sensor.connect(lambda r, s: got.append((r, s)))
@@ -704,7 +831,7 @@ def test_gear_panel_add_body_sensor(qapp):
 
 
 def test_gear_panel_add_joint_sensor(qapp):
-    from agentsim.gui.panels import GearPanel
+    from simovia.gui.panels import GearPanel
     p = GearPanel()
     got = []
     p.add_sensor.connect(lambda r, s: got.append(s))
@@ -720,7 +847,7 @@ def test_gear_panel_add_joint_sensor(qapp):
 
 
 def test_gear_panel_remove_sensor(qapp):
-    from agentsim.gui.panels import GearPanel
+    from simovia.gui.panels import GearPanel
     p = GearPanel()
     got = []
     p.remove_sensor.connect(lambda r, s: got.append((r, s)))
@@ -735,7 +862,7 @@ def test_gear_panel_remove_sensor(qapp):
 
 def test_new_scene_dialog_selection(qapp):
     """M6 新建场景对话框：切模板时参数表单跟随变化。"""
-    from agentsim.gui.app import NewSceneDialog
+    from simovia.gui.app import NewSceneDialog
     dlg = NewSceneDialog()
     try:
         # 默认含 pallet
@@ -785,7 +912,7 @@ _URDF_FIXTURE = """<?xml version="1.0"?>
 
 def test_import_spawn_z_urdf(tmp_path):
     """导入贴地高度：qpos0 最低点（base 底 -0.02）+ 2mm 缓冲。"""
-    from agentsim.gui.app import _import_spawn_z
+    from simovia.gui.app import _import_spawn_z
     p = tmp_path / "mybot.urdf"
     p.write_text(_URDF_FIXTURE, encoding="utf-8")
     assert _import_spawn_z(p) == pytest.approx(0.022)
@@ -794,7 +921,7 @@ def test_import_spawn_z_urdf(tmp_path):
 def test_import_spawn_z_mjcf(tmp_path):
     """MJCF 同样适用：root body 自带 pos 被 builder 规则清零，按相对
     几何算——box 半高 0.02 -> 0.022（与 URDF 同理）。"""
-    from agentsim.gui.app import _import_spawn_z
+    from simovia.gui.app import _import_spawn_z
     p = tmp_path / "bot.xml"
     p.write_text(
         "<mujoco><worldbody>"
@@ -811,7 +938,7 @@ def test_import_spawn_z_plane_skipped(tmp_path):
 
     plane 挂在 z=-1：若未跳过会得到 spawn=1.002，跳过则按球体 0.052。
     """
-    from agentsim.gui.app import _import_spawn_z
+    from simovia.gui.app import _import_spawn_z
     p = tmp_path / "with_plane.xml"
     p.write_text(
         "<mujoco><worldbody>"
@@ -845,8 +972,8 @@ def _wait_worker(qapp, dlg, timeout_s=5.0):
 
 def test_scene_agent_dialog_flow(qapp, monkeypatch):
     """空输入提示；生成成功后预览/按钮状态；点加载发 generated 信号。"""
-    from agentsim.agent import AgentConfig
-    from agentsim.gui.app import SceneAgentDialog
+    from simovia.agent import AgentConfig
+    from simovia.gui.app import SceneAgentDialog
     from PySide6.QtWidgets import QDialog
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     dlg = SceneAgentDialog(cfg)
@@ -869,7 +996,7 @@ def test_scene_agent_dialog_flow(qapp, monkeypatch):
                     self.dl("unitree_go2")
                 return "name: ok\nfloor: {}\n", "已生成简单场景"
 
-        import agentsim.agent as agent_pkg
+        import simovia.agent as agent_pkg
         monkeypatch.setattr(agent_pkg, "SceneGenSession", FakeSession)
         got = []
         dlg.generated.connect(got.append)
@@ -892,9 +1019,9 @@ def test_scene_agent_dialog_flow(qapp, monkeypatch):
 
 def test_scene_agent_dialog_failure(qapp, monkeypatch):
     """生成失败：状态栏显示错误，worker 复位可再试。"""
-    from agentsim.agent import AgentConfig
-    from agentsim.agent.scene_agent import SceneGenError
-    from agentsim.gui.app import SceneAgentDialog
+    from simovia.agent import AgentConfig
+    from simovia.agent.scene_agent import SceneGenError
+    from simovia.gui.app import SceneAgentDialog
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     dlg = SceneAgentDialog(cfg)
     try:
@@ -907,7 +1034,7 @@ def test_scene_agent_dialog_failure(qapp, monkeypatch):
             def generate(self, req):
                 raise SceneGenError("LLM 服务不可达")
 
-        import agentsim.agent as agent_pkg
+        import simovia.agent as agent_pkg
         monkeypatch.setattr(agent_pkg, "SceneGenSession", FakeSession)
         dlg._on_generate()
         _wait_worker(qapp, dlg)
@@ -921,8 +1048,8 @@ def test_scene_agent_dialog_failure(qapp, monkeypatch):
 
 def test_scene_agent_dialog_refine(qapp, monkeypatch):
     """生成后继续调整：第二次点按钮走 refine，预览刷新为新版。"""
-    from agentsim.agent import AgentConfig
-    from agentsim.gui.app import SceneAgentDialog
+    from simovia.agent import AgentConfig
+    from simovia.gui.app import SceneAgentDialog
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     dlg = SceneAgentDialog(cfg)
     try:
@@ -940,7 +1067,7 @@ def test_scene_agent_dialog_refine(qapp, monkeypatch):
                 seen.append(("refine", change))
                 return "name: v2\n", "v2"
 
-        import agentsim.agent as agent_pkg
+        import simovia.agent as agent_pkg
         monkeypatch.setattr(agent_pkg, "SceneGenSession", FakeSession)
         dlg.input.setPlainText("放一个红方块")
         dlg._on_generate()
@@ -960,8 +1087,8 @@ def test_scene_agent_dialog_refine(qapp, monkeypatch):
 
 def test_scene_agent_dialog_save(qapp, monkeypatch, tmp_path):
     """保存按钮：QFileDialog 打桩选路径，YAML 落盘且状态提示。"""
-    from agentsim.agent import AgentConfig
-    from agentsim.gui.app import SceneAgentDialog
+    from simovia.agent import AgentConfig
+    from simovia.gui.app import SceneAgentDialog
     from PySide6.QtWidgets import QFileDialog
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     dlg = SceneAgentDialog(cfg)
@@ -973,7 +1100,7 @@ def test_scene_agent_dialog_save(qapp, monkeypatch, tmp_path):
             def generate(self, req):
                 return "name: my_world\nfloor: {}\n", ""
 
-        import agentsim.agent as agent_pkg
+        import simovia.agent as agent_pkg
         monkeypatch.setattr(agent_pkg, "SceneGenSession", FakeSession)
         dlg.input.setPlainText("需求")
         dlg._on_generate()
@@ -996,7 +1123,7 @@ class TestMountImePlugin:
     """mount_ime_plugin：本地 fcitx5 插件目录存在时自动挂载。"""
 
     def _mk_plugin(self, home):
-        d = (home / ".local/share/agentsim/qt-plugins"
+        d = (home / ".local/share/simovia/qt-plugins"
              / "platforminputcontexts")
         d.mkdir(parents=True)
         (d / "libfcitx5platforminputcontextplugin.so").touch()
@@ -1010,7 +1137,7 @@ class TestMountImePlugin:
         monkeypatch.delenv("QT_IM_MODULE", raising=False)
         mount_ime_plugin()
         assert os.environ["QT_PLUGIN_PATH"] == \
-            str(tmp_path / ".local/share/agentsim/qt-plugins")
+            str(tmp_path / ".local/share/simovia/qt-plugins")
         assert os.environ["QT_IM_MODULE"] == "fcitx"
 
     def test_noop_without_plugin(self, monkeypatch, tmp_path):
@@ -1030,7 +1157,7 @@ class TestMountImePlugin:
         monkeypatch.delenv("QT_IM_MODULE", raising=False)
         mount_ime_plugin()
         assert os.environ["QT_PLUGIN_PATH"].split(os.pathsep) == [
-            str(tmp_path / ".local/share/agentsim/qt-plugins"), "/some/other"]
+            str(tmp_path / ".local/share/simovia/qt-plugins"), "/some/other"]
 
     def test_respects_existing_im_module(self, monkeypatch, tmp_path):
         self._mk_plugin(tmp_path)
@@ -1059,4 +1186,4 @@ class TestMountImePlugin:
         monkeypatch.delenv("QT_PLUGIN_PATH", raising=False)
         mount_ime_plugin()
         assert os.environ["QT_PLUGIN_PATH"].endswith(
-            ".local/share/agentsim/qt-plugins")
+            ".local/share/simovia/qt-plugins")

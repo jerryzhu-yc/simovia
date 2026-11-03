@@ -5,8 +5,8 @@ import mujoco
 import numpy as np
 import pytest
 
-from agentsim.errors import WorldError
-from agentsim.robot_spec import (
+from simovia.errors import WorldError
+from simovia.robot_spec import (
     build_robot_spec, dump_robot, euler_to_matrix, link_frames,
     load_robot, matrix_to_euler_deg, matrix_to_quat, parse_robot,
     quat_to_matrix,
@@ -51,7 +51,7 @@ def test_euler_matrix_known_values():
 # ---------------------------------------------------------------- 解析校验
 
 def test_parse_ok_and_actuator_names():
-    from agentsim.robot_spec import actuator_names
+    from simovia.robot_spec import actuator_names
     r = parse_robot(TWO_LINK)
     assert [lk.name for lk in r.links] == ["base", "link1", "link2"]
     assert r.link("base").joint.type == "fixed"

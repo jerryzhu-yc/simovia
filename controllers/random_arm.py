@@ -5,7 +5,7 @@
 """
 import random
 
-from agentsim.controller import Robot
+from simovia.controller import Robot
 
 robot = Robot()
 speed = float(robot.args.get("speed", 0.2))

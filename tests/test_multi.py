@@ -11,9 +11,9 @@ import pathlib
 import mujoco
 import numpy as np
 
-from agentsim.kernel.sim import Simulation
-from agentsim.world.builder import build_world
-from agentsim.world.schema import parse_world
+from simovia.kernel.sim import Simulation
+from simovia.world.builder import build_world
+from simovia.world.schema import parse_world
 
 ROOT = pathlib.Path(__file__).parent.parent
 ARM_MODEL = str(ROOT / "models" / "demo_arm.xml")
@@ -74,7 +74,7 @@ def _ctrl_code(ctrl_expr: str, n: int = 1, stop_after: int | None = None,
                   else "robot.close(); raise SystemExit(0)")
         exit_block = (f"    if t >= {stop_after}:\n"
                       f"        {action}\n")
-    return f"""from agentsim.controller import Robot
+    return f"""from simovia.controller import Robot
 
 robot = Robot()
 t = 0

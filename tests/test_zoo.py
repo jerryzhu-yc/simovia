@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 
-from agentsim.errors import WorldError  # noqa: E402
+from simovia.errors import WorldError  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -20,7 +20,7 @@ def qapp():
 
 def _cached(key: str, xml: str) -> bool:
     """自带资产或 menagerie 缓存命中即可跑（离线优先）。"""
-    from agentsim.zoo import bundled_model
+    from simovia.zoo import bundled_model
     if bundled_model(key) is not None:
         return True
     return bool(list(pathlib.Path.home().glob(
@@ -34,7 +34,7 @@ pytestmark = pytest.mark.skipif(
 
 def test_ensure_model_cached_and_unknown():
     """T1：缓存命中返回存在的 xml；未知 key 报错列可用名。"""
-    from agentsim.zoo import ensure_model, MODELS
+    from simovia.zoo import ensure_model, MODELS
     p = ensure_model("unitree_go2")
     assert p.name == "go2.xml" and p.exists()
     assert "unitree_go2" in MODELS
@@ -44,7 +44,7 @@ def test_ensure_model_cached_and_unknown():
 
 def test_all_models_bundled_offline():
     """T1b：34 个模型资产随仓库自带（离线即用，不依赖 mujoco-menagerie）。"""
-    from agentsim.zoo import BUNDLED_DIR, MODELS, ensure_model
+    from simovia.zoo import BUNDLED_DIR, MODELS, ensure_model
     missing = [k for k in MODELS
                if not (BUNDLED_DIR / k / MODELS[k]["xml"]).exists()]
     assert not missing, f"仓库缺模型资产: {missing}"
@@ -58,9 +58,9 @@ def test_all_models_bundled_offline():
 
 def test_generate_products(tmp_path):
     """T2：产物完整——world.yaml 可编译、控制器模板含执行器与 API 示例。"""
-    from agentsim.zoo import generate
-    from agentsim.world.schema import parse_world
-    from agentsim.world.builder import build_world
+    from simovia.zoo import generate
+    from simovia.world.schema import parse_world
+    from simovia.world.builder import build_world
     r = generate("unitree_go2", out_dir=tmp_path / "go2")
     world_p = pathlib.Path(r["world"])
     ctrl_p = pathlib.Path(r["controller"])
@@ -84,10 +84,10 @@ def test_generate_products(tmp_path):
 
 def test_generated_world_runs_end_to_end(tmp_path):
     """T3：生成的世界经 MCP 会话层 load_world + run，零 crash、清单正确。"""
-    from agentsim.zoo import generate
-    from agentsim.mcp_server import AgentSimSession
+    from simovia.zoo import generate
+    from simovia.mcp_server import SimoviaSession
     r = generate("unitree_go2", out_dir=tmp_path / "go2")
-    s = AgentSimSession()
+    s = SimoviaSession()
     try:
         s.call_tool("load_world", {"yaml_path": r["world"]})
         stats = s.call_tool("run", {"ticks": 40})
@@ -99,8 +99,8 @@ def test_generated_world_runs_end_to_end(tmp_path):
 
 def test_zoo_create_list_via_session():
     """T4a：MCP zoo_create(key='list') 下发预配置清单（GUI/Agent 同构入口）。"""
-    from agentsim.mcp_server import AgentSimSession
-    s = AgentSimSession()
+    from simovia.mcp_server import SimoviaSession
+    s = SimoviaSession()
     try:
         r = s.call_tool("zoo_create", {"key": "list"})
         keys = [m["key"] for m in r["models"]]
@@ -114,7 +114,7 @@ def test_zoo_create_list_via_session():
 
 def test_zoo_dialog_offscreen(qapp):
     """T4b：ZooDialog 离屏实例化、清单非空、selected_key 可取（GUI 闭环）。"""
-    from agentsim.gui.app import ZooDialog
+    from simovia.gui.app import ZooDialog
     dlg = ZooDialog()
     try:
         assert dlg.listw.count() >= 34
@@ -128,7 +128,7 @@ def test_zoo_dialog_offscreen(qapp):
 
 def test_demo_config_full_coverage():
     """T1：模型库全部带 demo 配置，kind/字段完整（纯离线，零缓存依赖）。"""
-    from agentsim.zoo import MODELS
+    from simovia.zoo import MODELS
     assert len(MODELS) >= 34              # 34 基线（含 M7 扩至 34 个模型）
     assert all(m.get("demo") for m in MODELS.values())
     kinds = {m["demo"]["kind"] for m in MODELS.values()}
@@ -150,7 +150,7 @@ def test_demo_config_full_coverage():
 def test_demo_generate_products(tmp_path):
     """T2 前置：demo=True 产物完整——demo.py/世界隐含 demo 引擎参数。"""
     import yaml
-    from agentsim.zoo import generate
+    from simovia.zoo import generate
     r = generate("unitree_go2", out_dir=tmp_path / "g", demo=True)
     assert "demo" in r and pathlib.Path(r["demo"]).exists()
     world_p = pathlib.Path(r["world"])
@@ -169,10 +169,10 @@ def test_demo_generate_products(tmp_path):
 def test_demo_go2_walks_end_to_end(tmp_path):
     """T2：go2 demo 端到端 600 tick 零 crash 且位移 > 1m（真实 ZMQ 全链路）。"""
     import math
-    from agentsim.zoo import generate
-    from agentsim.mcp_server import AgentSimSession
+    from simovia.zoo import generate
+    from simovia.mcp_server import SimoviaSession
     r = generate("unitree_go2", out_dir=tmp_path / "g", demo=True)
-    s = AgentSimSession()
+    s = SimoviaSession()
     try:
         s.call_tool("load_world", {"yaml_path": r["world"]})
         obs0 = s.call_tool("get_observation", {})
@@ -194,10 +194,10 @@ def test_demo_go2_walks_end_to_end(tmp_path):
                     reason="panda 未缓存（首次使用需网络下载）")
 def test_demo_panda_moves(tmp_path):
     """T3：panda demo 零 crash 且关节动（观测变化 > 0.1 rad）。"""
-    from agentsim.zoo import generate
-    from agentsim.mcp_server import AgentSimSession
+    from simovia.zoo import generate
+    from simovia.mcp_server import SimoviaSession
     r = generate("franka_emika_panda", out_dir=tmp_path / "p", demo=True)
-    s = AgentSimSession()
+    s = SimoviaSession()
     try:
         s.call_tool("load_world", {"yaml_path": r["world"]})
         obs0 = s.call_tool("get_observation", {})
@@ -221,13 +221,13 @@ def _cached_path(key: str, xml: str) -> bool:
                     reason="ur10e 未缓存（首次使用需网络下载）")
 def test_demo_ur10e_registered_and_moves(tmp_path):
     """M6：ur10e 入库——可生成 demo 且 6 关节扫掠运动，零 crash。"""
-    from agentsim.zoo import MODELS, generate
-    from agentsim.mcp_server import AgentSimSession
+    from simovia.zoo import MODELS, generate
+    from simovia.mcp_server import SimoviaSession
     assert "universal_robots_ur10e" in MODELS
     assert MODELS["universal_robots_ur10e"]["xml"] == "ur10e.xml"
 
     r = generate("universal_robots_ur10e", out_dir=tmp_path / "u", demo=True)
-    s = AgentSimSession()
+    s = SimoviaSession()
     try:
         s.call_tool("load_world", {"yaml_path": r["world"]})
         obs0 = s.call_tool("get_observation", {})
@@ -248,10 +248,10 @@ def test_demo_ur10e_registered_and_moves(tmp_path):
 def test_floating_base_root_in_observation(tmp_path):
     """四足观测带浮动基座 root [x,y,z,qw,qx,qy,qz]，且 run 后躯干 z 随
     物理压低（不再锁在出生位）。匿名 free joint 不在 qpos 里，靠 root 键。"""
-    from agentsim.zoo import generate
-    from agentsim.mcp_server import AgentSimSession
+    from simovia.zoo import generate
+    from simovia.mcp_server import SimoviaSession
     r = generate("unitree_go2", out_dir=tmp_path / "root", demo=True)
-    s = AgentSimSession()
+    s = SimoviaSession()
     try:
         s.call_tool("load_world", {"yaml_path": r["world"]})
         obs0 = s.call_tool("get_observation", {})
@@ -272,9 +272,9 @@ def test_render_model_follows_floating_root(tmp_path):
     """GUI 渲染模型 apply_observation 后浮动基座躯干跟随 root（四足
     "悬空奔跑"的回归守护：以前匿名 free joint 不同步，只有腿动）。"""
     import mujoco
-    from agentsim.zoo import generate
-    from agentsim.world.schema import load_world
-    from agentsim.gui.render_view import RenderModel
+    from simovia.zoo import generate
+    from simovia.world.schema import load_world
+    from simovia.gui.render_view import RenderModel
     r = generate("unitree_go2", out_dir=tmp_path / "render", demo=True)
     spec = load_world(r["world"])
     rm = RenderModel(spec, width=64, height=48)

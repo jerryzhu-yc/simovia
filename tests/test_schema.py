@@ -1,8 +1,8 @@
 """schema 校验测试：合法世界全字段解析 + 各种坏输入报错可读。"""
 import pytest
 
-from agentsim.errors import WorldError
-from agentsim.world.schema import (load_world, parse_world, hex_to_rgba,
+from simovia.errors import WorldError
+from simovia.world.schema import (load_world, parse_world, hex_to_rgba,
                                    resolve_zoo_models)
 
 import pathlib

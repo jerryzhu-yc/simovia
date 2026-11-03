@@ -1,0 +1,394 @@
+"""专业机器人仿真平台风格主题（参考 Webots / MuJoCo Sim 的深色工作台）。
+
+只提供 QSS 与少量配色常量，不依赖任何控件实例。
+"""
+from __future__ import annotations
+
+import pathlib
+
+# 下拉箭头 / 树展开箭头 / 勾选标记：QSS 的 image: 需要文件路径，
+# SVG 由 Qt 的 SVG 插件加载（PySide6 自带）。用绝对路径，Windows 下
+# as_posix 避免反斜杠在 CSS 里被当转义符。
+_ASSETS = pathlib.Path(__file__).resolve().parent / "assets"
+_ARROW_DOWN = (_ASSETS / "chevron-down.svg").as_posix()
+_ARROW_UP = (_ASSETS / "chevron-up.svg").as_posix()
+_ARROW_RIGHT = (_ASSETS / "chevron-right.svg").as_posix()
+_CHECK = (_ASSETS / "check.svg").as_posix()
+
+# 调色板（深色 IDE 风格）
+C_BG = "#1e1f22"          # 窗口底色
+C_BG_ALT = "#2b2d30"      # 面板 / 停靠区
+C_BG_INPUT = "#3c3f44"    # 输入框 / spinbox
+C_BG_HOVER = "#36393f"    # 悬停
+C_BG_PRESSED = "#40434a"
+C_BORDER = "#393b40"
+C_TEXT = "#dfe1e5"
+C_TEXT_DIM = "#9aa0a8"
+C_ACCENT = "#4a90d9"      # 主强调色（蓝）
+C_ACCENT_HOVER = "#5a9fe6"
+C_OK = "#59a869"          # 运行/成功 绿
+C_WARN = "#d9a441"        # 暂停/警告 琥珀
+C_ERR = "#d96a5f"         # 错误 红
+C_RUNNING = "#59a869"
+
+# 3D 视口叠加层文字颜色
+HUD_TEXT = "#e8eaed"
+
+APP_QSS = f"""
+* {{
+    font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 12px;
+    color: {C_TEXT};
+}}
+
+QMainWindow, QDialog {{
+    background: {C_BG};
+}}
+
+/* ---------------- 菜单栏 ---------------- */
+QMenuBar {{
+    background: {C_BG};
+    border-bottom: 1px solid {C_BORDER};
+    padding: 1px;
+}}
+QMenuBar::item {{
+    background: transparent;
+    padding: 5px 12px;
+    border-radius: 3px;
+}}
+QMenuBar::item:selected {{ background: {C_BG_HOVER}; }}
+QMenu {{
+    background: {C_BG_ALT};
+    border: 1px solid {C_BORDER};
+    padding: 4px;
+}}
+QMenu::item {{
+    padding: 6px 24px 6px 14px;
+    border-radius: 4px;
+}}
+QMenu::item:selected {{ background: {C_ACCENT}; color: white; }}
+QMenu::separator {{
+    height: 1px; background: {C_BORDER}; margin: 4px 8px;
+}}
+
+/* ---------------- 工具栏 ---------------- */
+QToolBar {{
+    background: {C_BG_ALT};
+    border: none;
+    border-bottom: 1px solid {C_BORDER};
+    spacing: 3px;
+    padding: 3px;
+}}
+QToolBar QToolButton {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 4px 9px;
+    color: {C_TEXT};
+    min-height: 22px;
+}}
+QToolBar QToolButton:hover {{
+    background: {C_BG_HOVER};
+    border-color: {C_BORDER};
+}}
+QToolBar QToolButton:pressed {{
+    background: {C_BG_PRESSED};
+}}
+QToolBar QToolButton:checked {{
+    background: #2c4560;
+    border-color: {C_ACCENT};
+}}
+QToolBar QToolButton:checked:hover {{
+    background: #33506e;
+}}
+QToolBar QToolButton:disabled {{
+    color: {C_TEXT_DIM};
+}}
+QToolBar::separator {{
+    width: 1px; background: {C_BORDER};
+    margin: 4px 6px;
+}}
+QToolBar QLabel {{ color: {C_TEXT_DIM}; padding: 0 2px; }}
+
+/* ---------------- 通用按钮 ---------------- */
+QPushButton {{
+    background: {C_BG_INPUT};
+    border: 1px solid {C_BORDER};
+    border-radius: 4px;
+    padding: 5px 14px;
+    color: {C_TEXT};
+}}
+QPushButton:hover {{ background: {C_BG_HOVER}; border-color: {C_ACCENT}; }}
+QPushButton:pressed {{ background: {C_BG_PRESSED}; }}
+QPushButton:disabled {{ color: {C_TEXT_DIM}; background: {C_BG_ALT}; }}
+QPushButton#primary {{
+    background: {C_ACCENT}; border-color: {C_ACCENT}; color: white;
+}}
+QPushButton#primary:hover {{ background: {C_ACCENT_HOVER}; }}
+
+/* ---------------- 输入控件 ---------------- */
+QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit {{
+    background: {C_BG_INPUT};
+    border: 1px solid {C_BORDER};
+    border-radius: 3px;
+    padding: 3px 6px;
+    selection-background-color: {C_ACCENT};
+}}
+QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QLineEdit:focus {{
+    border-color: {C_ACCENT};
+}}
+QComboBox {{ padding-right: 18px; }}
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 18px;
+    border: none;
+    background: transparent;
+}}
+QComboBox::down-arrow {{
+    image: url("{_ARROW_DOWN}");
+    width: 10px;
+    height: 10px;
+}}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 15px;
+    border-left: 1px solid {C_BORDER};
+    border-top-right-radius: 3px;
+    background: {C_BG_ALT};
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 15px;
+    border-left: 1px solid {C_BORDER};
+    border-bottom-right-radius: 3px;
+    background: {C_BG_ALT};
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background: {C_BG_HOVER};
+}}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: url("{_ARROW_UP}");
+    width: 8px; height: 8px;
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: url("{_ARROW_DOWN}");
+    width: 8px; height: 8px;
+}}
+QComboBox QAbstractItemView {{
+    background: {C_BG_ALT};
+    border: 1px solid {C_BORDER};
+    selection-background-color: {C_ACCENT};
+}}
+QCheckBox {{ spacing: 6px; color: {C_TEXT}; }}
+QCheckBox::indicator {{
+    width: 15px; height: 15px;
+    border: 1px solid {C_BORDER};
+    border-radius: 3px;
+    background: {C_BG_INPUT};
+}}
+QCheckBox::indicator:hover {{ border-color: {C_ACCENT}; }}
+QCheckBox::indicator:checked {{
+    background: {C_ACCENT};
+    border-color: {C_ACCENT};
+    image: url("{_CHECK}");
+}}
+
+/* ---------------- 停靠面板 ---------------- */
+QDockWidget {{
+    titlebar-close-icon: none;
+    titlebar-normal-icon: none;
+}}
+QDockWidget::title {{
+    background: {C_BG_ALT};
+    border-bottom: 1px solid {C_BORDER};
+    padding: 6px 10px;
+    font-weight: 600;
+    color: {C_TEXT_DIM};
+}}
+QGroupBox {{
+    border: 1px solid {C_BORDER};
+    border-radius: 5px;
+    margin-top: 12px;
+    padding: 8px 8px 6px 8px;
+    background: {C_BG_ALT};
+    font-weight: 600;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 5px;
+    color: {C_ACCENT};
+}}
+
+/* ---------------- 树 / 列表 / 表格 ---------------- */
+QTreeWidget, QListWidget, QTableWidget {{
+    background: {C_BG};
+    border: 1px solid {C_BORDER};
+    border-radius: 4px;
+    alternate-background-color: {C_BG_ALT};
+    outline: none;
+}}
+QTreeWidget::item, QListWidget::item {{
+    padding: 2px 2px;
+    min-height: 20px;
+}}
+QTreeWidget::item:selected, QListWidget::item:selected {{
+    background: {C_ACCENT}; color: white;
+}}
+QTreeView::branch:closed:has-children {{
+    image: url("{_ARROW_RIGHT}");
+}}
+QTreeView::branch:open:has-children {{
+    image: url("{_ARROW_DOWN}");
+}}
+QHeaderView::section {{
+    background: {C_BG_ALT};
+    color: {C_TEXT_DIM};
+    border: none;
+    border-bottom: 1px solid {C_BORDER};
+    border-right: 1px solid {C_BORDER};
+    padding: 4px 8px;
+    font-weight: 600;
+}}
+
+/* ---------------- 标签 / 表单 ---------------- */
+QLabel {{ background: transparent; }}
+QFormLayout QLabel {{ color: {C_TEXT_DIM}; }}
+
+/* ---------------- 选项卡 ---------------- */
+QTabWidget::pane {{
+    border: 1px solid {C_BORDER};
+    border-radius: 4px;
+    background: {C_BG};
+}}
+QTabBar::tab {{
+    background: {C_BG_ALT};
+    border: 1px solid {C_BORDER};
+    border-bottom: none;
+    padding: 6px 14px;
+    margin-right: 2px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    color: {C_TEXT_DIM};
+}}
+QTabBar::tab:selected {{
+    background: {C_BG};
+    color: {C_TEXT};
+    border-bottom: 2px solid {C_ACCENT};
+}}
+
+/* ---------------- 分割条 ---------------- */
+QSplitter::handle {{ background: {C_BORDER}; }}
+QSplitter::handle:horizontal {{ width: 2px; }}
+QSplitter::handle:vertical {{ height: 2px; }}
+
+/* ---------------- 滚动条 ---------------- */
+QScrollBar:vertical {{
+    background: transparent; width: 10px; margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: #4a4d53; min-height: 28px; border-radius: 5px;
+}}
+QScrollBar::handle:vertical:hover {{ background: #5a5e65; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{
+    background: transparent; height: 10px; margin: 0;
+}}
+QScrollBar::handle:horizontal {{
+    background: #4a4d53; min-width: 28px; border-radius: 5px;
+}}
+QScrollBar::handle:horizontal:hover {{ background: #5a5e65; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+
+/* ---------------- 状态栏 ---------------- */
+QStatusBar {{
+    background: {C_BG_ALT};
+    border-top: 1px solid {C_BORDER};
+    color: {C_TEXT_DIM};
+}}
+QStatusBar QLabel {{ padding: 0 6px; color: {C_TEXT_DIM}; }}
+QStatusBar::item {{ border: none; }}
+
+/* ---------------- 工具提示 ---------------- */
+QToolTip {{
+    background: {C_BG_INPUT};
+    color: {C_TEXT};
+    border: 1px solid {C_ACCENT};
+    padding: 4px 7px;
+    border-radius: 3px;
+}}
+
+/* ---------------- 文本编辑区 ----------------
+   代码编辑器 / Agent 对话框 / 控制台统一深底：语法高亮用的是深色主题
+   配色，Windows/macOS 浅色系统主题下不强制深底就会白底配浅色高亮，
+   代码看不清。 */
+QPlainTextEdit, QTextEdit {{
+    background: #18191c;
+    border: 1px solid {C_BORDER};
+    border-radius: 4px;
+    color: {C_TEXT};
+    selection-background-color: {C_ACCENT};
+    selection-color: white;
+}}
+/* 控制台：等宽字体（背景/边框等继承上面的通用规则） */
+QPlainTextEdit#console, QTextEdit#console {{
+    font-family: "JetBrains Mono", "Cascadia Mono", "Consolas",
+                 "DejaVu Sans Mono", monospace;
+    font-size: 11.5px;
+}}
+"""
+
+
+def apply_dark_palette(app) -> None:
+    """给 QApplication 打深色调色板（QSS 之外的兜底）。
+
+    QSS 覆盖了主要控件，但占位符文字、禁用态文字、原生部件等仍读
+    palette——Windows 默认浅色调色板会让这些地方白底黑字。
+    在 setStyleSheet 之前调用。
+    """
+    from PySide6.QtGui import QColor, QPalette
+
+    roles = QPalette.ColorRole
+    groups = QPalette.ColorGroup
+    p = QPalette()
+    p.setColor(roles.Window, QColor(C_BG))
+    p.setColor(roles.WindowText, QColor(C_TEXT))
+    p.setColor(roles.Base, QColor("#18191c"))
+    p.setColor(roles.AlternateBase, QColor(C_BG_ALT))
+    p.setColor(roles.Text, QColor(C_TEXT))
+    p.setColor(roles.Button, QColor(C_BG_ALT))
+    p.setColor(roles.ButtonText, QColor(C_TEXT))
+    p.setColor(roles.ToolTipBase, QColor(C_BG_INPUT))
+    p.setColor(roles.ToolTipText, QColor(C_TEXT))
+    p.setColor(roles.BrightText, QColor("#ffffff"))
+    p.setColor(roles.Highlight, QColor(C_ACCENT))
+    p.setColor(roles.HighlightedText, QColor("#ffffff"))
+    p.setColor(roles.PlaceholderText, QColor(C_TEXT_DIM))
+    p.setColor(roles.Link, QColor(C_ACCENT))
+    dim = QColor(C_TEXT_DIM)
+    for role in (roles.WindowText, roles.Text, roles.ButtonText):
+        p.setColor(groups.Disabled, role, dim)
+    app.setPalette(p)
+
+
+def state_color(state: str) -> str:
+    return {
+        "empty": C_TEXT_DIM,
+        "idle": C_TEXT,
+        "running": C_RUNNING,
+        "finished": C_ACCENT,
+    }.get(state, C_TEXT_DIM)
+
+
+def state_text(state: str) -> str:
+    return {
+        "empty": "未加载",
+        "idle": "就绪",
+        "running": "运行中",
+        "finished": "已结束",
+    }.get(state, state)

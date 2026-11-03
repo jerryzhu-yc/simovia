@@ -4,7 +4,7 @@ import zlib
 
 import numpy as np
 
-from agentsim.render import encode_png
+from simovia.render import encode_png
 
 
 def _chunks(png: bytes):
@@ -49,9 +49,9 @@ def test_sync_lights_positions_scene_lights():
 
     import mujoco
 
-    from agentsim.render import _sync_lights
-    from agentsim.world.builder import build_world
-    from agentsim.world.schema import load_world
+    from simovia.render import _sync_lights
+    from simovia.world.builder import build_world
+    from simovia.world.schema import load_world
 
     root = pathlib.Path(__file__).parent.parent
     model, _ = build_world(load_world(root / "worlds" / "pick_cube.yaml"))

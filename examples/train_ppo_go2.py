@@ -14,7 +14,7 @@
     ~/miniconda3/bin/python examples/train_ppo_go2.py
 
 输出：models/ppo_go2.zip（policy.zip 可被 demo 控制器加载——具体加载位置见
-agentsim/controllers/pick_place.py 顶部说明，本示例不实现 policy 加载，
+simovia/controllers/pick_place.py 顶部说明，本示例不实现 policy 加载，
 避免 sb3 不在回归路径里）。
 """
 from __future__ import annotations
@@ -27,8 +27,8 @@ sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
 
-from agentsim.rl_env import AgentSimEnv  # noqa: E402
-from agentsim.zoo import generate  # noqa: E402
+from simovia.rl_env import SimoviaEnv  # noqa: E402
+from simovia.zoo import generate  # noqa: E402
 
 
 def _make_world_yaml(out_dir: Path) -> Path:
@@ -58,7 +58,7 @@ class Go2ForwardReward:
     - 跌倒（rootz < 0.15）终止
     """
 
-    def __init__(self, env: AgentSimEnv):
+    def __init__(self, env: SimoviaEnv):
         self.env = env
         self._root_bid = next(iter(env.index.robots["unitree_go2"].bodies.values()))
         self._last_x = 0.0
@@ -83,7 +83,7 @@ class Go2ForwardReward:
 class _RewardWrapper:
     """gymnasium wrapper：叠加 Go2ForwardReward + 跌倒终止。"""
 
-    def __init__(self, env: AgentSimEnv, bonus: Go2ForwardReward):
+    def __init__(self, env: SimoviaEnv, bonus: Go2ForwardReward):
         self.env = env
         self.bonus = bonus
 
@@ -121,12 +121,12 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    out_dir = Path("/tmp/agentsim_ppo_go2")
+    out_dir = Path("/tmp/simovia_ppo_go2")
     out_dir.mkdir(parents=True, exist_ok=True)
     world = _make_world_yaml(out_dir)
     print(f"世界：{world}")
 
-    env = AgentSimEnv(world, render_mode=None)
+    env = SimoviaEnv(world, render_mode=None)
     bonus = Go2ForwardReward(env)
     wrapped = _RewardWrapper(env, bonus)
     vec = DummyVecEnv([lambda: wrapped])

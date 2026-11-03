@@ -29,7 +29,7 @@ link5 穿透、link7_c 蹭桌全是次生症状）。
 甩臂把方块从指间震落；close 相位夹爪伺服被方块挡在行程中段、永远
 到不了 ctrl 目标，到位判定不判夹爪、只按 tick 硬超时推进。
 """
-from agentsim.controller import Robot
+from simovia.controller import Robot
 
 # (相位, q1..q7 伺服 ctrl 目标 rad, 夹爪 ctrl m, 关节斜坡速度 rad/s)
 # 关节目标由 6D 位姿 IK 标定（tcp 位置 + 手指朝下 + 开口轴对齐世界 x），

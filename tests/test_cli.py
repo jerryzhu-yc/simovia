@@ -2,7 +2,7 @@
 import json
 import pathlib
 
-from agentsim.cli import main
+from simovia.cli import main
 
 ROOT = pathlib.Path(__file__).parent.parent
 

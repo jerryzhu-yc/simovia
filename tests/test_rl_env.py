@@ -8,8 +8,8 @@ import pathlib
 import numpy as np
 import pytest
 
-from agentsim.rl_env import AgentSimEnv
-from agentsim.world.schema import parse_world, resolve_zoo_models
+from simovia.rl_env import SimoviaEnv
+from simovia.world.schema import parse_world, resolve_zoo_models
 import yaml
 
 ROOT = pathlib.Path(__file__).parent.parent
@@ -53,7 +53,7 @@ def _probe_action(t: int) -> np.ndarray:
 class TestSpaces:
     def test_action_space_matches_actuators(self):
         """动作空间 = 全执行器拼接，界 = ctrlrange（T1）。"""
-        env = AgentSimEnv(WORLD)
+        env = SimoviaEnv(WORLD)
         assert env.action_space.shape == (8,)
         lo = env.action_space.low
         hi = env.action_space.high
@@ -64,16 +64,16 @@ class TestSpaces:
 
     def test_obs_dim_qpos_qvel_sensors(self):
         """观测维度 = 机器人 qpos + qvel + sensors 拼接宽（无 18 / 带 25）。"""
-        env = AgentSimEnv(_pick_spec())
+        env = SimoviaEnv(_pick_spec())
         assert env._obs_dim == 9 + 9               # panda 7 关节 + 2 指节
         env.close()
-        env = AgentSimEnv(_pick_spec(with_sensors=True))
+        env = SimoviaEnv(_pick_spec(with_sensors=True))
         assert env._obs_dim == 9 + 9 + 1 + 6        # j1_enc + imu(6)
         env.close()
 
     def test_multi_robot_flat_action(self):
         """多机器人世界：动作空间是各机器人执行器 flat 拼接。"""
-        env = AgentSimEnv(ROOT / "worlds" / "twin_arms.yaml")
+        env = SimoviaEnv(ROOT / "worlds" / "twin_arms.yaml")
         assert env.action_space.shape[0] == sum(
             len(r.actuators) for r in env.index.robots.values()) >= 10
         env.close()
@@ -82,7 +82,7 @@ class TestSpaces:
 class TestResetAndStep:
     def test_reset_deterministic_same_seed(self):
         """同 seed 两次 reset 的 obs 逐位一致（T2）。"""
-        env = AgentSimEnv(WORLD)
+        env = SimoviaEnv(WORLD)
         o1, i1 = env.reset(seed=42)
         o2, i2 = env.reset(seed=42)
         assert np.array_equal(o1, o2)
@@ -91,7 +91,7 @@ class TestResetAndStep:
 
     def test_step_random_rollout_finite(self):
         """随机策略 500 步不崩、reward 有限（T3）。"""
-        env = AgentSimEnv(WORLD)
+        env = SimoviaEnv(WORLD)
         obs, info = env.reset(seed=7)
         rewards = []
         for _ in range(500):
@@ -105,7 +105,7 @@ class TestResetAndStep:
 
     def test_truncated_at_max_ticks(self):
         """tick 到 max_ticks 时 truncated=True。"""
-        env = AgentSimEnv(WORLD)
+        env = SimoviaEnv(WORLD)
         env.reset(seed=1)
         assert env.task.max_ticks == 5000
         for _ in range(5000):
@@ -116,9 +116,9 @@ class TestResetAndStep:
         env.close()
 
     def test_action_dim_error(self):
-        env = AgentSimEnv(WORLD)
+        env = SimoviaEnv(WORLD)
         env.reset()
-        from agentsim.errors import WorldError
+        from simovia.errors import WorldError
         with pytest.raises(WorldError, match="8 维"):
             env.step(np.zeros(3, dtype=np.float32))
         env.close()
@@ -131,7 +131,7 @@ class TestBitwiseGuard:
 
         trajectories = []
         for _ in range(2):
-            env = AgentSimEnv(WORLD)
+            env = SimoviaEnv(WORLD)
             env.reset(seed=0)
             qpos_seq = []
             for a in actions:
@@ -155,7 +155,7 @@ class TestTaskSuccess:
         for o in spec.scene.objects:
             if o.name == "cube":
                 o.pos = (0.55, 0.0, 0.86)     # 直接摆进空中成功区
-        env = AgentSimEnv(spec)
+        env = SimoviaEnv(spec)
         env.reset(seed=0)
         obs, r, term, trunc, info = env.step(
             np.zeros(8, dtype=np.float32))
@@ -168,14 +168,14 @@ class TestGymCompliance:
     def test_check_env_official(self):
         """T7 官方合规：gymnasium 自带 env_checker 全过（无渲染实例）。"""
         from gymnasium.utils.env_checker import check_env
-        env = AgentSimEnv(WORLD)
+        env = SimoviaEnv(WORLD)
         check_env(env, skip_render_check=True)
         env.close()
 
     @pytest.mark.skipif(not _have_screen(), reason="无离屏渲染（EGL）")
     def test_check_env_with_render(self):
         from gymnasium.utils.env_checker import check_env
-        env = AgentSimEnv(WORLD, render_mode="rgb_array")
+        env = SimoviaEnv(WORLD, render_mode="rgb_array")
         check_env(env)
         env.reset(seed=0)
         rgb = env.render()

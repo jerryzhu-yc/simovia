@@ -10,15 +10,15 @@ import sys
 
 import pytest
 
-from agentsim.kernel.sim import Simulation
-from agentsim.scene_gen import TEMPLATES, generate
-from agentsim.world.schema import load_world
+from simovia.kernel.sim import Simulation
+from simovia.scene_gen import TEMPLATES, generate
+from simovia.world.schema import load_world
 
 ROOT = pathlib.Path(__file__).parent.parent
 
 # pallet 依赖 UR5e 资产（随仓库 models/zoo/ 自带，离线可用）
 def _has_ur5e() -> bool:
-    from agentsim.zoo import bundled_model
+    from simovia.zoo import bundled_model
     if bundled_model("universal_robots_ur5e") is not None:
         return True
     return bool(glob.glob(str(pathlib.Path.home() / (
@@ -62,7 +62,7 @@ def test_template_smoke(tmp_path, name, params):
 def test_pallet_smoke(tmp_path, name, params):
     """M6 码垛分区：UR5e+2FG7 + N cube + N 目标区，编译并冒烟 100 tick。"""
     import yaml
-    from agentsim.world.builder import build_world
+    from simovia.world.builder import build_world
 
     out = tmp_path / "pallet.yaml"
     text = generate(name, tmp_path, params)
@@ -112,7 +112,7 @@ def test_bad_template_and_params(tmp_path):
 
 def test_cli_scenegen(tmp_path):
     out = tmp_path / "maze.yaml"
-    r = subprocess.run([sys.executable, "-m", "agentsim", "scenegen", "maze",
+    r = subprocess.run([sys.executable, "-m", "simovia", "scenegen", "maze",
                         "--rows", "3", "--cols", "3", "--out", str(out)],
                        capture_output=True, text=True, cwd=str(ROOT))
     assert r.returncode == 0, r.stderr

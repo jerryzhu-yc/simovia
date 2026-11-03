@@ -5,9 +5,9 @@ import mujoco
 import numpy as np
 import pytest
 
-from agentsim.errors import WorldError
-from agentsim.world.builder import build_world, resolve_task
-from agentsim.world.schema import load_world, parse_world
+from simovia.errors import WorldError
+from simovia.world.builder import build_world, resolve_task
+from simovia.world.schema import load_world, parse_world
 
 ROOT = pathlib.Path(__file__).parent.parent
 WORLD = ROOT / "worlds" / "pick_cube.yaml"
@@ -106,7 +106,7 @@ class TestTaskResolution:
     def test_bad_task_body(self, built):
         spec, _, index = built
         from dataclasses import replace
-        from agentsim.world.schema import SuccessSpec, ZoneSpec
+        from simovia.world.schema import SuccessSpec, ZoneSpec
         bad = replace(spec.task, success=SuccessSpec(
             "ghost", ZoneSpec((0, 0, 0), (1, 1, 1))))
         with pytest.raises(WorldError):

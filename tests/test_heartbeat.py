@@ -12,15 +12,15 @@ import time
 import pytest
 import zmq
 
-import agentsim.controller as C
+import simovia.controller as C
 
 ROOT = pathlib.Path(__file__).parent.parent
 
 KERNEL_SRC = '''
 import os, sys, time
 sys.path.insert(0, {root!r})
-from agentsim.world.schema import load_world
-from agentsim.kernel.sim import Simulation
+from simovia.world.schema import load_world
+from simovia.kernel.sim import Simulation
 
 spec = load_world({world!r})
 sim = Simulation(spec)

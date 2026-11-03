@@ -14,11 +14,11 @@ import mujoco
 import numpy as np
 import pytest
 
-from agentsim.errors import WorldError
-from agentsim.grippers import GRIPPERS, GRIPPER_PREFIX, ensure_gripper
-from agentsim.world.builder import build_world
-from agentsim.world.schema import parse_world
-from agentsim.zoo import ensure_model
+from simovia.errors import WorldError
+from simovia.grippers import GRIPPERS, GRIPPER_PREFIX, ensure_gripper
+from simovia.world.builder import build_world
+from simovia.world.schema import parse_world
+from simovia.zoo import ensure_model
 
 
 def _menagerie_xml(key: str) -> str:
@@ -271,7 +271,7 @@ def test_gripper_fingers_point_along_flange_axis(label, key):
 
 def test_mount_table_per_arm_values():
     """mount 表逐臂标定值黄金断言（防回退到错误的共用值）。"""
-    from agentsim.grippers import mount_for
+    from simovia.grippers import mount_for
     assert mount_for("onrobot_2fg7", "x/ur5e.xml")["pos"] == [0, 0, 0.1094]
     assert mount_for("onrobot_2fg7", "x/ur10e.xml")["pos"] == [0, 0, 0.1264]
     assert mount_for("onrobot_2fg7",
@@ -288,7 +288,7 @@ def test_mount_table_per_arm_values():
 
 def test_unknown_mount_robot_raises():
     """夹爪挂到未标定的机器人（且未写 pos/quat）→ 清晰 WorldError。"""
-    from agentsim.grippers import mount_for
+    from simovia.grippers import mount_for
     with pytest.raises(WorldError, match="标定安装位姿"):
         mount_for("onrobot_2fg7", "/some/path/acme_arm.xml")
     # 显式覆盖 pos/quat 则放行（非标准臂手动指定）
@@ -320,7 +320,7 @@ def test_missing_site_raises():
 def test_manifest_reports_gripper_sites_and_catalog():
     """M6 P2：get_robot_manifest 返回夹爪信息、挂点清单与夹爪库目录。"""
     import yaml as _yaml
-    from agentsim.mcp_server import AgentSimSession
+    from simovia.mcp_server import SimoviaSession
 
     xml = _menagerie_xml("universal_robots_ur5e")
     wd = _world_dict(xml, gripper=True, sensors=[
@@ -328,7 +328,7 @@ def test_manifest_reports_gripper_sites_and_catalog():
          "body": "gripper/left_finger", "radius": 0.02}])
     text = _yaml.safe_dump(wd, sort_keys=False)
 
-    s = AgentSimSession()
+    s = SimoviaSession()
     try:
         s.call_tool("load_world", {"yaml_text": text, "base_dir": "/tmp"})
         m = s.call_tool("get_robot_manifest", {})
@@ -356,11 +356,11 @@ def test_manifest_reports_gripper_sites_and_catalog():
 def test_manifest_gripper_none_when_bare():
     """裸臂 manifest 的 gripper 为 None。"""
     import yaml as _yaml
-    from agentsim.mcp_server import AgentSimSession
+    from simovia.mcp_server import SimoviaSession
 
     xml = _menagerie_xml("universal_robots_ur5e")
     text = _yaml.safe_dump(_world_dict(xml, gripper=False), sort_keys=False)
-    s = AgentSimSession()
+    s = SimoviaSession()
     try:
         s.call_tool("load_world", {"yaml_text": text, "base_dir": "/tmp"})
         arm = s.call_tool("get_robot_manifest", {})["robots"][0]
@@ -539,7 +539,7 @@ def test_leap_all_actuators_drive_joints():
 
 
 GRIPPER_CONTROLLER = """\
-from agentsim.controller import Robot
+from simovia.controller import Robot
 
 robot = Robot()
 for name, value in {targets!r}.items():
@@ -553,7 +553,7 @@ robot.close()
 @pytest.mark.parametrize("key", NEW_GRIPPERS)
 def test_controller_can_drive_gripper_actuators(key, tmp_path):
     """控制器 robot.set("gripper/...") 可直接驱动新夹爪（真实子进程）。"""
-    from agentsim.kernel.sim import Simulation
+    from simovia.kernel.sim import Simulation
 
     info = GRIPPERS[key]
     if "actuator" in info:
@@ -592,12 +592,12 @@ def test_controller_can_drive_gripper_actuators(key, tmp_path):
 def test_manifest_reports_multi_actuator_gripper():
     """LEAP 在 manifest 中以 actuators/poses 展开；2FG7 单执行器接口不变。"""
     import yaml as _yaml
-    from agentsim.mcp_server import AgentSimSession
+    from simovia.mcp_server import SimoviaSession
 
     xml = _menagerie_xml("universal_robots_ur5e")
     text = _yaml.safe_dump(
         _world_dict(xml, gripper_key="leap_hand"), sort_keys=False)
-    s = AgentSimSession()
+    s = SimoviaSession()
     try:
         s.call_tool("load_world", {"yaml_text": text, "base_dir": "/tmp"})
         m = s.call_tool("get_robot_manifest", {})
