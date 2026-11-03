@@ -15,7 +15,7 @@ import yaml
 
 from agentsim.agent import AgentConfig
 from agentsim.agent.scene_agent import (SceneGenError, SceneGenSession,
-                                        _detect_keys, _model_manifest,
+                                        _detect_keys, _EXAMPLE, _model_manifest,
                                         extract_yaml, generate_scene,
                                         resolve_zoo_models, scene_system_prompt)
 from agentsim.errors import WorldError
@@ -278,6 +278,18 @@ def test_system_prompt_no_manifest_for_unmatched(monkeypatch, tmp_path):
     monkeypatch.setattr("agentsim.agent.scene_agent._MANIFEST_DIR", tmp_path)
     s = scene_system_prompt("放一个红色方块")
     assert "设备清单" not in s
+
+
+def test_few_shot_example_compiles():
+    """few-shot 会被模型照抄，必须真实可编译。
+
+    回归：曾写 zoo://ur5e（非法 key）与 reward body: arm（机器人名，
+    实际只能用内部短名 base），模型照抄后连续 3 次重试全失败。
+    """
+    from agentsim.world.builder import build_world
+    from agentsim.world.schema import parse_world
+    d = resolve_zoo_models(yaml.safe_load(_EXAMPLE))
+    build_world(parse_world(d))
 
 
 # ---------------------------------------------------------------- SceneGenSession

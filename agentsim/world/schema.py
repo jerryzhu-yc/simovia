@@ -518,6 +518,11 @@ def resolve_zoo_models(d: dict, on_download=None) -> dict:
     on_download(key)：解析前回调（进度提示），load_world 路径静默。
     就地修改并返回 d（链式）。未知 key 抛 WorldError（可读）。
     路径统一正斜杠（as_posix）：Windows 反斜杠进 YAML 也安全。
+
+    出生位姿兜底：模型库为每个模型标了推荐 pos（四足/人形离地、固定臂
+    为 0）。LLM 常把 pos.z 写成 0.1 之类的"估计值"，浮动基座会穿地后
+    被接触力弹飞（实测 go2 z=0.1 两百 tick 升到 1.9m），因此缺省时直接
+    用推荐位姿；显式给 pos 时只把低于推荐的 z 抬到推荐值，x/y 尊重用户。
     """
     from agentsim.zoo import MODELS, ensure_model
     for rd in d.get("robots") or []:
@@ -531,6 +536,19 @@ def resolve_zoo_models(d: dict, on_download=None) -> dict:
         if on_download:
             on_download(key)
         rd["model"] = pathlib.Path(ensure_model(key)).as_posix()
+        rec = MODELS[key].get("pos")
+        if not rec:
+            continue
+        if rd.get("pos") is None:
+            rd["pos"] = list(rec)
+            continue
+        try:
+            pos = [float(v) for v in rd["pos"]]
+        except (TypeError, ValueError):
+            continue        # 非法 pos 交给 parse_world 报可读错误
+        if len(pos) == 3 and pos[2] < float(rec[2]):
+            pos[2] = float(rec[2])
+            rd["pos"] = pos
     return d
 
 

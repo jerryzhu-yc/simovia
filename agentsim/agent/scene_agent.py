@@ -50,15 +50,17 @@ robots: 机器人列表，字段：
   name: string（必填，唯一）
   model: 模型引用（必填）——写 "zoo://<key>"，key 取下方模型库清单；
          用户明确给了模型文件路径时写绝对路径（.xml MJCF / .urdf URDF）
-  pos: [x,y,z] root 世界位置（默认 0,0,0）
+  pos: [x,y,z] root 世界位置（省略=模型库推荐出生位姿；与推荐值相比
+       过低的 z 也会被抬到推荐值，避免穿地弹飞）
   quat: [w,x,y,z]（可选）
   controller: 控制器 .py 路径（可选；没有控制器机器人不动，纯场景摆放可不写）
   sensors: 传感器列表（可选）[{name, type: encoder|imu|tactile|joint_torque|camera,
-            joint 或 body（encoder/joint_torque 用 joint，其余用 body）， pos}]
-  gripper: {model: 夹爪 key（onrobot_2fg7|robotiq_2f85|wsg50）}（可选，仅机械臂）
+            joint 或 body（写机器人内部短名，如 base、link7）， pos}]
+  gripper: {model: 夹爪 key，取下方夹爪清单}（可选，仅机械臂）
 
 task: 任务（可选）
-  success: {body: 物体或机器人名, zone: {min: [x,y,z], max: [x,y,z]}}（min 逐分量 < max）
+  success: {body: 物体名或机器人内部 body 短名（如 base，不要写机器人名）,
+            zone: {min: [x,y,z], max: [x,y,z]}}（min 逐分量 < max）
   reward: 列表，每条单键字典：
     {distance: {a, b, weight（默认 -1）}}
     {zone: {body, zone: {min,max}, weight（默认 1）}}
@@ -75,7 +77,8 @@ _RULES = """生成规则：
    static: true；小物体质量 0.1-1kg，机器人附近别摆太挤；带机械臂或硬
    接触的世界写上 integrator: implicitfast 与 impratio: 10（高刚度伺服
    稳定性必需，否则 attach 时被默认 euler 覆盖会发散）。
-4. 任务 reward/success 引用的 body 必须是物体名或机器人名（真实存在）。
+4. 任务 reward/success 引用的 body 必须是物体名或机器人内部 body 短名
+   （如 base、link7），绝不能写机器人名——builder 会自动补机器人前缀。
 5. floor.size 要罩住全部物体和机器人（留 0.5m 余量）。
 6. 绝不输出 MJCF/XML，不引用任何 mesh/纹理文件（.obj/.dae/.stl/.png）——
    物体只用 box/sphere/cylinder 基本体表达，机器人只用 zoo:// 模型库。
@@ -104,7 +107,8 @@ def _gripper_catalog() -> str:
 
 
 # few-shot 示例：一个紧凑典型世界，比纯 schema 文档更能约束格式。
-# 字段全部合法（pos z=半高贴地、floor 罩住、reward/success 引用真实名）。
+# 字段全部合法（pos z=半高贴地、floor 罩住、reward/success 引用真实短名）；
+# 本示例会作为回归用例编译一遍，模型 key / body 名必须真实存在。
 _EXAMPLE = """\
 name: demo
 integrator: implicitfast
@@ -115,13 +119,13 @@ scene:
     - {name: red_cube, type: box, size: [0.05, 0.05, 0.05], pos: [0.5, 0, 0.05], color: "#EF4444", mass: 0.5}
 robots:
   - name: arm
-    model: zoo://ur5e
+    model: zoo://universal_robots_ur5e
     pos: [-0.5, 0, 0]
     gripper: {model: onrobot_2fg7}
 task:
   success: {body: red_cube, zone: {min: [0.8, -0.1, 0], max: [1.0, 0.1, 0.2]}}
   reward:
-    - {distance: {a: red_cube, b: arm, weight: -1}}
+    - {distance: {a: red_cube, b: base, weight: -1}}
 """
 
 

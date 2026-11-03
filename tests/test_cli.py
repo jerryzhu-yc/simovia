@@ -1,4 +1,5 @@
 """CLI 测试：inspect 设备清单、run 的控制器状态提示（新手首次使用路径）。"""
+import json
 import pathlib
 
 from agentsim.cli import main
@@ -49,3 +50,17 @@ class TestRunSummary:
         main(["run", str(ROOT / "worlds" / "pick_cube.yaml"), "--ticks", "1"])
         out = capsys.readouterr().out
         assert "控制器 arm: ../controllers/pick_place.py" in out
+
+    def test_reports_robot_base_pose(self, capsys):
+        """跑完要能看到机器人 root 位置，否则无法判断四足站没站住"""
+        main(["run", str(ROOT / "worlds" / "pick_cube.yaml"), "--ticks", "1"])
+        out = capsys.readouterr().out
+        assert "arm/link0 最终位置" in out
+
+    def test_json_includes_robot_base_pose(self, capsys):
+        main(["run", str(ROOT / "worlds" / "pick_cube.yaml"),
+              "--ticks", "1", "--json"])
+        d = json.loads(capsys.readouterr().out)
+        assert d["robots"]["arm"]["base"] == "arm/link0"
+        assert len(d["robots"]["arm"]["pos"]) == 3
+        assert "cube" in d["objects"]          # 原有物体输出保持兼容

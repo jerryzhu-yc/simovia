@@ -2,7 +2,8 @@
 import pytest
 
 from agentsim.errors import WorldError
-from agentsim.world.schema import load_world, parse_world, hex_to_rgba
+from agentsim.world.schema import (load_world, parse_world, hex_to_rgba,
+                                   resolve_zoo_models)
 
 import pathlib
 
@@ -179,3 +180,29 @@ class TestGripperParsing:
         with pytest.raises(WorldError) as e:
             self._robot({"model": "g", "quat": [1, 0, 0]})
         assert "quat" in str(e.value)
+
+
+class TestZooBirthPose:
+    """zoo:// 机器人生出生态兜底：LLM 常写 pos z=0.1 导致穿地弹飞。"""
+
+    def _resolve(self, robot: dict) -> dict:
+        d = {"name": "t", "robots": [robot]}
+        return resolve_zoo_models(d)["robots"][0]
+
+    def test_fills_missing_pos_with_recommended(self):
+        r = self._resolve({"name": "dog", "model": "zoo://unitree_go2"})
+        assert r["pos"] == [0, 0, 0.45]
+
+    def test_clamps_too_low_z_and_keeps_xy(self):
+        r = self._resolve({"name": "dog", "model": "zoo://unitree_go2",
+                           "pos": [1.5, -2.0, 0.1]})
+        assert r["pos"] == [1.5, -2.0, 0.45]
+
+    def test_keeps_higher_z(self):
+        r = self._resolve({"name": "dog", "model": "zoo://unitree_go2",
+                           "pos": [0, 0, 0.8]})
+        assert r["pos"] == [0, 0, 0.8]
+
+    def test_fixed_base_arm_stays_zero(self):
+        r = self._resolve({"name": "arm", "model": "zoo://franka_emika_panda"})
+        assert r["pos"] == [0, 0, 0]

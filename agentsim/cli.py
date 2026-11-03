@@ -151,9 +151,22 @@ def _run(args):
         stats = sim.run(max_ticks=args.ticks)
         objects = {name: [round(float(x), 4) for x in sim.data.xpos[bid]]
                    for name, bid in sim.index.objects.items()}
+        # 机器人 root body（每台机器人唯一一个 parent=world 的 body）：
+        # 跑完看不到机器人位置时，新手无法判断"四足站住没有/机械臂倒没倒"
+        full_names = {bid: name for name, bid in sim.index.bodies.items()}
+        robots = {}
+        for rname, ridx in sim.index.robots.items():
+            for bshort, bid in ridx.bodies.items():
+                if sim.model.body_parentid[bid] == 0:
+                    robots[rname] = {
+                        "base": full_names.get(bid, bshort),
+                        "pos": [round(float(x), 4) for x in sim.data.xpos[bid]],
+                    }
+                    break
 
     if args.json:
-        print(json.dumps({**stats, "objects": objects}, ensure_ascii=False))
+        print(json.dumps({**stats, "objects": objects, "robots": robots},
+                         ensure_ascii=False))
         return
     print(f"世界 '{spec.name}'：{len(spec.scene.objects)} 物体，"
           f"{len(spec.robots)} 机器人")
@@ -175,6 +188,10 @@ def _run(args):
               f"（reward {stats['reward']}）")
     for name, pos in objects.items():
         print(f"  {name} 最终位置: ({pos[0]:+.3f}, {pos[1]:+.3f}, {pos[2]:+.3f})")
+    for info in robots.values():
+        pos = info["pos"]
+        print(f"  {info['base']} 最终位置: "
+              f"({pos[0]:+.3f}, {pos[1]:+.3f}, {pos[2]:+.3f})")
 
 
 if __name__ == "__main__":
