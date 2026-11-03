@@ -379,7 +379,9 @@ def detect_end_effectors(child: mujoco.MjSpec) -> list[dict]:
     """
     nodes: dict[str, tuple[str, list[float]]] = {}
     for b in child.bodies:
-        if not b.name:
+        # worldbody 也在这份列表里，而它的 parent 在 C 侧是 NULL：读
+        # b.parent.name 会段错误（mujoco 3.13 实测），必须先跳过
+        if b is child.worldbody or not b.name:
             continue
         parent = "" if b.parent is child.worldbody else (b.parent.name or "")
         nodes[b.name] = (parent, [float(x) for x in b.pos])

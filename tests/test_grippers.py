@@ -553,6 +553,45 @@ robot.close()
 """
 
 
+def test_g1_strip_hands_and_remount_gripper():
+    """人形自带灵巧手删除 + 腕部自动挂点 + 重挂夹爪。
+
+    回归点：MjSpec.bodies 里包含 worldbody，而 worldbody 的 parent 在 C 侧
+    为 NULL，detect_end_effectors 若不跳过会直接段错误（进程崩溃）。
+    """
+    import pathlib
+
+    g1 = pathlib.Path(_menagerie_xml("unitree_g1"))
+    model_path = g1.parent / "g1_with_hands.xml"
+    if not model_path.is_file():
+        pytest.skip("G1 with hands 资产缺失")
+
+    wd = _world_dict(str(model_path), gripper=True)
+    wd["robots"][0]["strip_hands"] = True
+    model, index = build_world(parse_world(wd))
+
+    # 两手都被识别并标记删除
+    ee = index.end_effectors["arm"]
+    assert {g["key"] for g in ee} == {"left_hand", "right_hand"}
+    assert all(g["stripped"] for g in ee)
+    # 腕部生成了自动挂点 site（attach 前缀 arm/）
+    for side in ("left", "right"):
+        site = f"arm/{side}_hand_attachment_site"
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site) >= 0
+    # 手部执行器已随子树删除，夹爪执行器已挂上
+    acts = set(index.robots["arm"].actuators)
+    assert not any("hand" in n for n in acts), sorted(acts)
+    assert GRIPPER_PREFIX + "gripper_act" in acts
+    assert "left_wrist_yaw_joint" in index.robots["arm"].joints
+
+
+def test_end_effectors_empty_for_arm_without_hands():
+    """普通机械臂（panda_nohand）没有自带末端，检测结果为空且不崩。"""
+    xml = _menagerie_xml("franka_emika_panda")
+    _, index = build_world(parse_world(_world_dict(xml)))
+    assert index.end_effectors["arm"] == []
+
+
 @pytest.mark.parametrize("key", NEW_GRIPPERS)
 def test_controller_can_drive_gripper_actuators(key, tmp_path):
     """控制器 robot.set("gripper/...") 可直接驱动新夹爪（真实子进程）。"""
