@@ -628,6 +628,53 @@ def test_g1_without_hands_gets_wrist_sites_for_gripper():
     assert not any(n and "rubber_hand" in n for n in used), used
 
 
+@pytest.mark.parametrize("with_hands", [False, True])
+def test_leap_hand_orientation_matches_builtin_hand(with_hands):
+    """LEAP 装到 G1 左腕后与自带手同姿态：手指沿腕部 +x、掌心朝腕部 -y。
+
+    回归点：只按"最短旋转"把工具轴对齐时，绕工具轴的滚转是任意的，LEAP
+    会被滚 180°（手掌横着长、掌心朝身体外侧）。自带手（g1_with_hands）的
+    约定是手指 +x、掌心 -y（站立时掌面贴向大腿），自动生成的挂点必须一致。
+    """
+    import pathlib
+
+    from simovia.world.schema import resolve_zoo_models
+
+    if with_hands:
+        g1 = pathlib.Path(_menagerie_xml("unitree_g1"))
+        model_path = g1.parent / "g1_with_hands.xml"
+        if not model_path.is_file():
+            pytest.skip("G1 with hands 资产缺失")
+        wd = _world_dict(str(model_path), gripper_key="leap_hand")
+        wd["robots"][0]["strip_hands"] = True
+    else:
+        wd = {"name": "g1_leap_orient", "robots": [
+            {"name": "arm", "model": "zoo://unitree_g1",
+             "gripper": {"model": "leap_hand"}}]}
+        resolve_zoo_models(wd)
+    model, _ = build_world(parse_world(wd))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    def bid(name):
+        i = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
+        assert i >= 0, name
+        return i
+
+    wrist = bid("arm/left_wrist_yaw_link")
+    R = data.xmat[wrist].reshape(3, 3)
+    root = bid("arm/gripper/gripper_base")
+
+    # 手指伸出方向：root -> 中指远端
+    fingers = R.T @ (data.xpos[bid("arm/gripper/mf_ds")] - data.xpos[root])
+    fingers /= np.linalg.norm(fingers)
+    assert fingers[0] > 0.95 and abs(fingers[1]) < 0.2, fingers
+
+    # 掌心法向：LEAP 自身 root +x
+    palm = R.T @ (data.xmat[root].reshape(3, 3) @ np.array([1.0, 0.0, 0.0]))
+    assert palm[1] < -0.95 and abs(palm[2]) < 0.2, palm
+
+
 def test_g1_with_hands_auto_replaces_only_matching_side():
     """双手人形装左手夹爪：只替换 left_hand，右手保留。"""
     import pathlib

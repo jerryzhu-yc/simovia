@@ -331,26 +331,62 @@ def _looks_like_end_effector(name: str) -> bool:
     return bool(_tokens(name) & _HAND_TOKENS)
 
 
-def _quat_from_z_to(direction) -> list[float]:
-    """最短旋转：把 +z 转到 direction（wxyz），direction 单位化后使用。"""
-    d = [float(x) for x in direction]
-    n = math.sqrt(sum(x * x for x in d))
-    if n < 1e-9:
-        return [1.0, 0.0, 0.0, 0.0]
-    d = [x / n for x in d]
-    z = (0.0, 0.0, 1.0)
-    cx = z[1] * d[2] - z[2] * d[1]
-    cy = z[2] * d[0] - z[0] * d[2]
-    cz = z[0] * d[1] - z[1] * d[0]
-    s = math.sqrt(cx * cx + cy * cy + cz * cz)
-    c = max(-1.0, min(1.0, z[0] * d[0] + z[1] * d[1] + z[2] * d[2]))
-    if s < 1e-9:
-        if c > 0:
-            return [1.0, 0.0, 0.0, 0.0]
-        return [0.0, 1.0, 0.0, 0.0]        # 180° 绕 x
-    ang = math.atan2(s, c)
-    k = math.sin(ang / 2.0) / s
-    return [math.cos(ang / 2.0), cx * k, cy * k, cz * k]
+def _palm_normal(*names: str) -> list[float]:
+    """挂点 +x（掌心法向）应钉到的参考轴，父 body 本体系。
+
+    只用最短旋转对齐工具轴时绕轴滚转任意，灵巧手装上会"手心朝外/手指
+    横着长"。G1 自带手的约定是：手指沿本体系 +x 伸出，左手掌心朝 -y、
+    右手掌心朝 +y（站立时掌面贴向大腿）。夹爪库里的 LEAP 掌心朝自身 +x，
+    因此挂点 +x 必须钉到该侧掌心法向，否则整体会绕工具轴滚 180°。
+    """
+    for n in names:
+        if n.startswith("left"):
+            return [0.0, -1.0, 0.0]
+        if n.startswith("right"):
+            return [0.0, 1.0, 0.0]
+    return [0.0, 1.0, 0.0]
+
+
+def _quat_from_axes(z_dir, x_dir) -> list[float]:
+    """构造旋转：局部 +z 对齐工具轴 z_dir、局部 +x 对齐 x_dir 的正交化方向。
+
+    夹爪挂点的 +z 是工具轴（法兰法向外伸），+x 是掌心法向；两者一起钉住
+    后朝向唯一，不依赖最短旋转的任意滚转。
+    """
+    def unit(v):
+        n = math.sqrt(sum(float(t) * float(t) for t in v))
+        return [float(t) / n for t in v] if n > 1e-9 else None
+
+    z = unit(z_dir) or [0.0, 0.0, 1.0]
+    x = [float(t) for t in x_dir]
+    dot = sum(x[i] * z[i] for i in range(3))
+    x = [x[i] - dot * z[i] for i in range(3)]
+    if unit(x) is None:                    # x 与工具轴平行：换一根参考轴
+        alt = [1.0, 0.0, 0.0] if abs(z[0]) < 0.9 else [0.0, 0.0, 1.0]
+        dot = sum(alt[i] * z[i] for i in range(3))
+        x = [alt[i] - dot * z[i] for i in range(3)]
+    x = unit(x)
+    y = [z[1] * x[2] - z[2] * x[1],
+         z[2] * x[0] - z[0] * x[2],
+         z[0] * x[1] - z[1] * x[0]]
+    # R 的列 = (x, y, z)，转为 wxyz 四元数
+    m00, m01, m02 = x[0], y[0], z[0]
+    m10, m11, m12 = x[1], y[1], z[1]
+    m20, m21, m22 = x[2], y[2], z[2]
+    tr = m00 + m11 + m22
+    if tr > 0:
+        s = math.sqrt(tr + 1.0) * 2
+        q = [(0.25 * s), (m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s]
+    elif m00 > m11 and m00 > m22:
+        s = math.sqrt(1.0 + m00 - m11 - m22) * 2
+        q = [(m21 - m12) / s, 0.25 * s, (m01 + m10) / s, (m02 + m20) / s]
+    elif m11 > m22:
+        s = math.sqrt(1.0 + m11 - m00 - m22) * 2
+        q = [(m02 - m20) / s, (m01 + m10) / s, 0.25 * s, (m12 + m21) / s]
+    else:
+        s = math.sqrt(1.0 + m22 - m00 - m11) * 2
+        q = [(m10 - m01) / s, (m02 + m20) / s, (m12 + m21) / s, 0.25 * s]
+    return q
 
 
 def _quat_rotate(q, v) -> list[float]:
@@ -430,7 +466,7 @@ def detect_end_effectors(child: mujoco.MjSpec) -> list[dict]:
             "site": ("attachment_site" if len(by_anchor) == 1
                      else f"{key}_attachment_site"),
             "pos": [outward[i] * proj for i in range(3)],
-            "quat": _quat_from_z_to(outward),
+            "quat": _quat_from_axes(outward, _palm_normal(key, anchor)),
             "stripped": False,
         })
     return groups
@@ -487,7 +523,8 @@ def detect_wrist_sites(child: mujoco.MjSpec) -> list[dict]:
         key = ("left_hand" if name.startswith("left")
                else "right_hand" if name.startswith("right") else name)
         sites.append({"key": key, "anchor": name, "bodies": [],
-                      "pos": distal, "quat": _quat_from_z_to(distal),
+                      "pos": distal,
+                      "quat": _quat_from_axes(distal, _palm_normal(name)),
                       "stripped": False})
     for s in sites:
         s["site"] = (f"{s['key']}_attachment_site" if len(sites) > 1
