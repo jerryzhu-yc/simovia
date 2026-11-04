@@ -994,10 +994,11 @@ def _load_robot_spec(model_path: pathlib.Path) -> mujoco.MjSpec:
     except UnicodeDecodeError:
         text = model_path.read_text(encoding="gbk", errors="replace")
     base = model_path.parent
-    # 显式包搜索路径：与 catkin/ROS 习惯一致，多个目录用 : 或 ; 分隔
+    # 显式包搜索路径：与 catkin/ROS 习惯一致，按平台分隔符切分
+    # （Windows 上不能用 [;:]——盘符 "C:\..." 会被从冒号处切断）
     env_roots = os.environ.get("SIMOVIA_PACKAGE_PATH") or \
         os.environ.get("ROS_PACKAGE_PATH") or ""
-    pkg_roots = [pathlib.Path(p) for p in re.split(r"[;:]", env_roots) if p.strip()]
+    pkg_roots = [pathlib.Path(p) for p in env_roots.split(os.pathsep) if p.strip()]
 
     def _resolve(m):
         raw = m.group(1)

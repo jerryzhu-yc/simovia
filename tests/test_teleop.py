@@ -25,15 +25,9 @@ PICK = ROOT / "worlds" / "pick_cube.yaml"
 
 
 def _offscreen_ok() -> bool:
-    try:
-        import mujoco
-        m = mujoco.MjModel.from_xml_string("<mujoco/>")
-        r = mujoco.Renderer(m, 32, 32)
-        r.render()
-        r.close()
-        return True
-    except Exception:
-        return False
+    # 隔子进程探测：无 GL 时 MuJoCo 会 abort，进程内 try/except 拦不住
+    from simovia.render import probe_offscreen_gl
+    return probe_offscreen_gl()[0]
 
 
 GL = _offscreen_ok()

@@ -29,8 +29,16 @@ _CELL = 0.5      # 迷宫单元格边长（米）
 # ---------------------------------------------------------------- 组装辅助
 
 def _rel(target: pathlib.Path, base: pathlib.Path) -> str:
-    """target 相对 base 的路径（写进 YAML，让产物在保存位置直接可用）"""
-    return os.path.relpath(target.resolve(), base.resolve())
+    """target 相对 base 的路径（写进 YAML，让产物在保存位置直接可用）。
+
+    Windows 上产物目录与仓库可能不在同一个盘（工作区 D:、临时目录 C:），
+    此时无法表达相对路径，退回绝对路径（builder 能直接吃）。
+    """
+    t, b = target.resolve(), base.resolve()
+    try:
+        return os.path.relpath(t, b)
+    except ValueError:
+        return t.as_posix()
 
 
 def _robot(name: str, model_file: str, base: pathlib.Path,

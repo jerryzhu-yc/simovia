@@ -268,6 +268,7 @@ def test_floating_base_root_in_observation(tmp_path):
         s.close()
 
 
+@pytest.mark.gl
 def test_render_model_follows_floating_root(tmp_path):
     """GUI 渲染模型 apply_observation 后浮动基座躯干跟随 root（四足
     "悬空奔跑"的回归守护：以前匿名 free joint 不同步，只有腿动）。"""

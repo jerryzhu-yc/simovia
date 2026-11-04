@@ -105,6 +105,7 @@ def _png_size(path: pathlib.Path) -> tuple[int, int]:
     return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
 
 
+@pytest.mark.gl
 def test_robot_mounted_camera_records_frames(tmp_path):
     """相机挂在机器人 body 上：短名解析、分辨率/步长、meta 挂载信息。"""
     spec = load_world(str(PICK))

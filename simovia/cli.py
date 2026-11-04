@@ -124,21 +124,19 @@ def _doctor(args):
         add("WARN", "模型资产", f"检查失败：{type(e).__name__}: {e}")
 
     # ---- 离屏渲染（录制图像 / GUI 实时画面依赖）----
+    # 隔子进程探测：无 GL 环境下 MuJoCo 可能直接 abort，不能在本进程里试
     try:
-        import mujoco
-        m = mujoco.MjModel.from_xml_string(
-            "<mujoco><worldbody><geom size='0.1'/></worldbody></mujoco>")
-        d = mujoco.MjData(m)
-        mujoco.mj_forward(m, d)
-        r = mujoco.Renderer(m, 32, 32)
-        r.update_scene(d)
-        r.render()
-        r.close()
-        add("OK", "离屏渲染", "可用（录制图像 / GUI 实时画面）")
+        from simovia.render import probe_offscreen_gl
+        ok, detail = probe_offscreen_gl()
+        if ok:
+            add("OK", "离屏渲染", "可用（录制图像 / GUI 实时画面）")
+        else:
+            add("WARN", "离屏渲染",
+                f"不可用（{detail}）；录制图像与 GUI 实时画面会降级。"
+                "Linux 下可装 libosmesa6 或设 MUJOCO_GL=osmesa；"
+                "Windows 需显卡驱动支持 OpenGL 3.3")
     except Exception as e:                           # noqa: BLE001
-        add("WARN", "离屏渲染",
-            f"不可用（{type(e).__name__}: {e}）；录制图像与 GUI 实时画面会降级，"
-            "Linux 下可装 libosmesa6 或设 MUJOCO_GL=osmesa")
+        add("WARN", "离屏渲染", f"探测失败：{type(e).__name__}: {e}")
 
     # ---- 样例世界能编译（验证路径解析 + 资源完整性）----
     try:

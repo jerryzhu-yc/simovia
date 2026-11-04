@@ -53,12 +53,16 @@ jobs:
           MUJOCO_GL: ${{ runner.os == 'Linux' && 'osmesa' || 'wgl' }}
 
       # 分两批跑：GUI/遥操作进程类用例单独一批，避免长进程与仿真用例互相拖死
+      # Linux 用 OSMesa 软件渲染（已装 libosmesa6），渲染类用例照常执行；
+      # Windows 运行器没有 OpenGL 3.3 驱动，gl 标记的用例由 tests/conftest.py
+      # 隔子进程探测后自动跳过（渲染相关能力由 doctor 步骤报告）。
       - name: 回归测试（核心）
         run: >
           python -m pytest tests -q -p no:cacheprovider
           --ignore=tests/test_gui.py --ignore=tests/test_teleop.py
         env:
           PYTHONPATH: .
+          MUJOCO_GL: ${{ runner.os == 'Linux' && 'osmesa' || 'wgl' }}
 
       - name: 回归测试（GUI / 遥操作）
         run: >
@@ -66,3 +70,4 @@ jobs:
           -q -p no:cacheprovider
         env:
           PYTHONPATH: .
+          MUJOCO_GL: ${{ runner.os == 'Linux' && 'osmesa' || 'wgl' }}

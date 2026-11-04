@@ -22,6 +22,7 @@ import pathlib
 import sys
 import threading
 import time
+import traceback
 
 # 离屏渲染后端：Linux 默认 EGL（无头/远程友好），Windows 默认 wgl
 # （桌面 Windows 无 EGL 用户态库，wgl 是官方支持路径）。必须在 import
@@ -520,6 +521,9 @@ class SimoviaSession:
                 stats = self._teleop_job(max_ticks)
             except BaseException as e:
                 self._run_error = e
+                # 后台线程异常不能只塞进响应：stderr 才是 GUI 控制台/日志
+                # 能看到的地方（CI 上也靠它定位）
+                traceback.print_exc()
                 stats = {"error": f"{type(e).__name__}: {e}"}
             finally:
                 self._close_camera_renderer()
@@ -767,6 +771,7 @@ class SimoviaSession:
                 stats = self._run_job(max_ticks, realtime)
             except BaseException as e:      # 线程里异常不能无声吞掉
                 self._run_error = e
+                traceback.print_exc()
                 stats = {"error": f"{type(e).__name__}: {e}"}
             self._write_run_response(stats)
 

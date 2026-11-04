@@ -22,16 +22,9 @@ from simovia.mcp_server import SimoviaSession   # 导入即 setdefault MUJOCO_GL
 
 
 def _have_offscreen_glx() -> bool:
-    """离屏渲染可用性探测（EGL 由 mcp_server 导入时默认）。"""
-    try:
-        import mujoco
-        m = mujoco.MjModel.from_xml_string("<mujoco/>")
-        r = mujoco.Renderer(m, 32, 32)
-        r.render()
-        r.close()
-        return True
-    except Exception:
-        return False
+    """离屏渲染可用性探测（隔子进程，避免无 GL 时 C 层 abort 带走整个测试）。"""
+    from simovia.render import probe_offscreen_gl
+    return probe_offscreen_gl()[0]
 
 
 _OSSCREEN = _have_offscreen_glx()
@@ -413,7 +406,8 @@ class TestAgentLoop:
             assert r_ping["result"] == {}
             r_run = read_until(lambda r: r["id"] == 3)
             stats = json.loads(r_run["result"]["content"][0]["text"])
-            assert stats["ticks"] > 0 and "success" in stats
+            assert stats.get("ticks", 0) > 0, stats
+            assert "success" in stats, stats
         finally:
             proc.stdin.close()
             proc.wait(timeout=15)
@@ -447,7 +441,8 @@ class TestStdioProtocol:
             assert r["result"]["isError"] is False
 
             r = rpc("tools/call", {"name": "run", "arguments": {"ticks": 3}})
-            assert json.loads(r["result"]["content"][0]["text"])["ticks"] == 3
+            stats = json.loads(r["result"]["content"][0]["text"])
+            assert stats.get("ticks") == 3, stats
 
             r = rpc("tools/call", {"name": "nope"})       # 工具级错误
             assert r["result"]["isError"] is True

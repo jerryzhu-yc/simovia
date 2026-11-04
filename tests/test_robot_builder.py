@@ -6,6 +6,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
+# 对话框内含实时预览，创建即建 mujoco.Renderer：无 GL 环境整体跳过
+pytestmark = pytest.mark.gl
+
 
 @pytest.fixture(scope="module")
 def qapp():

@@ -162,8 +162,9 @@ def test_dump_roundtrip(tmp_path):
     doc = dump_robot(r)
     assert doc["links"][2]["rpy"] == [0, 90, 0]
     r2 = parse_robot(doc)
-    assert [lk.quat for lk in r2.links] == pytest.approx(
-        [lk.quat for lk in r.links])
+    # 逐个 quat 比较（pytest.approx 不支持嵌套序列；quat 可能是 numpy 标量）
+    assert np.allclose([lk.quat for lk in r2.links],
+                       [lk.quat for lk in r.links])
     # 写盘后 load_robot 可读回
     import yaml
     p = tmp_path / "two_link.yaml"

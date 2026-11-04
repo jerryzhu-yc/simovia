@@ -147,6 +147,7 @@ class TestUiState:
         assert theme.state_text(UiState.PAUSED) == "已暂停"
 
 
+@pytest.mark.gl
 class TestRenderModel:
     def test_apply_observation_and_render(self):
         spec = load_world(WORLD)
@@ -328,6 +329,7 @@ class TestRenderModel:
             rm.close()
 
 
+@pytest.mark.gl
 class TestRenderQuality:
     """画质档位：低配机器靠降采样/关阴影换取帧率。"""
 
@@ -365,6 +367,7 @@ class TestRenderQuality:
             rm.close()
 
 
+@pytest.mark.gl
 class TestScenePresentation:
     """初始场景观感：默认取景、原点轴遮挡、主题资源齐全。"""
 
@@ -432,6 +435,7 @@ def test_toolbar_icons_render(qapp):
         assert not ico.pixmap(20, 20).isNull(), name
 
 
+@pytest.mark.gl
 def test_camera_reframes_on_world_switch(qapp):
     """换世界重新取景（否则从空场景打开机械臂世界停在大远景）；
     同名世界重载保留用户机位（拖动物体/改 YAML 提交画面不跳变）。"""
@@ -742,6 +746,7 @@ def test_properties_live_pose_refresh(qapp):
         p.deleteLater()
 
 
+@pytest.mark.gl
 def test_hud_paint_with_selection_survives(qapp):
     """回归：加载世界后场景树自动选中"世界"节点，_draw_hud 曾把
     QPainter 参数 p 覆盖成世界坐标 tuple——此后每帧 paint 抛

@@ -33,6 +33,38 @@ def _sync_lights(model: mujoco.MjModel, data: mujoco.MjData) -> None:
         data.light_xdir[i] = rot @ model.light_dir[i]
 
 
+def probe_offscreen_gl(timeout: float = 60.0) -> tuple[bool, str]:
+    """在独立子进程里试建离屏渲染上下文，返回 (可用, 说明)。
+
+    MuJoCo 的 GL 后端在无显示/无驱动的环境里可能直接 abort（EGL 下是
+    C 层 abort，Python 的 try/except 拦不住），会把探测方整个解释器带走。
+    所以探测必须隔进程做：子进程崩了只表现为非零退出码。
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import mujoco\n"
+        "m = mujoco.MjModel.from_xml_string('<mujoco/>')\n"
+        "r = mujoco.Renderer(m, 32, 32)\n"
+        "r.update_scene(mujoco.MjData(m))\n"
+        "r.render()\n"
+        "r.close()\n"
+    )
+    try:
+        proc = subprocess.run([sys.executable, "-c", code],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,
+                              timeout=timeout)
+    except Exception as e:                     # noqa: BLE001 探测不抛异常
+        return False, f"{type(e).__name__}: {e}"
+    if proc.returncode == 0:
+        return True, "可用"
+    err = (proc.stderr or b"").decode("utf-8", "replace").strip()
+    last = err.splitlines()[-1] if err else f"退出码 {proc.returncode}"
+    return False, last
+
+
 def render_offscreen(model: mujoco.MjModel, data: mujoco.MjData,
                      width: int, height: int,
                      camera: str | None = None,

@@ -56,7 +56,8 @@ def test_resolve_zoo_models(monkeypatch, tmp_path):
                         lambda key: (seen.append(key),
                                      str(tmp_path / "go2.xml"))[1])
     resolve_zoo_models(d, on_download=lambda k: seen.append(f"dl:{k}"))
-    assert d["robots"][0]["model"] == str(tmp_path / "go2.xml")
+    # 解析结果统一正斜杠（写进 YAML 跨平台安全），Windows 上也要成立
+    assert d["robots"][0]["model"] == (tmp_path / "go2.xml").as_posix()
     assert d["robots"][1]["model"] == "/abs/path/bot.xml"   # 非 zoo:// 不动
     assert seen == ["dl:unitree_go2", "unitree_go2"]        # 回调先于下载
 
@@ -204,7 +205,7 @@ robots:
     cfg = AgentConfig(base_url="http://x/v1", model="m")
     text, _ = generate_scene("一只机器狗", cfg)
     out = yaml.safe_load(text)
-    assert out["robots"][0]["model"] == str(tmp_path / "go2.xml")
+    assert out["robots"][0]["model"] == (tmp_path / "go2.xml").as_posix()
 
 
 # ---------------------------------------------------------------- prompt 增强
