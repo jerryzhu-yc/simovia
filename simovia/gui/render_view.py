@@ -406,7 +406,10 @@ class RenderModel:
             if bid is not None:
                 hl.add(int(bid))
         elif kind == "robot":
-            hl.update(self.robot_roots.get(name, []))
+            # 选中整台机器人：高亮它名下所有 body（骨盆、各连杆、夹爪/手），
+            # 以前只加根 body（pelvis），看起来只有骨盆一块变蓝
+            hl.update(bid for bid, rname in self.robot_bodies.items()
+                      if rname == name)
         self.highlight_bodies = hl
         self.highlight_target = (kind, name)
 

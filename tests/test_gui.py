@@ -149,6 +149,18 @@ class TestRenderModel:
         finally:
             rm.close()
 
+    def test_robot_selection_highlights_all_link_bodies(self):
+        """选中机器人本体：高亮集合要覆盖全部连杆（以前只有骨盆 root 变蓝）。"""
+        spec = load_world(WORLD)
+        rm = RenderModel(spec, width=32, height=32)
+        try:
+            rm.set_selection("robot", "arm")
+            bodies = set(rm.index.robots["arm"].bodies.values())
+            assert rm.highlight_bodies == bodies
+            assert len(bodies) > 1
+        finally:
+            rm.close()
+
     def test_apply_move_supports_z(self):
         """三维拖动：apply_move(dx,dy,dz) 的 dz 必须生效——
 
