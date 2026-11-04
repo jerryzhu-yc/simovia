@@ -110,27 +110,24 @@ class Simulation:
         # 控制器子进程要能 import simovia
         pkg_root = str(pathlib.Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
-        # 诊断探针：同样 env/stdio 起一个最简 python 子进程，验证"孙进程能否
-        # 正常启动并把 stderr 写回"——只有开追踪时执行。
+        # 诊断探针：用与真实控制器完全相同的 stdio 形态（stdin=DEVNULL、
+        # stdout 与 stderr 合并成一条由内核排空的管道）起一个最简 python
+        # 子进程，验证"孙进程能启动且输出能回传"——只有开追踪时执行。
         if os.environ.get("SIMOVIA_CTRL_TRACE"):
             try:
                 p = subprocess.run(
                     [sys.executable, "-c",
-                     "import sys; sys.stderr.write('probe-stderr ok\\n');"
-                     " sys.stderr.flush()"],
+                     "import sys; print('probe-stdout ok');"
+                     " sys.stderr.write('probe-stderr ok\\n')"],
                     env=env, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=None, timeout=20)
-                sys.stderr.write(f"[probe] rc={p.returncode}\n")
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    timeout=30)
+                sys.stderr.write(
+                    f"[probe] rc={p.returncode} "
+                    f"out={p.stdout.decode('utf-8', 'replace').strip()}\n")
             except Exception as e:                 # noqa: BLE001
                 sys.stderr.write(f"[probe] 失败 {type(e).__name__}: {e}\n")
             sys.stderr.flush()
-        # 诊断引导：开追踪时用 -c 包装脚本 + faulthandler，子进程卡住 8s 后
-        # 自动把调用栈打到 stderr，直接定位"活着但没跑起来"的停点。
-        _BOOT = ("import faulthandler, runpy, sys\n"
-                 "faulthandler.dump_traceback_later(8, exit=False)\n"
-                 "sys.argv = sys.argv[1:]\n"
-                 "runpy.run_path(sys.argv[0], run_name='__main__')\n")
-        tracing = bool(os.environ.get("SIMOVIA_CTRL_TRACE"))
         for rd in self.spec.robots:
             nu = len(self.index.robots[rd.name].actuators)
             self._st[rd.name] = {
@@ -150,17 +147,17 @@ class Simulation:
             if not path.exists():
                 raise WorldError(f"机器人 '{rd.name}' 的控制器不存在: {path}")
             # stdout 不能直通：内核若在 MCP 后端里跑，stdout 是 JSON-RPC
-            # 协议通道，控制器 print 会污染协议流。改用管道收进来再转投
-            # stderr（带 "[机器人名] " 前缀）——既不污染协议，新手又能用
-            # print 调试控制律。stderr 直通继承——控制器起不来（import
-            # 报错等）的真相必须可见，否则 Windows 上"无报错但卡死"无从
-            # 诊断（GUI 控制台/后端日志链路）。
+            # 协议通道，控制器 print 会污染协议流。stdin 也显式给 DEVNULL：
+            # 控制器只与内核走 ZMQ，读 stdin 只会把协议流吃掉（或在不同
+            # 平台的继承语义下卡住）。stdout/stderr 合并进同一条管道再
+            # 转投 stderr（带 "[机器人名] " 前缀）——既不污染协议，新手
+            # 又能用 print 调试控制律，且控制器起不来（import 报错等）的
+            # 真相一定可见：输出不依赖继承来的句柄，由内核主动排空。
             cmd = [sys.executable, str(path),
                    "--sock", self._addr, "--robot", rd.name]
-            if tracing:
-                cmd = [sys.executable, "-c", _BOOT] + cmd[1:]
             proc = subprocess.Popen(
-                cmd, env=env, stdout=subprocess.PIPE, stderr=None)
+                cmd, env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             if os.environ.get("SIMOVIA_CTRL_TRACE"):
                 sys.stderr.write(
                     f"[spawn] {rd.name} pid={proc.pid} addr={self._addr} "
@@ -171,11 +168,12 @@ class Simulation:
 
     @staticmethod
     def _pump_stdout(name: str, proc: subprocess.Popen) -> threading.Thread:
-        """把控制器 stdout 逐行转投到内核 stderr，前缀标注机器人名。
+        """把控制器 stdout+stderr（合并管道）逐行转投到内核 stderr。
 
-        管道读端由这个线程独占关闭：close() 若从主线程关，会撞上读线程
-        持有的缓冲区锁而阻塞（控制器留下继承 stdout 的子进程时永远等
-        不到 EOF，整个 close 卡死）。
+        前缀标注机器人名，便于区分多机器人世界的输出。管道读端由这个
+        线程独占关闭：close() 若从主线程关，会撞上读线程持有的缓冲区
+        锁而阻塞（控制器留下继承 stdout 的子进程时永远等不到 EOF，整个
+        close 卡死）。
         """
         def pump():
             try:
@@ -560,7 +558,7 @@ class Simulation:
                 return self._stats(t_start, sim_start)
             if time.perf_counter() > hs_deadline:
                 diag = "、".join(
-                    f"{n}(pid={self._procs[n].pid})"
+                    f"{n}(pid={self._procs[n].pid}, rc={self._procs[n].poll()})"
                     for n in parts if not self._st[n]["active"])
                 tail = ""
                 tf = os.environ.get("SIMOVIA_CTRL_TRACE_FILE")
@@ -573,10 +571,11 @@ class Simulation:
                 self._abort_controllers()
                 raise WorldError(
                     f"控制器握手超时（{_HANDSHAKE_TIMEOUT:.0f}s）: {diag}。"
-                    "进程存活但迟迟未发 hello，常见原因：控制器脚本 import "
-                    "或模型加载卡死/极慢（Windows 冷启动尤甚）。控制器 "
-                    "stderr 已直通内核错误输出，真实报错请到 GUI 控制台/"
-                    "后端日志查看；设 SIMOVIA_CTRL_TRACE=1 可打印握手阶段。"
+                    "控制器进程还活着但没发 hello，常见原因：脚本 import 或"
+                    "模型加载卡死/极慢（Windows 冷启动尤甚）。控制器 "
+                    "stdout/stderr 已并入内核输出（带 [机器人名] 前缀），"
+                    "真实报错请到 GUI 控制台/后端日志查看；设 "
+                    "SIMOVIA_CTRL_TRACE=1 可打印握手阶段。"
                     + (f" 追踪尾：{tail.strip()}" if tail else ""))
             self._poll_once(timeout_ms)
             self._check_crashes()

@@ -32,8 +32,11 @@ _TRACE_FILE = os.environ.get("SIMOVIA_CTRL_TRACE_FILE")
 def _trace(msg: str) -> None:
     line = f"[ctrl {os.getpid()}] {msg}\n"
     if _TRACE:
-        sys.stderr.write(line)
-        sys.stderr.flush()
+        try:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+        except (OSError, ValueError, AttributeError):
+            pass          # stderr 不可用（pythonw / 句柄失效）不能拖垮握手
     if _TRACE_FILE:
         try:
             with open(_TRACE_FILE, "a", encoding="utf-8") as f:
