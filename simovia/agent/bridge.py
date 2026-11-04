@@ -78,8 +78,9 @@ def system_prompt(world_name: str | None, mcp_tools: list[dict]) -> str:
 def extract_tool_calls(resp_json: dict) -> list[dict]:
     """从 OpenAI 响应抽 tool_calls（统一格式）。
 
-    返回 [{name, arguments}]，arguments 为 dict（已 JSON 解码）；
-    无 tool_calls 或异常时返回空列表。
+    返回 [{id, name, arguments}]，arguments 为 dict（已 JSON 解码）；
+    id 必须原样回传给模型服务（role=tool 消息的 tool_call_id），
+    缺失时才由调用方回退工具名。无 tool_calls 或异常时返回空列表。
     """
     try:
         choices = resp_json.get("choices") or []
@@ -100,7 +101,7 @@ def extract_tool_calls(resp_json: dict) -> list[dict]:
             args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
         except json.JSONDecodeError:
             args = {}
-        out.append({"name": name, "arguments": args})
+        out.append({"id": c.get("id"), "name": name, "arguments": args})
     return out
 
 

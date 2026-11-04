@@ -100,6 +100,15 @@ class TestUiState:
         s.to(UiState.RUNNING)
         assert s.can("stop") and not s.can("run") and not s.can("reset")
 
+    def test_paused_keeps_sim_state_usable(self):
+        """PAUSED（步进 N / 主动停止）：可继续运行/步进/重置/编辑。"""
+        from simovia.gui import theme
+        s = UiState()
+        s.to(UiState.PAUSED)
+        assert s.can("run") and s.can("reset") and s.can("edit")
+        assert s.can("observe") and not s.can("stop")
+        assert theme.state_text(UiState.PAUSED) == "已暂停"
+
 
 class TestRenderModel:
     def test_apply_observation_and_render(self):
@@ -747,6 +756,48 @@ def test_code_panel_save_signal(qapp, tmp_path):
         spec2 = type("S", (), {"robots": []})()
         p.set_world(spec2, tmp_path)
         assert "没有绑定控制器" in p.edit.toPlainText()
+    finally:
+        p.deleteLater()
+
+
+def test_code_panel_keeps_unsaved_drafts(qapp, tmp_path):
+    """切换控制器/重载世界不能丢掉未保存内容；保存后草稿清空。"""
+    from simovia.gui.panels import CodePanel
+
+    class _R:                      # RobotSpec 替身
+        def __init__(self, name, controller):
+            self.name = name; self.controller = controller
+
+    a = tmp_path / "a.py"
+    a.write_text("A0\n", encoding="utf-8")
+    b = tmp_path / "b.py"
+    b.write_text("B0\n", encoding="utf-8")
+    spec = type("S", (), {"robots": [_R("ra", "a.py"), _R("rb", "b.py")]})()
+    p = CodePanel()
+    try:
+        p.set_world(spec, tmp_path)
+        assert p.edit.toPlainText() == "A0\n"
+        # 模拟用户输入（真实修改文档 -> dirty）
+        p.edit.clear()
+        p.edit.insertPlainText("A1 未保存\n")
+        assert p.edit.document().isModified()
+        assert p.btn_save.text() == "保存并运行 *"
+        assert list(p.dirty_files()) == [str(a.resolve())]
+        # 切到另一个控制器：各自的编辑缓存独立
+        p.combo.setCurrentText("rb")
+        assert p.edit.toPlainText() == "B0\n"
+        assert not p.edit.document().isModified()
+        # 切回来：草稿还在（未被磁盘内容覆盖）
+        p.combo.setCurrentText("ra")
+        assert p.edit.toPlainText() == "A1 未保存\n"
+        # 重载世界（同一 spec）：草稿同样不丢
+        p.set_world(spec, tmp_path)
+        assert p.edit.toPlainText() == "A1 未保存\n"
+        # 保存（直接写盘）：草稿清空、按钮标记消失
+        assert p.save_dirty_files() == []
+        assert a.read_text(encoding="utf-8") == "A1 未保存\n"
+        assert p.dirty_files() == {}
+        assert p.btn_save.text() == "保存并运行"
     finally:
         p.deleteLater()
 

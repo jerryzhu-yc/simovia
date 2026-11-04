@@ -5,6 +5,14 @@ import stat
 import pytest
 
 
+@pytest.fixture(scope="module")
+def qapp():
+    """offscreen QApplication（worker 的 QEventLoop/QTimer 需要 app 实例）。"""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
 # ================================================================ T7-a 配置持久化
 
 def test_config_roundtrip(tmp_path, monkeypatch):
@@ -94,6 +102,7 @@ def test_extract_tool_calls_and_content():
     assert len(calls) == 1
     assert calls[0]["name"] == "load_world"
     assert calls[0]["arguments"] == {"yaml_path": "/tmp/w.yaml"}
+    assert calls[0]["id"] == "c1"          # 原始调用 id 必须保留
     assert content_text(resp) == "好的，先加载世界"
     # 无 tool_calls：仅 content
     resp2 = {"choices": [{"message": {"content": "已处理完"}}]}
@@ -149,3 +158,104 @@ def test_local_files_read_nonexistent(tmp_path):
     with pytest.raises(WorldError) as e:
         f.read_file("ghost.yaml")
     assert "ghost.yaml" in str(e.value)
+
+
+# ================================================================ T7-e 工具调用闭环
+
+def test_extract_tool_calls_keeps_ids_for_multiple_calls():
+    """同一轮多个 tool_calls 各自保留 id（回传 tool_call_id 需一一对应）。"""
+    from simovia.agent.bridge import extract_tool_calls
+    resp = {"choices": [{"message": {"tool_calls": [
+        {"id": "call_a", "function": {"name": "load_world", "arguments": "{}"}},
+        {"id": "call_b", "function": {"name": "run", "arguments": '{"ticks": 3}'}},
+    ]}}]}
+    calls = extract_tool_calls(resp)
+    assert [c["id"] for c in calls] == ["call_a", "call_b"]
+    assert [c["name"] for c in calls] == ["load_world", "run"]
+    # 端点没给 id：保留 None（worker 回退工具名，而不是假装有 id）
+    resp2 = {"choices": [{"message": {"tool_calls": [
+        {"function": {"name": "run", "arguments": "{}"}}]}}]}
+    assert extract_tool_calls(resp2)[0]["id"] is None
+
+
+def test_worker_mcp_sync_callback_is_two_args(qapp):
+    """McpClient.call_tool 回调签名是 (is_error, data)：worker 必须按双参接收。"""
+    from simovia.agent.worker import AgentWorker
+
+    class _Client:
+        def __init__(self, err, data):
+            self.err, self.data, self.seen = err, data, None
+
+        def call_tool(self, name, args, on_done):
+            self.seen = (name, args)
+            on_done(self.err, self.data)      # 同步回调（本地后端/测试）
+            return 1
+
+    ok_client = _Client(False, {"ticks": 5})
+    w = AgentWorker(ok_client)
+    assert w._call_mcp_sync("run", {"ticks": 5}) == {"ticks": 5}
+    assert ok_client.seen == ("run", {"ticks": 5})
+
+    err_client = _Client(True, "后端未加载世界")
+    w2 = AgentWorker(err_client)
+    assert w2._call_mcp_sync("run", {}) == {"error": "后端未加载世界"}
+
+
+def test_worker_tool_messages_reuse_model_call_ids(qapp):
+    """role=tool 消息必须带模型下发的原始 tool_call_id（不能换成工具名）。"""
+    from simovia.agent.worker import AgentWorker
+
+    class _W(AgentWorker):
+        def __init__(self):
+            super().__init__(client=None)
+            self._rounds = [
+                {"choices": [{"message": {"tool_calls": [
+                    {"id": "call_1", "function": {
+                        "name": "run", "arguments": '{"ticks": 1}'}}]}}]},
+                {"choices": [{"message": {"content": "完成"}}]},
+            ]
+
+        def _post_chat(self):
+            return self._rounds.pop(0)
+
+        def _dispatch_tool(self, name, args):
+            return {"ok": name}
+
+    w = _W()
+    w._run_round()
+    tool_msgs = [m for m in w._messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "call_1"
+
+
+def test_worker_stop_only_cancels_current_round(qapp):
+    """stop 只取消当前轮：worker 线程继续待命，下一条消息照常处理。"""
+    from simovia.agent.config import AgentConfig
+    from simovia.agent.worker import AgentWorker
+
+    rounds = []
+
+    class _W(AgentWorker):
+        def __init__(self):
+            super().__init__(client=None)
+            self._config = AgentConfig(base_url="http://localhost/v1", model="m")
+
+        def _run_round(self):
+            rounds.append(len(self._messages))
+            if len(rounds) == 1:
+                self._cancel = True        # 第一轮被 stop 打断（走到检查点）
+                return
+            self._running = False          # 第二轮正常结束 -> 线程收工
+
+    w = _W()
+    ended = []
+    w.finishedRound.connect(lambda: ended.append(1))
+    w.send("first")
+    w.send("second")
+    w.run()
+    assert rounds == [1, 2]                # 两轮都执行了（第一轮取消不影响下一轮）
+    assert len(ended) == 2                 # 每轮结束都发一次（界面恢复可输入）
+    assert w._cancel is False              # 新一轮清掉了上一轮的取消标志
+    assert w._running is False
+
+

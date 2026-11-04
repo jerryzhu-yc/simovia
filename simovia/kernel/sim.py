@@ -66,6 +66,7 @@ class Simulation:
         self._poller.register(self._router, zmq.POLLIN)
 
         self.tick = 0
+        self._ran = False               # 是否已跑过一轮 run（暂停续跑判断用）
         # robot name -> 运行时状态
         self._st: dict[str, dict] = {}
         self._procs: dict[str, subprocess.Popen] = {}
@@ -190,6 +191,40 @@ class Simulation:
     def reset(self) -> None:
         """回到编译完成、还没跑过任何 tick 的初始状态。"""
         self.load_state(supervisor.INIT_TAG)
+
+    def ensure_controllers(self) -> bool:
+        """确保控制器进程在跑（暂停后继续推进用）。返回是否重新拉起。
+
+        run 收尾会让控制器正常退出（REQ/REP 一段轨迹约定），暂停后继续
+        推进时进程已经不在了：重新 spawn 一批，model/data/tick 保持不变，
+        新进程重新握手后从当前状态接着跑。
+        """
+        if not self._ran or not self._procs:
+            return False                 # 没跑过 / 无控制器世界（或没起过进程）
+        # 上一轮收尾后控制器可能还没退干净（已回 bye、正在退出）：它们
+        # 已标 done，不算"在跑"。真正在跑的（活着且未 done/crashed）才
+        # 说明有 run 在进行，不能重复 spawn。
+        alive = [p for n, p in self._procs.items()
+                 if p.poll() is None
+                 and not self._st.get(n, {}).get("done")
+                 and not self._st.get(n, {}).get("crashed")]
+        if alive:
+            return False
+        deadline = time.perf_counter() + 2.0   # 等退出中的进程收尾，避免泄漏
+        for proc in self._procs.values():
+            remain = deadline - time.perf_counter()
+            if remain <= 0 or proc.poll() is not None:
+                continue
+            try:
+                proc.wait(timeout=remain)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+        self._procs.clear()
+        self._pumps.clear()
+        self._ident.clear()
+        self._st.clear()
+        self._spawn_controllers()
+        return True
 
     def _supervise(self, ident: bytes, msg: dict) -> None:
         action = msg.get("action")
@@ -390,6 +425,7 @@ class Simulation:
         policy = self.spec.runtime.timeout_policy
         if realtime is None:
             realtime = self.spec.runtime.realtime
+        self._ran = True
         t_start, sim_start = time.perf_counter(), self.data.time
 
         def _pace():
@@ -407,9 +443,11 @@ class Simulation:
             sample_stride = max(
                 1, int(round((1.0 / _SAMPLE_HZ) / self.spec.timestep)))
 
-        # 无控制器的世界：直接空跑（scene_gen 冒烟等用途）
+        # 无控制器的世界：直接空跑（scene_gen 冒烟等用途）。
+        # max_ticks 是"目标总 tick"（与控制器分支的 budget=max_ticks-tick
+        # 语义一致）：暂停后继续 run 不会把 N 步进重复累加。
         if not self._procs:
-            for _ in range(max_ticks):
+            while self.tick < max_ticks:
                 if stop_check is not None and stop_check():
                     break
                 if ctrl_fn is not None:

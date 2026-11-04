@@ -13,8 +13,9 @@
 信号流（GUI 与 AI Agent 同构，都是 MCP 客户端）：
   Load   -> 本地解析 spec（渲染模型用）+ load_world RPC -> IDLE
   Run    -> run RPC（延迟响应）-> RUNNING（30Hz 拉快照刷新视口/面板）
-         -> run 响应到达 -> FINISHED
+         -> run 响应到达 -> FINISHED（跑到终态）/ PAUSED（步进 N / 主动停止）
   Reset  -> reset RPC -> IDLE
+  PAUSED  下点 Run/步进 -> 从当前 tick 继续（后端自动重启控制器进程）
   FINISHED 下点 Run/步进 -> 自动 reset 再 run（episode 是一次性的）
 """
 from __future__ import annotations
@@ -445,6 +446,7 @@ class MainWindow(QMainWindow):
         self._builder_dlg: RobotBuilderDialog | None = None
         self._busy = False              # load_world 在途（防重入提交）
         self._sel_node = None           # 当前选中 (kind, name)（删除按钮用）
+        self._run_is_step = False        # 本次 run 是否 N 步进（决定暂停/结束）
 
         # ---- 遥操作状态（按键集合 + 最近一次下发指令，只在变化时发 MCP）
         self._teleop_active = False
@@ -868,12 +870,12 @@ class MainWindow(QMainWindow):
 
     def _apply_state(self, msg: str = "") -> None:
         s = self.state.value
-        # 编辑模式：IDLE 与 FINISHED 都允许（跑完演示调整布局再跑是高频
-        # 路径）；提交走 load_world 全量重载，天然回到 YAML 初态
+        # 编辑模式：IDLE / PAUSED / FINISHED 都允许（跑完演示调整布局再跑是
+        # 高频路径）；提交走 load_world 全量重载，天然回到 YAML 初态
         self.view.edit_allowed = self.state.can("edit")
         self.act_open.setEnabled(s != UiState.RUNNING)
         self.act_zoo.setEnabled(s != UiState.RUNNING)
-        # 场景编辑与保存：IDLE/FINISHED 都可用（拖动/位姿同门槛）
+        # 场景编辑与保存：IDLE/PAUSED/FINISHED 都可用（拖动/位姿同门槛）
         can_edit = self.state.can("edit") and self._spec is not None
         self.act_save.setEnabled(can_edit)
         self.act_add_object.setEnabled(can_edit)
@@ -1447,7 +1449,9 @@ class MainWindow(QMainWindow):
         self.agent_worker.send(text)
 
     def _on_agent_stop(self):
+        """停止 = 只取消这一轮对话（worker 线程继续待命，可再次发送）。"""
         self.agent_worker.stop()
+        self._log("已请求停止本轮 Agent 对话…")
 
     def _on_agent_round_done(self):
         self._refresh_agent_state(busy=False)
@@ -1492,6 +1496,8 @@ class MainWindow(QMainWindow):
             return
         self._pending_select = ("robot", robot_name)
         self._pending_run = True
+        # 文件已落盘：清掉该机器人的编辑草稿（重载世界后显示磁盘内容）
+        self.code.clear_draft(robot_name)
         self._log(f"已保存 {path.name}，重载世界后自动运行…", "ok")
 
         def got_yaml(err, yaml_text):
@@ -1883,18 +1889,20 @@ class MainWindow(QMainWindow):
 
     def _start_run(self, args: dict):
         if self.state.value == UiState.FINISHED:
-            # episode 一次性：先 reset 再跑
+            # 已跑到终态（控制器进程已退出）：episode 一次性，先 reset 再跑
             self.client.call_tool(
                 "reset", {},
                 lambda e, d: None if e else self._do_run(args))
             self._apply_state("重置后重跑…")
             return
+        # IDLE：首次运行；PAUSED：从当前 tick/qpos 继续（控制器由后端重启）
         if not self.state.can("run"):
             return
         self._do_run(args)
 
     def _do_run(self, args: dict):
         n = args.get("ticks")
+        self._run_is_step = n is not None
         self.state.to(UiState.RUNNING)
         self.view.set_hud_state("运行中")
         msg = (f"步进 {n} tick（控制器已接管）…" if n
@@ -1905,7 +1913,7 @@ class MainWindow(QMainWindow):
 
     def _on_stop(self):
         """停止当前 run：stop 工具立即返回，run 的响应在下个控制 tick 后
-        照常写回（stats 带 stopped=true）-> _on_run_done 走正常 FINISHED 流程。"""
+        照常写回（stats 带 stopped=true）-> _on_run_done 进 PAUSED。"""
         if not self.state.can("stop"):
             return
         self.act_stop.setEnabled(False)   # 防连点；收尾或失败后 _apply_state 恢复
@@ -1925,28 +1933,37 @@ class MainWindow(QMainWindow):
             self._apply_state("没有进行中的 run")
 
     def _on_run_done(self, err, stats):
-        self.state.to(UiState.FINISHED)
-        self.view.set_hud_state("已结束")
         if err:
+            self.state.to(UiState.FINISHED)
+            self.view.set_hud_state("已结束")
             self._apply_state(f"run 失败: {stats}")
             self._log(f"run 失败: {stats}", "error")
-        else:
-            self.props.update_stats(stats)
-            self.lbl_tick.setText(f"tick {stats.get('ticks')}")
-            succ = stats.get("success")
-            crashed = stats.get("crashed") or []
-            stopped = bool(stats.get("stopped"))
-            prefix = "已停止：" if stopped else "运行结束："
-            self._apply_state(
-                f"{prefix}ticks={stats.get('ticks')} "
-                f"成功={'是' if succ else '否'}  reward={stats.get('reward')}")
-            self._log(
-                f"{'已停止' if stopped else '结束'} ticks={stats.get('ticks')} "
-                f"成功={'是' if succ else '否'} reward={stats.get('reward')} "
-                f"墙钟 {stats.get('wall_time')}s",
-                "ok" if succ else "info")
-            if crashed:
-                self._log(f"控制器异常退出：{crashed}", "warn")
+            self._fetch_obs()
+            return
+        stats = stats if isinstance(stats, dict) else {}
+        stopped = bool(stats.get("stopped"))
+        # 步进 N tick 跑满 / 用户主动停止 -> 暂停：仿真状态（qpos/tick）保留，
+        # 可以继续运行或继续步进（不等同于跑到终态后的 FINISHED）
+        paused = stopped or self._run_is_step
+        self.state.to(UiState.PAUSED if paused else UiState.FINISHED)
+        self.view.set_hud_state("已暂停" if paused else "已结束")
+        self.props.update_stats(stats)
+        self.lbl_tick.setText(f"tick {stats.get('ticks')}")
+        succ = stats.get("success")
+        crashed = stats.get("crashed") or []
+        prefix = ("已暂停（停止）：" if stopped else
+                  "已暂停（步进完成）：" if self._run_is_step else "运行结束：")
+        self._apply_state(
+            f"{prefix}ticks={stats.get('ticks')} "
+            f"成功={'是' if succ else '否'}  reward={stats.get('reward')}"
+            + ("（可继续运行/步进，或重置）" if paused else ""))
+        self._log(
+            f"{'已暂停' if paused else '结束'} ticks={stats.get('ticks')} "
+            f"成功={'是' if succ else '否'} reward={stats.get('reward')} "
+            f"墙钟 {stats.get('wall_time')}s",
+            "ok" if succ else "info")
+        if crashed:
+            self._log(f"控制器异常退出：{crashed}", "warn")
         self._fetch_obs()
 
     # ============================================================ 遥操作
@@ -2165,15 +2182,36 @@ class MainWindow(QMainWindow):
     def _on_backend_died(self, msg):
         self.state.to(UiState.EMPTY)
         self.view.set_hud_state("后端异常")
+        self._refresh_agent_state(busy=False)     # 后端没了，Agent 不能一直忙碌
         self._apply_state(f"仿真后端异常退出：{msg}")
         self._log(f"仿真后端异常退出：{msg}", "error")
 
     def closeEvent(self, e):
+        # 未保存的控制器代码：保存 / 放弃 / 取消
+        dirty = self.code.dirty_files() if hasattr(self, "code") else {}
+        if dirty:
+            names = "、".join(pathlib.Path(p).name for p in dirty)
+            r = QMessageBox.question(
+                self, "未保存的修改",
+                f"控制器代码有未保存的修改：{names}\n\n关闭前保存吗？",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save)
+            if r == QMessageBox.StandardButton.Cancel:
+                e.ignore()
+                return
+            if r == QMessageBox.StandardButton.Save:
+                errs = self.code.save_dirty_files()
+                if errs:
+                    QMessageBox.warning(self, "保存失败", "\n".join(errs))
+                    e.ignore()
+                    return
         self.timer.stop()
         self._cam_timer.stop()
         try:
-            self.agent_worker.stop()
-            self.agent_worker.wait(2000)        # 让 QThread 退出
+            self.agent_worker.shutdown()       # 退出线程（不是只取消本轮）
+            self.agent_worker.wait(2000)
         except Exception:
             pass
         self.client.shutdown()

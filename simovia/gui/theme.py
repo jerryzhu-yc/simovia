@@ -381,6 +381,7 @@ def state_color(state: str) -> str:
         "empty": C_TEXT_DIM,
         "idle": C_TEXT,
         "running": C_RUNNING,
+        "paused": C_WARN,
         "finished": C_ACCENT,
     }.get(state, C_TEXT_DIM)
 
@@ -390,5 +391,6 @@ def state_text(state: str) -> str:
         "empty": "未加载",
         "idle": "就绪",
         "running": "运行中",
+        "paused": "已暂停",
         "finished": "已结束",
     }.get(state, state)

@@ -232,6 +232,13 @@ while robot.step():
         assert 7 <= stats["ticks"] < 10000
         assert not stats["nan"]
 
+    def test_no_controller_max_ticks_is_target_total(self):
+        """无控制器世界的 max_ticks 也是目标总 tick（与控制器分支一致）。"""
+        spec = parse_world(_world_dict(None))
+        with Simulation(spec) as sim:
+            assert sim.run(max_ticks=5)["ticks"] == 5
+            assert sim.run(max_ticks=12)["ticks"] == 12   # 不是 5+12=17
+
     def test_stop_check_never_true_runs_to_end(self):
         """stop_check 恒 False：行为与不传完全一致（跑满）"""
         spec = parse_world(_world_dict(None))

@@ -21,9 +21,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QDoubleSpinBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMenu,
-                               QPlainTextEdit, QPushButton, QStackedWidget,
-                               QTreeWidget, QTreeWidgetItem, QVBoxLayout,
-                               QWidget)
+                               QMessageBox, QPlainTextEdit, QPushButton,
+                               QStackedWidget, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from simovia.gui import theme
 
@@ -633,6 +633,9 @@ class CodePanel(QWidget):
 
     set_world 填充控制器下拉；saveRequested(name, text) 由 app 侧落盘 +
     重载世界（重启控制器进程）+ 自动运行。Ctrl+S 在编辑框聚焦时等同保存。
+
+    未保存内容保护：每个控制器文件各有独立草稿（切换下拉/重载世界都不
+    丢改动），标题栏按钮显示 "保存并运行 *"；"重读"需确认后才丢弃草稿。
     """
 
     saveRequested = Signal(str, str)          # robot 名, 文件全文
@@ -644,17 +647,17 @@ class CodePanel(QWidget):
         bar = QHBoxLayout()
         self.combo = QComboBox()
         self.combo.setToolTip("选择要编辑的机器人控制器")
-        self.combo.currentTextChanged.connect(self._load_current)
+        self.combo.currentTextChanged.connect(self._on_combo_changed)
         bar.addWidget(self.combo, stretch=1)
         btn_reload = QPushButton("重读")
         btn_reload.setToolTip("放弃修改，从磁盘重读当前控制器")
-        btn_reload.clicked.connect(self._load_current)
+        btn_reload.clicked.connect(self._reload_from_disk)
         bar.addWidget(btn_reload)
-        btn_save = QPushButton("保存并运行")
-        btn_save.setToolTip("写回控制器文件 -> 重载世界（控制器进程重启，新代码生效）"
-                            "-> 自动运行")
-        btn_save.clicked.connect(self._on_save)
-        bar.addWidget(btn_save)
+        self.btn_save = QPushButton("保存并运行")
+        self.btn_save.setToolTip("写回控制器文件 -> 重载世界（控制器进程重启，"
+                                 "新代码生效）-> 自动运行")
+        self.btn_save.clicked.connect(self._on_save)
+        bar.addWidget(self.btn_save)
         v.addLayout(bar)
         self.edit = QPlainTextEdit()
         mono = QFont()
@@ -670,31 +673,116 @@ class CodePanel(QWidget):
         sc.activated.connect(self._on_save)
         v.addWidget(self.edit, stretch=1)
         self._paths: dict[str, str] = {}       # robot 名 -> 控制器绝对路径
+        self._drafts: dict[str, str] = {}      # 文件路径 -> 未保存内容
+        self._current: str | None = None       # 当前编辑的文件绝对路径
+        self.edit.document().modificationChanged.connect(self._on_modified)
+
+    # ------------------------------------------------------------ 未保存保护
+
+    def _on_modified(self, modified: bool) -> None:
+        self.btn_save.setText("保存并运行 *" if modified else "保存并运行")
+
+    def _stash_current(self) -> None:
+        """把当前编辑框里未保存的改动收进草稿（切文件/换世界前调用）。"""
+        if self._current and self.edit.document().isModified():
+            self._drafts[self._current] = self.edit.toPlainText()
+
+    def _show(self, text: str, path: str | None, modified: bool = False) -> None:
+        self._current = path
+        self.edit.setPlainText(text)           # 清空 undo 栈
+        self.edit.document().setModified(modified)
+        self._on_modified(modified)
+
+    def dirty_files(self) -> dict[str, str]:
+        """所有未保存内容（路径 -> 文本）；关闭窗口提示用。"""
+        files = dict(self._drafts)
+        if self._current and self.edit.document().isModified():
+            files[self._current] = self.edit.toPlainText()
+        return files
+
+    def save_dirty_files(self) -> list[str]:
+        """把未保存内容直接写盘（不重载世界）；返回失败描述列表。"""
+        errors = []
+        files = self.dirty_files()
+        for path, text in files.items():
+            try:
+                pathlib.Path(path).write_text(text, encoding="utf-8")
+            except OSError as e:
+                errors.append(f"{path}: {e}")
+                continue
+            self._drafts.pop(path, None)
+            if path == self._current:
+                self.edit.document().setModified(False)
+        return errors
+
+    def clear_draft(self, robot_name: str) -> None:
+        """保存并运行成功写盘后清掉该机器人的草稿。"""
+        path = self._paths.get(robot_name)
+        if not path:
+            return
+        self._drafts.pop(path, None)
+        if path == self._current:
+            self.edit.document().setModified(False)
+
+    # ------------------------------------------------------------ 载入
 
     def set_world(self, spec, base_dir) -> None:
         """加载/重载世界后刷新控制器清单（相对路径按世界目录解析）。"""
+        self._stash_current()
         self._paths = {r.name: str((pathlib.Path(base_dir) / r.controller).resolve())
                        for r in spec.robots if r.controller}
+        prev = self._current
         self.combo.blockSignals(True)
         self.combo.clear()
         self.combo.addItems(list(self._paths) or ["（当前世界没有控制器）"])
         self.combo.blockSignals(False)
-        if self._paths:
-            self._load_current()
-        else:
-            self.edit.setPlainText(
-                "# 当前世界的机器人没有绑定控制器。\n"
-                "# 用 模型库 → 生成并打开 可获得带控制律模板的项目。")
+        if not self._paths:
+            self._show("# 当前世界的机器人没有绑定控制器。\n"
+                       "# 用 模型库 → 生成并打开 可获得带控制律模板的项目。", None)
+            return
+        # 同一控制器跨世界重载时保持当前选择（草稿继续显示）
+        names = list(self._paths)
+        name = next((n for n in names if self._paths[n] == prev), names[0])
+        self.combo.blockSignals(True)
+        self.combo.setCurrentText(name)
+        self.combo.blockSignals(False)
+        self._load_path(self._paths[name])
 
-    def _load_current(self) -> None:
-        name = self.combo.currentText()
-        path = self._paths.get(name)
+    def _on_combo_changed(self, _name: str) -> None:
+        self._stash_current()
+        self._load_path(self._paths.get(self.combo.currentText()))
+
+    def _load_path(self, path: str | None) -> None:
         if not path:
+            self._show("# 当前世界的机器人没有绑定控制器。", None)
+            return
+        draft = self._drafts.get(path)
+        if draft is not None:                  # 有草稿：显示未保存内容
+            self._show(draft, path, modified=True)
             return
         try:
-            self.edit.setPlainText(pathlib.Path(path).read_text(encoding="utf-8"))
+            text = pathlib.Path(path).read_text(encoding="utf-8")
         except OSError as e:
-            self.edit.setPlainText(f"# 读取 {path} 失败: {e}")
+            text = f"# 读取 {path} 失败: {e}"
+        self._show(text, path)
+
+    def _reload_from_disk(self) -> None:
+        """重读：确认后丢弃当前文件草稿，从磁盘重新载入。"""
+        path = self._paths.get(self.combo.currentText())
+        has_draft = self.edit.document().isModified() or (
+            path is not None and path in self._drafts)
+        if has_draft:
+            yes = QMessageBox.StandardButton.Yes
+            if QMessageBox.question(
+                    self, "放弃修改",
+                    "当前控制器有未保存的修改，确定放弃并重读？",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != yes:
+                return
+        if path:
+            self._drafts.pop(path, None)
+        self._load_path(path)
 
     def _on_save(self) -> None:
         name = self.combo.currentText()

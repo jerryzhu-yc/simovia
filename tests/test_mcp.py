@@ -216,6 +216,46 @@ class TestAgentLoop:
         finally:
             s.close()
 
+    def test_failed_load_keeps_old_world(self):
+        """新世界创建失败必须保留旧世界（先建新仿真，成功后再关旧的）。"""
+        s = SimoviaSession()
+        try:
+            s.call_tool("load_world", {"yaml_path": str(WORLD)})
+            old_name, old_sim = s.spec.name, s.sim
+            bad = WORLD.read_text(encoding="utf-8").replace(
+                "controller: ../controllers/pick_place.py",
+                "controller: /nonexistent/ctrl.py")
+            with pytest.raises(WorldError):
+                s.call_tool("load_world", {"yaml_text": bad,
+                                           "base_dir": str(ROOT / "worlds")})
+            # 旧世界原样保留，且还能继续跑（不是"关掉旧世界再失败"）
+            assert s.spec.name == old_name and s.sim is old_sim
+            assert s.call_tool("run", {"ticks": 2})["ticks"] == 2
+        finally:
+            s.close()
+
+    def test_continue_run_accumulates_ticks(self):
+        """继续 run 从当前 tick 累加：控制器进程自动重新拉起（暂停续跑）。"""
+        s = SimoviaSession()
+        try:
+            s.call_tool("load_world", {"yaml_path": str(WORLD)})
+            assert s.call_tool("run", {"ticks": 3})["ticks"] == 3
+            r2 = s.call_tool("run", {"ticks": 3})
+            assert r2["ticks"] == 6, r2
+        finally:
+            s.close()
+
+    def test_run_ticks_without_controller_accumulate(self):
+        """无控制器世界：max_ticks 是目标总 tick，连续 run 不重复累加。"""
+        s = SimoviaSession()
+        try:
+            s.call_tool("load_world",
+                        {"yaml_path": str(ROOT / "worlds" / "empty.yaml")})
+            assert s.call_tool("run", {"ticks": 10})["ticks"] == 10
+            assert s.call_tool("run", {"ticks": 10})["ticks"] == 20
+        finally:
+            s.close()
+
     def test_observation_has_object_quat(self):
         """get_observation 顶层 objects 带 pos+quat（GUI 渲染写 freejoint 需要）。"""
         s = SimoviaSession()

@@ -91,8 +91,9 @@ _TOOLS = [
                        "缺省跑到终态（控制器退出/世界 max_ticks）；ticks=N 只推进 N 步。"
                        "run 在后台线程执行：期间可以继续 get_observation（返回实时快照，"
                        "GUI 实时可视化的基础）；本条响应会等 run 结束才返回。"
-                       "注意：run 返回时本轮控制器已收尾退出，继续推进请 reset 后重跑，"
-                       "或改世界后重新 load_world。同一时刻只允许一个 run。",
+                       "注意：run 返回时本轮控制器已收尾退出；下一段 run 会自动重新"
+                       "拉起控制器并从当前 tick/qpos 继续（ticks 累积），reset 才回到"
+                       "世界初态。同一时刻只允许一个 run。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -424,13 +425,17 @@ class SimoviaSession:
             yaml_text = text
             new_path = None                      # 内存世界（无来源文件）
 
+        # 先创建新仿真、成功后再替换旧世界：新模型缺 mesh/关节引用错误/
+        # 控制器路径不存在等编译失败时，旧世界仍然完整可用（GUI 误点一个
+        # 坏文件不至于把当前场景一起关掉）。
+        new_sim = Simulation(spec)
         self.close()
         self.spec, self.yaml_text = spec, yaml_text
         # 来源文件跟踪：yaml_text 重载（GUI 拖动/位姿提交）不动它——
         # 那些修改的目标仍是原文件；只有换世界才更新
         if new_path is not None:
             self.world_path = new_path
-        self.sim = Simulation(spec)
+        self.sim = new_sim
         return {
             "world": spec.name,
             "objects": [o.name for o in spec.scene.objects],
@@ -737,6 +742,9 @@ class SimoviaSession:
             # 遥操作结束后是"不起控制器"的实例：普通 run 恢复多进程控制器
             self._rebuild_sim(autostart_controllers=True)
         sim = self._require_sim()
+        # 上一轮 run 收尾时控制器已正常退出：继续推进（GUI 步进累积/暂停
+        # 续跑）需要重新拉起控制器，qpos/tick 与场景状态保持不变。
+        sim.ensure_controllers()
         ticks = args.get("ticks")
         max_ticks = (sim.tick + int(ticks)) if ticks is not None else None
         realtime = bool(args.get("realtime", False))
