@@ -1735,6 +1735,12 @@ class MainWindow(QMainWindow):
                 if rd is None:
                     self._log(f"世界 YAML 里没找到机器人 '{robot_name}'", "warn")
                     return
+                if not stripped and rd.get("gripper") is not None:
+                    # 装了夹爪的腕部挂点就是靠删自带手生成的：先卸夹爪再恢复
+                    self._log(
+                        f"{robot_name} 已装配夹爪，恢复自带末端的挂点会消失；"
+                        f"请先移除夹爪", "warn")
+                    return
                 cur = rd.get("strip_hands", False)
                 if isinstance(cur, bool):
                     base = set(keys) if cur else set()

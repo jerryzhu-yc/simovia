@@ -163,6 +163,8 @@ GRIPPERS: dict[str, dict] = {
         "cat": "灵巧手",
         "xml": "leap_hand/leap_hand.xml",
         "site": "attachment_site",
+        # 侧别：人形双手都在时只替换同侧自带手，挂点也优先取同侧腕部
+        "side": "left",
         # 16 自由度无单一开合执行器：用 actuators + poses 描述开合目标
         "actuators": _LEAP_ACTUATORS,
         "poses": _LEAP_POSES,

@@ -436,6 +436,124 @@ def detect_end_effectors(child: mujoco.MjSpec) -> list[dict]:
     return groups
 
 
+#: 腕部末端 body 识别 token：模型既没有自带手、也没有 attachment_site 时，
+#: 按这些名字找安装点（如 Unitree G1 的 g1.xml：left/right_wrist_yaw_link）
+_WRIST_TOKENS = {"wrist", "flange", "tcp"}
+
+
+def _has_attachment_site(child: mujoco.MjSpec) -> bool:
+    """模型里是否已有夹爪挂点（menagerie 惯例 attachment_site 或自动生成名）。"""
+    return any(s.name == "attachment_site"
+               or (s.name or "").endswith("_attachment_site")
+               for s in child.sites)
+
+
+def _gripper_side(model: str) -> str | None:
+    """夹爪库声明的侧别（leap_hand 是左手），用于挑挂点/替换哪只手。"""
+    return (GRIPPERS.get(model) or {}).get("side")
+
+
+def detect_wrist_sites(child: mujoco.MjSpec) -> list[dict]:
+    """没有自带手也没有挂点时，按腕部末端 body 生成安装点。
+
+    典型场景：zoo 的 unitree_g1（g1.xml）只有 29 自由度本体，腕部是
+    left/right_wrist_yaw_link 这样的叶子连杆，既没有手 body，也没有
+    attachment_site——直接挂夹爪会报"模型里没有挂点 site"。
+
+    - 只取名字含 wrist/flange/tcp 的叶子 body（有子 body 说明还没到末端）
+    - 法兰面与工具轴：优先用 body 上残留的手形 geom（如 G1 的
+      left_rubber_hand 手套网格）的位姿推断；没有则退化为 body 原点 +
+      本体系 +x（人形腕部连杆的常规伸出方向），用户可在 GUI 微调 pos/rot
+    """
+    world = child.worldbody
+    bodies: dict[str, object] = {}
+    for b in child.bodies:
+        if not b.name or b is world or b.name == world.name:
+            continue
+        bodies[b.name] = b
+    sites = []
+    for name in sorted(bodies):
+        b = bodies[name]
+        if not (_tokens(name) & _WRIST_TOKENS) or b.bodies:
+            continue
+        distal = None
+        for g in b.geoms:
+            if _looks_like_end_effector(g.name or "") or \
+                    _looks_like_end_effector(g.meshname or ""):
+                distal = [float(x) for x in g.pos]
+                break
+        if distal is None or math.sqrt(sum(x * x for x in distal)) < 1e-6:
+            distal = [0.05, 0.0, 0.0]
+        key = ("left_hand" if name.startswith("left")
+               else "right_hand" if name.startswith("right") else name)
+        sites.append({"key": key, "anchor": name, "bodies": [],
+                      "pos": distal, "quat": _quat_from_z_to(distal),
+                      "stripped": False})
+    for s in sites:
+        s["site"] = (f"{s['key']}_attachment_site" if len(sites) > 1
+                     else "attachment_site")
+    return sites
+
+
+def _auto_strip_keys(groups: list[dict], robot: RobotSpec) -> set[str]:
+    """装夹爪但没有挂点时，要自动替换的自带末端（按夹爪侧别优先匹配）。
+
+    人形双手都在时只删要装夹爪的那一侧（leap_hand 左手 -> left_hand），
+    另一侧的手保留；无法判断侧别时取排序第一组。
+    """
+    if not groups:
+        return set()
+    side = _gripper_side(robot.gripper.model) if robot.gripper else None
+    if side:
+        for g in groups:
+            if g["key"] == f"{side}_hand":
+                return {g["key"]}
+    return {sorted(groups, key=lambda g: g["key"])[0]["key"]}
+
+
+def _drop_end_effector_geoms(child: mujoco.MjSpec) -> mujoco.MjSpec:
+    """删掉残留在腕部 body 上的自带手外观 geom（如 G1 的 *_rubber_hand）。
+
+    无手模型的"手"只剩一层装饰网格，装外挂夹爪/灵巧手时留着会和新的末端
+    穿插，所以生成腕部挂点的同时一并清掉。仍走 to_xml 路线（MjSpec.delete
+    在 3.13 有悬垂引用问题），但只删 geom/site，不碰 keyframe/传感器。
+    """
+    root = ET.fromstring(child.to_xml())
+
+    def walk(parent):
+        for el in list(parent):
+            if el.tag in ("geom", "site"):
+                if (_looks_like_end_effector(el.get("mesh") or "")
+                        or _looks_like_end_effector(el.get("name") or "")):
+                    parent.remove(el)
+                    continue
+            walk(el)
+
+    walk(root)
+    new = mujoco.MjSpec.from_string(ET.tostring(root, encoding="unicode"))
+    new.modelfiledir = child.modelfiledir
+    return new
+
+
+def _ensure_wrist_sites(child: mujoco.MjSpec) -> mujoco.MjSpec:
+    """给无挂点机器人补腕部安装点（并清掉原来那层手套网格）。"""
+    sites = detect_wrist_sites(child)
+    if not sites:
+        return child
+    child = _drop_end_effector_geoms(child)
+    taken = {s.name for s in child.sites}
+    for g in sites:
+        name, k = g["site"], 1
+        while name in taken:
+            name, k = f"{g['site']}_{k}", k + 1
+        taken.add(name)
+        child.body(g["anchor"]).add_site(
+            name=name, pos=list(g["pos"]), quat=list(g["quat"]),
+            size=[0.006, 0.006, 0.006], rgba=[0.15, 0.85, 0.45, 1])
+        g["site"] = name
+    return child
+
+
 def _prune_spec_bodies(child: mujoco.MjSpec,
                        remove_bodies: set[str]) -> mujoco.MjSpec:
     """从 spec XML 里删除 body 子树及其关联 actuator/sensor/keyframe。
@@ -514,29 +632,37 @@ def _prune_spec_bodies(child: mujoco.MjSpec,
 
 
 def _strip_end_effectors(child: mujoco.MjSpec,
-                         robot: RobotSpec) -> tuple[mujoco.MjSpec, list[dict]]:
+                         robot: RobotSpec,
+                         keys: set[str] | None = None) -> tuple[mujoco.MjSpec, list[dict]]:
     """按 robot.strip_hands 删除自带末端，并在腕部补自动挂点。
 
+    keys：显式指定要删的自带末端 key（"装夹爪即替换"的自动路径用），
+    给了就不再参考 robot.strip_hands。
     返回 (新 spec, 被删除末端的描述列表)。未开启 strip_hands 时原样返回。
     """
     groups = detect_end_effectors(child)
-    want = robot.strip_hands
-    if not want:
-        return child, []
-    if not groups:
-        raise WorldError(
-            f"机器人 '{robot.name}' 设置了 strip_hands，但模型里没有检测到"
-            f"自带末端（名字含 hand/finger/thumb/palm 的 body）")
-    if want is True:
-        selected = groups
-    else:
-        keys = set(want)
-        known = {g["key"] for g in groups}
-        if not keys <= known:
-            raise WorldError(
-                f"机器人 '{robot.name}' 的 strip_hands 引用了不存在的自带末端 "
-                f"{sorted(keys - known)}，可用: {sorted(known)}")
+    if keys is not None:
         selected = [g for g in groups if g["key"] in keys]
+        if not selected:
+            return child, []
+    else:
+        want = robot.strip_hands
+        if not want:
+            return child, []
+        if not groups:
+            raise WorldError(
+                f"机器人 '{robot.name}' 设置了 strip_hands，但模型里没有检测到"
+                f"自带末端（名字含 hand/finger/thumb/palm 的 body）")
+        if want is True:
+            selected = groups
+        else:
+            keys_w = set(want)
+            known = {g["key"] for g in groups}
+            if not keys_w <= known:
+                raise WorldError(
+                    f"机器人 '{robot.name}' 的 strip_hands 引用了不存在的自带末端 "
+                    f"{sorted(keys_w - known)}，可用: {sorted(known)}")
+            selected = [g for g in groups if g["key"] in keys_w]
 
     remove = {b for g in selected for b in g["bodies"]}
     new_child = _prune_spec_bodies(child, remove)
@@ -604,6 +730,16 @@ def _assemble_robot_child(spec: WorldSpec,
     # ---- 夹爪 site-attach 到机器人腕部挂点 ----
     if robot.gripper is not None:
         g = robot.gripper
+        if g.site is None and not _has_attachment_site(child):
+            # 模型没有挂点：装夹爪即替换自带末端。有自带手就删对应侧（顺手
+            # 补腕部挂点，leap_hand 是左手就只删 left_hand），没手就按腕部
+            # 末端连杆生成挂点（如 zoo 的 unitree_g1 是 29dof 无手模型）。
+            groups = detect_end_effectors(child)
+            if groups:
+                child, _ = _strip_end_effectors(
+                    child, robot, keys=_auto_strip_keys(groups, robot))
+            else:
+                child = _ensure_wrist_sites(child)
         grip_path = _load_gripper_xml(g.model, spec)
         try:
             grip = mujoco.MjSpec.from_file(str(grip_path))
@@ -618,8 +754,11 @@ def _assemble_robot_child(spec: WorldSpec,
             site_name = g.site          # 显式指定：缺失时直接报错
         elif "attachment_site" in site_names:
             site_name = "attachment_site"
-        elif auto_sites:                # 双手都删除后自动挑第一个腕部挂点
-            site_name = auto_sites[0]
+        elif auto_sites:                # 双手都删除后自动挑腕部挂点
+            side = _gripper_side(g.model)
+            preferred = f"{side}_hand_attachment_site" if side else None
+            site_name = (preferred if preferred in site_names
+                         else auto_sites[0])
         elif g.model in GRIPPERS:
             site_name = gripper_info(g.model)["site"]
         else:                           # 自定义 MJCF 路径：menagerie 惯例挂点名
@@ -757,14 +896,20 @@ def _build_index(model: mujoco.MjModel, spec: WorldSpec) -> NameIndex:
         ridx = RobotIndex(name=rd.name)
         # 自带末端检测（在原始模型上做：删除后仍能列出/恢复）
         try:
-            groups = detect_end_effectors(_load_robot_child(spec, rd))
+            orig = _load_robot_child(spec, rd)
+            groups = detect_end_effectors(orig)
+            # 装夹爪但没有挂点时会自动替换对应侧自带末端，索引要一致
+            auto = (set() if rd.gripper is None or rd.gripper.site is not None
+                    or _has_attachment_site(orig)
+                    else _auto_strip_keys(groups, rd))
         except Exception:
-            groups = []
+            groups, auto = [], set()
         want = rd.strip_hands
         for g in groups:
             g["stripped"] = bool(
                 want is True or (isinstance(want, (list, tuple))
-                                 and g["key"] in want))
+                                 and g["key"] in want)
+                or g["key"] in auto)
         index.end_effectors[rd.name] = groups
         for act_name in _child_actuator_names(spec, rd):
             aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR,

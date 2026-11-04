@@ -301,11 +301,22 @@ def test_unknown_mount_robot_raises():
     assert xf["pos"] == [0, 0, 0.1]
 
 
-def test_no_attachment_site_raises():
-    """机器人模型压根没有挂点 site（demo_arm）→ 错误列出可用 site。"""
-    import pathlib
-    demo_arm = pathlib.Path(__file__).resolve().parents[1] / "models" / "demo_arm.xml"
-    spec = parse_world(_world_dict(str(demo_arm)))
+def test_no_attachment_site_raises(tmp_path):
+    """模型既没有挂点、也没有可替换末端/腕部连杆 → 错误列出可用 site。"""
+    xml = tmp_path / "plain_arm.xml"
+    xml.write_text(
+        "<mujoco model='plain_arm'>"
+        "<worldbody><body name='base'>"
+        "<geom type='capsule' size='0.03 0.2' rgba='0.5 0.5 0.5 1'/>"
+        "<joint name='j1' type='hinge' axis='0 1 0' range='-1.57 1.57'/>"
+        "<body name='link2'>"
+        "<geom type='capsule' size='0.02 0.15' pos='0 0 0.15'/>"
+        "<joint name='j2' type='hinge' axis='0 1 0' range='-1.57 1.57'/>"
+        "</body></body></worldbody>"
+        "<actuator><position name='a1' joint='j1' kp='50'/>"
+        "<position name='a2' joint='j2' kp='50'/></actuator>"
+        "</mujoco>", encoding="utf-8")
+    spec = parse_world(_world_dict(str(xml)))
     with pytest.raises(WorldError, match="没有挂点 site"):
         build_world(spec)
 
@@ -590,6 +601,55 @@ def test_end_effectors_empty_for_arm_without_hands():
     xml = _menagerie_xml("franka_emika_panda")
     _, index = build_world(parse_world(_world_dict(xml)))
     assert index.end_effectors["arm"] == []
+
+
+def test_g1_without_hands_gets_wrist_sites_for_gripper():
+    """无手人形（zoo 的 unitree_g1 / g1.xml）装夹爪：按腕部连杆自动生成挂点。
+
+    回归点：g1.xml 只有 29 自由度本体，既没有手 body 也没有 attachment_site，
+    以前会报"模型里没有挂点 site 'attachment_site'"，夹爪既装不上也卸不掉。
+    """
+    from simovia.world.schema import resolve_zoo_models
+
+    wd = {"name": "g1_auto_site", "robots": [
+        {"name": "arm", "model": "zoo://unitree_g1",
+         "gripper": {"model": "leap_hand"}}]}
+    resolve_zoo_models(wd)
+    model, index = build_world(parse_world(wd))
+
+    for side in ("left", "right"):
+        site = f"arm/{side}_hand_attachment_site"
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site) >= 0
+    # 左手（leap_hand 声明的侧别）被自动选中挂上
+    assert GRIPPER_PREFIX + "if_mcp_act" in index.robots["arm"].actuators
+    # 腕部残留的手套装饰网格已清掉，避免和新手穿插
+    used = {mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, int(d))
+            for d in model.geom_dataid if d >= 0}
+    assert not any(n and "rubber_hand" in n for n in used), used
+
+
+def test_g1_with_hands_auto_replaces_only_matching_side():
+    """双手人形装左手夹爪：只替换 left_hand，右手保留。"""
+    import pathlib
+
+    g1 = pathlib.Path(_menagerie_xml("unitree_g1"))
+    model_path = g1.parent / "g1_with_hands.xml"
+    if not model_path.is_file():
+        pytest.skip("G1 with hands 资产缺失")
+
+    wd = _world_dict(str(model_path), gripper_key="leap_hand")
+    model, index = build_world(parse_world(wd))
+
+    ee = {g["key"]: g for g in index.end_effectors["arm"]}
+    assert ee["left_hand"]["stripped"] is True
+    assert ee["right_hand"]["stripped"] is False
+    joints = index.robots["arm"].joints
+    assert any("right_hand" in n for n in joints)
+    assert not any("left_hand" in n for n in joints)
+    assert mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_SITE,
+        "arm/left_hand_attachment_site") >= 0
+
 
 
 @pytest.mark.parametrize("key", NEW_GRIPPERS)
