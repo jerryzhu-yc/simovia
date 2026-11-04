@@ -124,6 +124,13 @@ class Simulation:
             except Exception as e:                 # noqa: BLE001
                 sys.stderr.write(f"[probe] 失败 {type(e).__name__}: {e}\n")
             sys.stderr.flush()
+        # 诊断引导：开追踪时用 -c 包装脚本 + faulthandler，子进程卡住 8s 后
+        # 自动把调用栈打到 stderr，直接定位"活着但没跑起来"的停点。
+        _BOOT = ("import faulthandler, runpy, sys\n"
+                 "faulthandler.dump_traceback_later(8, exit=False)\n"
+                 "sys.argv = sys.argv[1:]\n"
+                 "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+        tracing = bool(os.environ.get("SIMOVIA_CTRL_TRACE"))
         for rd in self.spec.robots:
             nu = len(self.index.robots[rd.name].actuators)
             self._st[rd.name] = {
@@ -148,10 +155,12 @@ class Simulation:
             # print 调试控制律。stderr 直通继承——控制器起不来（import
             # 报错等）的真相必须可见，否则 Windows 上"无报错但卡死"无从
             # 诊断（GUI 控制台/后端日志链路）。
+            cmd = [sys.executable, str(path),
+                   "--sock", self._addr, "--robot", rd.name]
+            if tracing:
+                cmd = [sys.executable, "-c", _BOOT] + cmd[1:]
             proc = subprocess.Popen(
-                [sys.executable, str(path),
-                 "--sock", self._addr, "--robot", rd.name],
-                env=env, stdout=subprocess.PIPE, stderr=None)
+                cmd, env=env, stdout=subprocess.PIPE, stderr=None)
             if os.environ.get("SIMOVIA_CTRL_TRACE"):
                 sys.stderr.write(
                     f"[spawn] {rd.name} pid={proc.pid} addr={self._addr} "
