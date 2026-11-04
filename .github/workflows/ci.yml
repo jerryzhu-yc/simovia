@@ -64,6 +64,7 @@ jobs:
           PYTHONPATH: .
           MUJOCO_GL: ${{ runner.os == 'Linux' && 'osmesa' || 'wgl' }}
           SIMOVIA_CTRL_TRACE: "1"   # 临时：定位 Windows 控制器握手超时
+          SIMOVIA_CTRL_TRACE_FILE: ${{ runner.temp }}/ctrl_trace.log
 
       - name: 回归测试（GUI / 遥操作）
         run: >

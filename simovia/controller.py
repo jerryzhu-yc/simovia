@@ -22,20 +22,31 @@ import json
 import os
 import sys
 
-import zmq
-
 # 启动阶段追踪：设 SIMOVIA_CTRL_TRACE=1 时把握手各阶段打到 stderr
 # （Windows 上"进程活着但内核收不到 hello"只能靠这里定位卡点）。
+# SIMOVIA_CTRL_TRACE_FILE 再落一份到文件——子进程 stderr 可能拿不到时用。
 _TRACE = bool(os.environ.get("SIMOVIA_CTRL_TRACE"))
+_TRACE_FILE = os.environ.get("SIMOVIA_CTRL_TRACE_FILE")
 
 
 def _trace(msg: str) -> None:
+    line = f"[ctrl {os.getpid()}] {msg}\n"
     if _TRACE:
-        sys.stderr.write(f"[ctrl {os.getpid()}] {msg}\n")
+        sys.stderr.write(line)
         sys.stderr.flush()
+    if _TRACE_FILE:
+        try:
+            with open(_TRACE_FILE, "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError:
+            pass
 
 
-_trace("module imported")
+_trace("controller module loaded (before import zmq)")
+
+import zmq  # noqa: E402
+
+_trace("zmq imported")
 
 
 class Robot:

@@ -110,6 +110,20 @@ class Simulation:
         # 控制器子进程要能 import simovia
         pkg_root = str(pathlib.Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
+        # 诊断探针：同样 env/stdio 起一个最简 python 子进程，验证"孙进程能否
+        # 正常启动并把 stderr 写回"——只有开追踪时执行。
+        if os.environ.get("SIMOVIA_CTRL_TRACE"):
+            try:
+                p = subprocess.run(
+                    [sys.executable, "-c",
+                     "import sys; sys.stderr.write('probe-stderr ok\\n');"
+                     " sys.stderr.flush()"],
+                    env=env, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=None, timeout=20)
+                sys.stderr.write(f"[probe] rc={p.returncode}\n")
+            except Exception as e:                 # noqa: BLE001
+                sys.stderr.write(f"[probe] 失败 {type(e).__name__}: {e}\n")
+            sys.stderr.flush()
         for rd in self.spec.robots:
             nu = len(self.index.robots[rd.name].actuators)
             self._st[rd.name] = {
@@ -539,13 +553,22 @@ class Simulation:
                 diag = "、".join(
                     f"{n}(pid={self._procs[n].pid})"
                     for n in parts if not self._st[n]["active"])
+                tail = ""
+                tf = os.environ.get("SIMOVIA_CTRL_TRACE_FILE")
+                if tf and os.path.exists(tf):
+                    try:
+                        with open(tf, encoding="utf-8", errors="replace") as f:
+                            tail = "".join(f.readlines()[-6:])
+                    except OSError:
+                        pass
                 self._abort_controllers()
                 raise WorldError(
                     f"控制器握手超时（{_HANDSHAKE_TIMEOUT:.0f}s）: {diag}。"
                     "进程存活但迟迟未发 hello，常见原因：控制器脚本 import "
                     "或模型加载卡死/极慢（Windows 冷启动尤甚）。控制器 "
                     "stderr 已直通内核错误输出，真实报错请到 GUI 控制台/"
-                    "后端日志查看；设 SIMOVIA_CTRL_TRACE=1 可打印握手阶段。")
+                    "后端日志查看；设 SIMOVIA_CTRL_TRACE=1 可打印握手阶段。"
+                    + (f" 追踪尾：{tail.strip()}" if tail else ""))
             self._poll_once(timeout_ms)
             self._check_crashes()
 
