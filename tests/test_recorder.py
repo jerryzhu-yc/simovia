@@ -144,6 +144,30 @@ def test_robot_mounted_camera_records_frames(tmp_path):
     }
 
 
+def test_capture_failure_keeps_trajectory(tmp_path, monkeypatch):
+    """某帧图片写盘失败：轨迹照常保存，meta 标记 incomplete（不丢数据）。"""
+    spec = load_world(str(PICK))
+
+    def boom(self, tick, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(EpisodeRecorder, "_capture_frame", boom)
+    with Simulation(spec) as sim:
+        rec = EpisodeRecorder(spec, sim.model, sim.index, tmp_path / "ep",
+                              images=True, width=64, height=48)
+        stats = sim.run(max_ticks=5,
+                        on_tick=lambda: rec.add(sim.tick, sim.data))
+    ep = rec.finish(stats=stats)
+
+    data = _load(ep)
+    assert data["tick"].tolist() == [1, 2, 3, 4, 5]   # 采样没被丢弃
+    assert data["arm.joint_pos"].shape == (5, 9)
+    meta = json.loads((ep / "meta.json").read_text(encoding="utf-8"))
+    assert meta["incomplete"] is True
+    assert meta["errors"] and "disk full" in meta["errors"][0]
+    assert meta["images"]["count"] == 0
+
+
 def test_unknown_camera_fails_fast(tmp_path):
     spec = load_world(str(PICK))
     with Simulation(spec) as sim, pytest.raises(ValueError, match="找不到录制相机"):

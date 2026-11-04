@@ -97,28 +97,52 @@ def test_urdf_build_and_sim(tmp_path):
 
 
 def test_urdf_mesh_relative_and_package(tmp_path):
-    """mesh 相对路径按 urdf 目录解析；package:// 前缀剥除后两级查找。"""
+    """mesh 相对路径按 urdf 目录解析；package:// 前缀剥除后按 REST 查找。"""
     _stl(tmp_path / "meshes_test.stl")
     # 相对路径（同目录）
     rel = tmp_path / "rel.urdf"
-    rel.write_text(_URDF.replace(
-        '<visual><geometry><box size="0.1 0.1 0.04"/></geometry></visual>\n'
-        '    <collision><geometry><box size="0.1 0.1 0.04"/></geometry></collision>',
-        '<collision><geometry><mesh filename="meshes_test.stl" '
-        'scale="1 1 1"/></geometry></collision>'), encoding="utf-8")
+    rel.write_text(_mesh_urdf("meshes_test.stl"), encoding="utf-8")
     spec = _load_robot_spec(rel)
     assert any(g.type == mujoco.mjtGeom.mjGEOM_MESH for g in spec.geoms)
+    assert pathlib.Path(spec.meshes[0].file).is_file()
 
-    # package://NAME/REST：先按 REST 找再按 NAME/REST 找
+    # package://NAME/REST：REST 相对 urdf 所在目录
     pkg = tmp_path / "pkg.urdf"
-    pkg.write_text(_URDF.replace(
-        '<visual><geometry><box size="0.1 0.1 0.04"/></geometry></visual>\n'
-        '    <collision><geometry><box size="0.1 0.1 0.04"/></geometry></collision>',
-        '<collision><geometry><mesh '
-        'filename="package://mybot/meshes_test.stl" '
-        'scale="1 1 1"/></geometry></collision>'), encoding="utf-8")
+    pkg.write_text(_mesh_urdf("package://mybot/meshes_test.stl"),
+                   encoding="utf-8")
     spec = _load_robot_spec(pkg)
     assert any(g.type == mujoco.mjtGeom.mjGEOM_MESH for g in spec.geoms)
+    assert pathlib.Path(spec.meshes[0].file).is_file(), spec.meshes[0].file
+
+
+def test_urdf_sw2urdf_package_layout(tmp_path):
+    """sw2urdf 导出布局：<包>/urdf/x.urdf + <包>/meshes/... 必须能找到 mesh。"""
+    pkg = tmp_path / "my_robot"
+    (pkg / "urdf").mkdir(parents=True)
+    (pkg / "meshes").mkdir()
+    mesh = pkg / "meshes" / "link1.stl"
+    _stl(mesh)
+    urdf = pkg / "urdf" / "my_robot.urdf"
+    urdf.write_text(_mesh_urdf("package://my_robot/meshes/link1.stl"),
+                    encoding="utf-8")
+    spec = _load_robot_spec(urdf)
+    assert spec.meshes[0].file == mesh.as_posix()
+
+
+def test_urdf_package_search_path_env(tmp_path, monkeypatch):
+    """SIMOVIA_PACKAGE_PATH / ROS_PACKAGE_PATH 里的包目录参与查找。"""
+    lib = tmp_path / "lib"
+    (lib / "other_pkg" / "meshes").mkdir(parents=True)
+    mesh = lib / "other_pkg" / "meshes" / "link.stl"
+    _stl(mesh)
+    work = tmp_path / "work"
+    work.mkdir()
+    urdf = work / "bot.urdf"
+    urdf.write_text(_mesh_urdf("package://other_pkg/meshes/link.stl"),
+                    encoding="utf-8")
+    monkeypatch.setenv("SIMOVIA_PACKAGE_PATH", str(lib))
+    spec = _load_robot_spec(urdf)
+    assert spec.meshes[0].file == mesh.as_posix()
 
 
 def test_urdf_bad_file_readable_error(tmp_path):

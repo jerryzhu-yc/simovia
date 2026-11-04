@@ -1,0 +1,2 @@
+# RL 训练接口依赖（simovia.rl_env）；只跑仿真/GUI 可以不装
+gymnasium~=1.4

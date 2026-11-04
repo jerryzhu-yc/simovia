@@ -54,6 +54,17 @@ class TestPendingMap:
         assert m.dispatch({"id": 99, "result": {}}) is False
         assert m.pending_ids() == []
 
+    def test_fail_all_releases_every_pending(self):
+        """后端退出：所有挂起请求都收到错误响应（界面不会一直忙）。"""
+        m = PendingMap()
+        got = []
+        m.register(1, lambda r: got.append(("a", r)))
+        m.register(2, lambda r: got.append(("b", r)))
+        assert m.fail_all("后端进程已退出") == 2
+        assert m.pending_ids() == []
+        assert [name for name, _ in got] == ["a", "b"]
+        assert all("已退出" in r["error"]["message"] for _, r in got)
+
 
 class TestToolResponse:
     def _resp(self, text, is_error=False):
@@ -77,6 +88,32 @@ class TestToolResponse:
         err, data = tool_response({"id": 1, "error": {"code": -32601,
                                                       "message": "nope"}})
         assert err is True and data == "nope"
+
+
+class TestMcpClientRecovery:
+    """后端异常恢复：超时与进程退出都必须让挂起请求返回（不死等）。"""
+
+    def test_request_timeout_returns_error(self, qapp):
+        import time
+        from simovia.gui.mcp_client import McpClient
+        c = McpClient()
+        got = []
+        c.request("ping", None, lambda r: got.append(r), timeout_ms=10)
+        deadline = time.time() + 1.0
+        while not got and time.time() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert got and "超时" in got[0]["error"]["message"]
+
+    def test_backend_exit_fails_pending_and_signals(self, qapp):
+        from simovia.gui.mcp_client import McpClient
+        c = McpClient()
+        got, died = [], []
+        c._pending.register(5, lambda r: got.append(r))
+        c.backendDied.connect(died.append)
+        c._on_finished(1, 0)
+        assert got and c._pending.pending_ids() == []
+        assert died
 
 
 class TestUiState:
@@ -520,6 +557,41 @@ def test_obs_panel_shows_sensors(qapp):
         kids = {p._tree.topLevelItem(0).child(i).text(0)
                 for i in range(p._tree.topLevelItem(0).childCount())}
         assert "sensors" not in kids
+    finally:
+        p.deleteLater()
+
+
+def test_obs_panel_pairs_joints_and_actuators_by_name(qapp):
+    """名字驱动观测：被动关节/耦合执行器不再按下标错配。
+
+    qpos 只有 j1（1 维）和 passive（1 维），ctrl 有两个执行器；按下标
+    配对会把 a2 显示到 passive 上，按名字则 a2 必须挂在 j1 下。
+    """
+    from simovia.gui.panels import ObsPanel
+    p = ObsPanel()
+    try:
+        p.update_obs({"robots": {"arm": {
+            "joints": {
+                "j1": {"q": [0.25], "type": "hinge", "unit": "rad"},
+                "passive": {"q": [-0.5], "type": "slide", "unit": "m"},
+            },
+            "actuators": {
+                "a1": {"u": 0.1, "joint": "j1", "mode": "position",
+                       "ctrlrange": [-2.0, 2.0]},
+                "a2": {"u": 0.9, "joint": "j1", "mode": "torque",
+                       "ctrlrange": None},
+            }}}})
+        top = p._tree.topLevelItem(0)
+        nodes = {top.child(i).text(0): top.child(i)
+                 for i in range(top.childCount())}
+        assert "q=+0.250 rad  [hinge]" in nodes["j1"].text(1)
+        assert "q=-0.500 m  [slide]" in nodes["passive"].text(1)
+        assert nodes["j1"].childCount() == 2          # 两个执行器都在 j1 下
+        subs = {nodes["j1"].child(i).text(0): nodes["j1"].child(i).text(1)
+                for i in range(nodes["j1"].childCount())}
+        assert "+0.900" in subs["u a2"] and "[torque]" in subs["u a2"]
+        assert "限位" in subs["u a1"] and "[position]" in subs["u a1"]
+        assert nodes["passive"].childCount() == 0
     finally:
         p.deleteLater()
 

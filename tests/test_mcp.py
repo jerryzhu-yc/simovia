@@ -74,6 +74,36 @@ class TestAgentLoop:
         finally:
             s.close()
 
+    def test_observation_exposes_named_joint_actuator_maps(self):
+        """观测带名字驱动的 joints/actuators 映射（GUI 不再按下标配对）。
+
+        panda 的 qpos 有 9 维（7 臂关节 + 夹爪两个 slide），ctrl 只有 8 个
+        执行器，且夹爪执行器是腱耦合（不对应单一关节）——按下标配对该
+        场景必然错位。
+        """
+        s = SimoviaSession()
+        try:
+            s.call_tool("load_world", {"yaml_path": str(WORLD)})
+            arm = s.call_tool("get_observation", {})["robots"]["arm"]
+            joints, acts = arm["joints"], arm["actuators"]
+            assert list(joints) == arm["joint_names"]
+            # 每个关节按自身宽度取 q，拼起来与扁平 qpos 完全一致
+            flat = [v for j in joints.values() for v in j["q"]]
+            assert flat == pytest.approx(arm["qpos"])
+            assert joints["joint1"]["type"] == "hinge"
+            assert joints["joint1"]["unit"] == "rad"
+            assert joints["gripper/left_slide"]["type"] == "slide"
+            assert joints["gripper/left_slide"]["unit"] == "m"
+            # 执行器按名字反查目标关节，不依赖 ctrl 下标
+            assert acts["actuator1"]["joint"] == "joint1"
+            assert acts["actuator1"]["mode"] == "position"
+            assert acts["actuator1"]["ctrlrange"] == pytest.approx(
+                [-2.8973, 2.8973])
+            for aname, a in acts.items():
+                assert a["joint"] is None or a["joint"] in joints, aname
+        finally:
+            s.close()
+
     def test_edit_world_reload(self):
         """Agent 改 YAML（去控制器 + 成功区下移到桌面）-> yaml_text 重载"""
         text = WORLD.read_text(encoding="utf-8")

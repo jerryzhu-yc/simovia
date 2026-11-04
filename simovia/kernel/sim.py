@@ -42,6 +42,30 @@ _HANDSHAKE_TIMEOUT = 30.0
 # 让实时播放真正达到 60Hz 的画面更新。
 _SAMPLE_HZ = 60.0
 
+# 名字驱动的关节观测元数据：GUI 观测面板按关节逐个展示时标注类型/单位，
+# 不再假设"qpos 第 i 项 = ctrl 第 i 项"（球关节、被动关节、耦合夹爪都会
+# 打破这个下标对应关系）。
+_JOINT_TYPE_NAMES = {
+    int(mujoco.mjtJoint.mjJNT_FREE): "free",
+    int(mujoco.mjtJoint.mjJNT_BALL): "ball",
+    int(mujoco.mjtJoint.mjJNT_SLIDE): "slide",
+    int(mujoco.mjtJoint.mjJNT_HINGE): "hinge",
+}
+_JOINT_UNITS = {"free": "m/rad", "ball": "quat", "slide": "m", "hinge": "rad"}
+
+
+def _actuator_mode(model: mujoco.MjModel, aid: int) -> str:
+    """按 MuJoCo 增益/偏置配置推断控制模式（torque/position/velocity）。"""
+    bias = int(model.actuator_biastype[aid])
+    if bias == int(mujoco.mjtBias.mjBIAS_NONE):
+        return "torque"
+    prm = model.actuator_biasprm[aid]
+    if abs(float(prm[1])) > 0.0:
+        return "position"
+    if abs(float(prm[2])) > 0.0:
+        return "velocity"
+    return "force"
+
 
 class Simulation:
     """单实例一次仿真。__init__ 起进程，run 驱动，close 收尾。
@@ -360,6 +384,31 @@ class Simulation:
             "joint_names": list(ridx.joints), "qpos": qpos, "qvel": qvel,
             "bodies": bodies, "objects": objects,
         }
+        # 名字驱动的关节/执行器视图：qpos/ctrl 按下标一一对应只在"一关节
+        # 一执行器、顺序相同"时成立；球关节（qpos 4 维）、被动关节、耦合
+        # 夹爪都会打破它。GUI 观测面板据此按名字配对并标注类型/单位/模式。
+        lay = obs_layout(self.model, ridx)
+        jmap = {}
+        for jname, jid in ridx.joints.items():
+            off, _voff, width = lay[jname]
+            jtype = int(self.model.jnt_type[jid])
+            tname = _JOINT_TYPE_NAMES.get(jtype, "other")
+            jmap[jname] = {"q": qpos[off:off + width], "type": tname,
+                           "unit": _JOINT_UNITS.get(tname, "")}
+        joint_by_id = {jid: jname for jname, jid in ridx.joints.items()}
+        amap = {}
+        for aname, aid in ridx.actuators.items():
+            target = int(self.model.actuator_trnid[aid][0])
+            limited = bool(self.model.actuator_ctrllimited[aid])
+            lo, hi = self.model.actuator_ctrlrange[aid]
+            amap[aname] = {
+                "u": float(self.data.ctrl[aid]),
+                "joint": joint_by_id.get(target),
+                "mode": _actuator_mode(self.model, aid),
+                "ctrlrange": ([float(lo), float(hi)] if limited else None),
+            }
+        msg["joints"] = jmap
+        msg["actuators"] = amap
         # 浮动基座躯干位姿（四足/人形）。匿名 free joint 不在 joints/qpos 里，
         # 单独下发 [x,y,z,qw,qx,qy,qz]，GUI 渲染端据此写回 free joint；
         # 固定基座机械臂无此键

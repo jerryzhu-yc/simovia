@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import math
 import pathlib
 import re
 from dataclasses import dataclass, field
@@ -232,7 +233,19 @@ def _req(d: dict, key: str, path: str):
 def _num(v, path: str) -> float:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         raise _err(path, f"需要数字，实际是 {type(v).__name__}: {v!r}")
-    return float(v)
+    x = float(v)
+    if not math.isfinite(x):
+        # NaN/Infinity 能通过 YAML 解析（.nan/.inf），但会让仿真/物理静默失真
+        raise _err(path, f"需要有限数字（不允许 NaN/Infinity），实际是: {v!r}")
+    return x
+
+
+def _int(v, path: str) -> int:
+    """严格整数：允许 32 或 32.0，拒绝 1.9（静默截断会悄悄改控制频率）。"""
+    x = _num(v, path)
+    if not x.is_integer():
+        raise _err(path, f"需要整数，实际是: {v!r}")
+    return int(x)
 
 
 def _vec(v, n: int, path: str) -> tuple:
@@ -510,7 +523,7 @@ def _parse_task(d, path: str) -> TaskSpec:
 
     max_ticks = td.get("max_ticks")
     if max_ticks is not None:
-        max_ticks = int(_num(max_ticks, f"{path}.task.max_ticks"))
+        max_ticks = _int(max_ticks, f"{path}.task.max_ticks")
         if max_ticks <= 0:
             raise _err(f"{path}.task.max_ticks", f"必须为正整数，实际是: {max_ticks}")
     return TaskSpec(success=success, reward=reward, max_ticks=max_ticks)
@@ -545,7 +558,7 @@ def parse_world(d: dict, path: str = "world") -> WorldSpec:
     timestep = _num(d.get("timestep", 0.002), f"{path}.timestep")
     if timestep <= 0:
         raise _err(f"{path}.timestep", f"必须为正数(秒)，实际是: {timestep}")
-    ctrl_period = int(_num(d.get("ctrl_period", 32), f"{path}.ctrl_period"))
+    ctrl_period = _int(d.get("ctrl_period", 32), f"{path}.ctrl_period")
     if ctrl_period < 1:
         raise _err(f"{path}.ctrl_period", f"必须为 >=1 的整数，实际是: {ctrl_period}")
     gravity = _vec(d.get("gravity", [0, 0, -9.81]), 3, f"{path}.gravity")

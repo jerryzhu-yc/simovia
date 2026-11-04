@@ -90,14 +90,15 @@ class EpisodeRecorder:
         self._frame_ticks: list[int] = []
         self._sample = 0
         self._renderer: mujoco.Renderer | None = None
+        # 录制过程中的非致命错误（如某帧 PNG 写盘失败）：不中断采样，
+        # 收尾时写进 meta 并标记 incomplete，避免整段轨迹被丢掉。
+        self.errors: list[str] = []
+        self._images_disabled = False
 
     # ------------------------------------------------------------ 采样
 
     def add(self, tick: int, data: mujoco.MjData) -> None:
         """记录当前 tick 的状态（在每控制 tick 推进完成后调用）。"""
-        self._ticks.append(int(tick))
-        self._times.append(float(data.time))
-
         for name, ridx in self._robot_ids.items():
             contract = self.contracts[name]
             qpos, qvel = robot_obs(ridx, self.model, data)
@@ -127,9 +128,19 @@ class EpisodeRecorder:
             self._object_pos.append([])
             self._object_quat.append([])
 
-        if self.images and self._sample % self.image_stride == 0:
-            self._capture_frame(tick, data)
+        if self.images and not self._images_disabled \
+                and self._sample % self.image_stride == 0:
+            try:
+                self._capture_frame(tick, data)
+            except Exception as e:
+                # 图片写盘/渲染失败不丢轨迹：标记后继续采样，finish 时
+                # 把错误写进 meta（incomplete=true），已有帧照常保留。
+                self.errors.append(f"frame@{tick}: {type(e).__name__}: {e}")
+                self._images_disabled = True
+                self.close()             # 释放可能损坏的渲染资源
         self._sample += 1
+        self._ticks.append(int(tick))
+        self._times.append(float(data.time))
 
     # ------------------------------------------------------------ 写盘
 
@@ -154,6 +165,10 @@ class EpisodeRecorder:
             "world": self.spec.name,
             "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
             "frames": len(self._ticks),
+            # 采样中途出错（图片/渲染失败）时仍照常写盘：incomplete=true
+            # 提示消费方这段轨迹可用但不是全部帧都完整
+            "incomplete": bool(self.errors),
+            "errors": self.errors[-20:],
             "timestep": float(self.spec.timestep),
             "ctrl_period": int(self.spec.ctrl_period),
             "control_dt": float(self.spec.timestep * self.spec.ctrl_period),

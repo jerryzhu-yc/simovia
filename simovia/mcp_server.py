@@ -357,6 +357,7 @@ class SimoviaSession:
         self._recorder = None
         self._rec_tick = -1
         self._record_error: str | None = None
+        self._record_failed = False       # 采样出错：停止再采样，收尾仍写盘
         # 实时相机流：推进线程按 fps 渲染到 _cam_frame，camera_frame 取最新帧
         self._cam_stream: dict | None = None
         self._cam_frame: tuple[int, bytes] | None = None
@@ -705,6 +706,7 @@ class SimoviaSession:
             camera = None
         out_dir = _unique_dir(pathlib.Path(out).expanduser())
         self._record_error = None
+        self._record_failed = False
         self._rec_tick = -1
         self._recorder = EpisodeRecorder(
             self.spec, sim.model, sim.index, out_dir,
@@ -722,10 +724,16 @@ class SimoviaSession:
         self._recorder = None
         err = self._record_error
         self._record_error = None
+        self._record_failed = False
+        extra = dict(extra or {})
+        if err:
+            # 采样中途出错也照常收尾：已有轨迹写盘并在 meta 标记不完整
+            extra.update({"incomplete": True, "record_error": err})
         try:
             out = rec.finish(stats=stats, extra=extra)
             return {"dir": str(out), "samples": rec.sample_count,
                     "images": rec.frame_count, "camera": rec.camera,
+                    "incomplete": bool(err or rec.errors),
                     "error": err}
         except Exception as e:
             return {"error": f"{type(e).__name__}: {e}"}
@@ -804,13 +812,15 @@ class SimoviaSession:
         sim = self.sim
         if sim is None:
             return
-        if record and self._recorder is not None and sim.tick != self._rec_tick:
+        if record and self._recorder is not None \
+                and not self._record_failed and sim.tick != self._rec_tick:
             self._rec_tick = sim.tick
             try:
                 self._recorder.add(sim.tick, sim.data)
             except Exception as e:        # 录坏一帧不能拖垮整个 run
+                # 不丢弃 recorder：已缓存的轨迹在收尾时照常写盘并标记不完整
                 self._record_error = f"{type(e).__name__}: {e}"
-                self._recorder = None
+                self._record_failed = True
         cfg = self._cam_stream
         if cfg is not None:
             now_c = time.perf_counter()

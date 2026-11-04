@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import math
+import os
 import pathlib
 import re
 import xml.etree.ElementTree as ET
@@ -965,7 +966,8 @@ def _load_robot_spec(model_path: pathlib.Path) -> mujoco.MjSpec:
     URDF 与 SolidWorks 工作流（sw2urdf 插件导出）的差异由这里吸收：
     - mesh 路径：MuJoCo 的 from_string 无文件目录上下文，先把全部
       mesh filename 重写为基于 urdf 所在目录的绝对路径；package://NAME/REST
-      按 REST / NAME/REST 两级就近查找（sw2urdf 的导出目录惯例）
+      依次查 urdf 目录、包根目录（sw2urdf 的 <包>/urdf + <包>/meshes 布局）
+      以及 SIMOVIA_PACKAGE_PATH / ROS_PACKAGE_PATH 显式搜索路径
     - 执行器：URDF 没有 <actuator>（transmission 少有人写），每个关节
       自动补一个同名 motor（力矩控制，simovia 的 ctrl 直写语义）
 
@@ -992,23 +994,41 @@ def _load_robot_spec(model_path: pathlib.Path) -> mujoco.MjSpec:
     except UnicodeDecodeError:
         text = model_path.read_text(encoding="gbk", errors="replace")
     base = model_path.parent
+    # 显式包搜索路径：与 catkin/ROS 习惯一致，多个目录用 : 或 ; 分隔
+    env_roots = os.environ.get("SIMOVIA_PACKAGE_PATH") or \
+        os.environ.get("ROS_PACKAGE_PATH") or ""
+    pkg_roots = [pathlib.Path(p) for p in re.split(r"[;:]", env_roots) if p.strip()]
 
     def _resolve(m):
-        fn = m.group(1)
+        raw = m.group(1)
         # 跨平台绝对路径不参与改写（POSIX / 盘符 / UNC）
-        if re.match(r"^([A-Za-z]:[\\/]|\\\\|/)", fn):
-            return fn.replace("\\", "/")
-        fn = re.sub(r"^(package|file)://", "", fn)  # sw2urdf 惯例前缀
-        fn = fn.replace("\\", "/")                  # 相对路径 \ 也当分隔符
-        # package://NAME/REST：先按原相对结构找，再按 NAME 目录下找
-        cands = [base / fn]
-        parts = fn.split("/", 1)
-        if len(parts) == 2 and parts[1]:
-            cands.append(base / parts[0] / parts[1])
+        if re.match(r"^([A-Za-z]:[\\/]|\\\\|/)", raw):
+            return raw.replace("\\", "/")
+        fn = raw.replace("\\", "/")                 # 相对路径 \ 也当分隔符
+        pkg = None
+        mm = re.match(r"^(?:package|file)://([^/]+)/(.+)$", fn)
+        if mm:
+            pkg, fn = mm.group(1), mm.group(2)      # sw2urdf 惯例前缀
+        cands = [base / fn]                         # 相对 urdf 所在目录
+        if pkg:
+            # package://NAME/REST 的真实回退（原实现两个候选相同）：
+            #   base/NAME/REST        包目录就在 urdf 旁边
+            #   base.parent/REST      sw2urdf 布局：<包>/urdf/x.urdf + <包>/meshes/
+            #   base.parent/NAME/REST 包目录在 urdf 的上一级
+            #   搜索路径/NAME/REST    显式包搜索路径（ROS/simovia 环境变量）
+            cands += [base / pkg / fn, base.parent / fn,
+                      base.parent / pkg / fn]
+            for root in pkg_roots:
+                cands += [root / pkg / fn, root / fn]
+        seen = set()
         for c in cands:
+            key = c.as_posix()
+            if key in seen:
+                continue
+            seen.add(key)
             if c.is_file():
                 return c.resolve().as_posix()
-        return fn                                   # 找不到保持原样（报错可读）
+        return raw                                  # 找不到保持原样（报错可读）
 
     text = re.sub(r'filename="([^"]+)"',
                   lambda m: f'filename="{_resolve(m)}"', text)

@@ -1,0 +1,3 @@
+# 可选：模型资产回退下载（models/zoo/ 已随仓库自带 14 个模型，
+# 仅在资产缺失、且需要从 menagerie 下载时安装此包）
+mujoco-menagerie~=2026.10

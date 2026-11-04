@@ -56,6 +56,17 @@ pip install -r requirements.txt
 
 > 仓库自带 34 个机器人模型资产（`models/zoo/`，约 600MB）；换来的是模型库全程离线可用、首次使用零联网。
 
+`requirements.txt` 是一键全装（核心 + GUI + RL + pytest）。只要部分能力时可换用拆分文件：
+
+```bash
+pip install -r requirements-core.txt    # 只跑仿真 / MCP / 控制器（mujoco numpy pyyaml pyzmq）
+pip install -r requirements-gui.txt     # 核心 + 桌面 GUI（PySide6-Essentials）
+pip install -r requirements-dev.txt     # 核心 + GUI + RL + pytest（CI 用这一份）
+pip install -r requirements-models.txt  # 可选：模型资产缺失时的 menagerie 下载回退
+```
+
+依赖版本用 `~=` 锁定 minor，避免上游破坏性升级把环境弄坏。
+
 ### Windows 部署
 
 Simovia 全链路 Windows 兼容：内核用 `tcp://127.0.0.1` 随机端口（无 `ipc://`，Windows 不支持）；控制器子进程走 `subprocess.Popen` + `sys.executable`（无 fork）；渲染后端代码已平台自适应——**Linux/macOS 默认 EGL，Windows 默认 wgl**（`mcp_server.py` / `gui/__init__.py` 里的 `setdefault`，用户可用环境变量 `MUJOCO_GL` 覆盖）。零配置，照下面做即可：
@@ -77,6 +88,7 @@ pip install -r requirements.txt
 **3. 验证安装**：
 
 ```powershell
+python -m simovia doctor        # 环境诊断：依赖版本 / 模型资产 / 离屏渲染 / 样例世界
 python -m pytest tests/ -q      # 全绿即环境就绪（含 GUI/传感器/RL 全量回归）
 python -m simovia run worlds/pick_cube.yaml     # 跑一个内置任务
 python -m simovia gui                            # 桌面工作台

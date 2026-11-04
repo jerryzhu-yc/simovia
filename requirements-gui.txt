@@ -1,0 +1,2 @@
+# 桌面 GUI 依赖（python -m simovia gui）；不用 GUI 可以不装
+PySide6-Essentials~=6.12

@@ -416,7 +416,7 @@ class ObsPanel(QWidget):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
-        tip = QLabel("关节角 q / 控制量 u（实时）")
+        tip = QLabel("关节角 q / 执行器输出 u（按名字配对，含单位与控制模式）")
         tip.setStyleSheet(f"color:{theme.C_TEXT_DIM};")
         lay.addWidget(tip)
         self._tree = QTreeWidget()
@@ -437,14 +437,17 @@ class ObsPanel(QWidget):
         self._tree.clear()
         for rname, robs in (obs.get("robots") or {}).items():
             top = QTreeWidgetItem([rname])
-            names = robs.get("joint_names") or []
-            qpos = robs.get("qpos") or []
-            ctrl = robs.get("ctrl") or []
-            for i, jn in enumerate(names):
-                v = f"q={qpos[i]:+.3f}" if i < len(qpos) else ""
-                if i < len(ctrl):
-                    v += f"   u={ctrl[i]:+.3f}"
-                QTreeWidgetItem(top, [jn, v])
+            if robs.get("joints"):
+                self._build_named(top, robs["joints"], robs.get("actuators") or {})
+            else:                                  # 旧 payload：按下标展示
+                names = robs.get("joint_names") or []
+                qpos = robs.get("qpos") or []
+                ctrl = robs.get("ctrl") or []
+                for i, jn in enumerate(names):
+                    v = f"q={qpos[i]:+.3f}" if i < len(qpos) else ""
+                    if i < len(ctrl):
+                        v += f"   u={ctrl[i]:+.3f}"
+                    QTreeWidgetItem(top, [jn, v])
             sensors = robs.get("sensors") or {}
             if sensors:                        # M2：有传感器才有该键
                 st = QTreeWidgetItem(top, ["sensors"])
@@ -464,6 +467,42 @@ class ObsPanel(QWidget):
                 f"pos=({', '.join(f'{x:+.2f}' for x in pos)}) "
                 f"quat=({', '.join(f'{x:+.2f}' for x in quat)})"])
             self._tree.addTopLevelItem(top)
+
+    @staticmethod
+    def _build_named(top, joints: dict, actuators: dict) -> None:
+        """按名字配对关节与执行器（不依赖 qpos/ctrl 的下标顺序）。"""
+        by_joint: dict[str, dict] = {}
+        for aname, a in actuators.items():
+            by_joint.setdefault(a.get("joint") or "", {})[aname] = a
+        used = set()
+        for jname, j in joints.items():
+            q = j.get("q") or []
+            val = "q=" + (f"{q[0]:+.3f}" if len(q) == 1
+                          else "(" + ", ".join(f"{x:+.3f}" for x in q) + ")")
+            if j.get("unit"):
+                val += f" {j['unit']}"
+            if j.get("type"):
+                val += f"  [{j['type']}]"
+            node = QTreeWidgetItem(top, [jname, val])
+            for aname, a in by_joint.get(jname, {}).items():
+                QTreeWidgetItem(node, [f"u {aname}", ObsPanel._fmt_actuator(a)])
+                used.add(aname)
+        rest = {n: a for n, a in actuators.items() if n not in used}
+        if rest:                                  # 未绑定到具名关节的执行器
+            node = QTreeWidgetItem(top, ["执行器（未绑定关节）"])
+            for aname, a in rest.items():
+                QTreeWidgetItem(node, [aname, ObsPanel._fmt_actuator(a)])
+
+    @staticmethod
+    def _fmt_actuator(a: dict) -> str:
+        u = a.get("u")
+        text = f"u={u:+.3f}" if isinstance(u, (int, float)) else "u=?"
+        if a.get("mode"):
+            text += f"  [{a['mode']}]"
+        r = a.get("ctrlrange")
+        if r:
+            text += f"  限位=[{r[0]:+.3f}, {r[1]:+.3f}]"
+        return text
 
     def clear(self) -> None:
         self._tree.clear()

@@ -133,6 +133,37 @@ class TestSchemaErrors:
         d["ctrl_period"] = 0
         assert "ctrl_period" in self._err(d)
 
+    def test_nan_and_infinity_rejected(self):
+        """YAML 的 .nan/.inf 能解析成功但会让物理静默失真，必须在 schema 拦。"""
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            d = _base()
+            d["timestep"] = bad
+            msg = self._err(d)
+            assert "有限数字" in msg and "timestep" in msg
+
+            d = _base()
+            d["gravity"] = [0, 0, bad]
+            msg = self._err(d)
+            assert "有限数字" in msg and "gravity[2]" in msg
+
+    def test_ctrl_period_rejects_fraction(self):
+        """1.9 不能被静默截断成 1（控制频率会变）。"""
+        d = _base()
+        d["ctrl_period"] = 1.9
+        msg = self._err(d)
+        assert "整数" in msg and "ctrl_period" in msg and "1.9" in msg
+
+    def test_ctrl_period_integral_float_ok(self):
+        d = _base()
+        d["ctrl_period"] = 32.0
+        assert parse_world(d).ctrl_period == 32
+
+    def test_max_ticks_rejects_fraction(self):
+        d = _base()
+        d["task"] = {"max_ticks": 2.5}
+        msg = self._err(d)
+        assert "整数" in msg and "max_ticks" in msg
+
     def test_missing_world_file(self):
         with pytest.raises(WorldError) as e:
             load_world("不存在.yaml")

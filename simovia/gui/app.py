@@ -634,6 +634,9 @@ class MainWindow(QMainWindow):
         self.act_quit.triggered.connect(self.close)
 
         self.act_reset = mk("重置", "F8", "世界回到 YAML 初态（重编译+重启控制器）")
+        self.act_restart_backend = mk(
+            "重启后端", "", "仿真后端异常退出后重启进程，并重新加载当前世界")
+        self.act_restart_backend.triggered.connect(self._on_restart_backend)
         self.act_run = mk("运行", "F5", "运行到终态（控制器退出/max_ticks）")
         self.act_stop = mk("停止", "F6", "停止当前 run（提前收尾，控制器正常退出，"
                                           "已跑轨迹保留；停止后仍可 Reset/继续 Run）")
@@ -722,6 +725,8 @@ class MainWindow(QMainWindow):
         m_file.addAction(self.act_save)
         m_file.addSeparator()
         m_file.addAction(self.act_screenshot)
+        m_file.addSeparator()
+        m_file.addAction(self.act_restart_backend)
         m_file.addSeparator()
         m_file.addAction(self.act_quit)
         self._rebuild_recent_menu()
@@ -1909,7 +1914,8 @@ class MainWindow(QMainWindow):
                else "运行中（控制器已接管）…")
         self._apply_state(msg)
         self._log(msg)
-        self.client.call_tool("run", args, self._on_run_done)
+        self.client.call_tool("run", args, self._on_run_done,
+                              timeout_ms=None)   # run 延迟应答，可能很久
 
     def _on_stop(self):
         """停止当前 run：stop 工具立即返回，run 的响应在下个控制 tick 后
@@ -2184,7 +2190,20 @@ class MainWindow(QMainWindow):
         self.view.set_hud_state("后端异常")
         self._refresh_agent_state(busy=False)     # 后端没了，Agent 不能一直忙碌
         self._apply_state(f"仿真后端异常退出：{msg}")
-        self._log(f"仿真后端异常退出：{msg}", "error")
+        self._log(f"仿真后端异常退出：{msg}"
+                  "（可用 文件 → 重启后端 恢复并重新加载当前世界）", "error")
+
+    def _on_restart_backend(self):
+        """重启后端进程；有来源世界文件时自动重新加载。"""
+        path = self._world_path
+        self._log("重启仿真后端…")
+        self.client.restart()
+        self.state.to(UiState.EMPTY)
+        self._apply_state("后端已重启")
+        if path and pathlib.Path(path).exists():
+            self._load_world_path(path)
+        else:
+            self._log("后端已重启；内存世界需要重新打开/编辑", "warn")
 
     def closeEvent(self, e):
         # 未保存的控制器代码：保存 / 放弃 / 取消

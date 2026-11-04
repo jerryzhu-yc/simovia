@@ -2,6 +2,8 @@
 import json
 import pathlib
 
+import pytest
+
 from simovia.cli import main
 
 ROOT = pathlib.Path(__file__).parent.parent
@@ -64,3 +66,32 @@ class TestRunSummary:
         assert d["robots"]["arm"]["base"] == "arm/link0"
         assert len(d["robots"]["arm"]["pos"]) == 3
         assert "cube" in d["objects"]          # 原有物体输出保持兼容
+
+
+class TestDoctor:
+    """环境诊断：缺依赖/资产时给出可执行的提示，且退出码反映必需项。"""
+
+    def test_json_report_covers_required_items(self, capsys):
+        with pytest.raises(SystemExit) as e:
+            main(["doctor", "--json"])
+        d = json.loads(capsys.readouterr().out)
+        names = {c["name"] for c in d["checks"]}
+        # 必需依赖 + 资产 + 样例世界编译都要在报告里
+        assert {"Python", "mujoco", "numpy", "PyYAML", "pyzmq",
+                "样例世界"} <= names
+        assert d["ok"] is (e.value.code == 0)
+        assert all(c["level"] in ("OK", "WARN", "FAIL") for c in d["checks"])
+
+    def test_human_report_has_conclusion(self, capsys):
+        with pytest.raises(SystemExit):
+            main(["doctor"])
+        out = capsys.readouterr().out
+        assert "环境诊断" in out and "结论" in out
+
+
+class TestStartScripts:
+    def test_windows_launcher_quotes_interpreter(self):
+        """解释器可能在 C:\\Program Files\\... 或中文路径下，必须加引号调用。"""
+        text = (ROOT / "start.bat").read_text(encoding="utf-8")
+        assert '"%PYEXE%" %PYARGS% -m simovia gui' in text
+        assert '%PYEXE% -m simovia gui' not in text

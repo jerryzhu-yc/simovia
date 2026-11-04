@@ -1,9 +1,10 @@
-# Simovia M0 依赖
-mujoco>=3.2        # 物理引擎 + MjSpec 程序化场景组装
-numpy              # 数值计算
-pyyaml             # 世界文件解析
-pyzmq              # 控制器进程 IPC（ZMQ REQ/ROUTER 栅栏同步）
-gymnasium          # RL 训练接口（simovia.rl_env）；不训练可不装
-PySide6-Essentials  # 仅 GUI 需要（python -m simovia gui）；无 GUI 可不装
-pytest             # 开发/测试
-mujoco-menagerie   # 可选回退：14 个模型资产已随仓库自带（models/zoo/），本包仅在资产缺失时用于下载
+# Simovia 一键安装（开发/日常使用）：核心 + GUI + RL + 测试
+# 按需精简安装：
+#   pip install -r requirements-core.txt    # 只跑仿真/MCP/控制器
+#   pip install -r requirements-gui.txt     # 核心 + 桌面 GUI
+#   pip install -r requirements-dev.txt     # 核心 + GUI + RL + pytest
+#   pip install -r requirements-models.txt  # 可选：menagerie 模型下载回退
+-r requirements-core.txt
+-r requirements-gui.txt
+-r requirements-rl.txt
+-r requirements-dev.txt

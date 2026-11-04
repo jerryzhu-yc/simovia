@@ -36,6 +36,9 @@ def main(argv=None):
     in_p.add_argument("world", help="世界 YAML 文件路径")
     sub.add_parser("mcp", help="启动 MCP stdio 服务器")
     sub.add_parser("gui", help="启动桌面 GUI（可视化 + 观测面板）")
+    doc_p = sub.add_parser("doctor", help="环境诊断：依赖版本、模型资产、离屏渲染")
+    doc_p.add_argument("--json", action="store_true",
+                       help="以 JSON 输出诊断结果（机器可读，便于报错附上）")
     gen_p = sub.add_parser("scenegen", help="从模板生成世界 YAML")
     gen_p.add_argument("template", help="模板名")
     gen_p.add_argument("--out", default=None,
@@ -61,6 +64,117 @@ def main(argv=None):
         raise SystemExit(gui_main())
     elif args.cmd == "scenegen":
         _scenegen(args, argv)
+    elif args.cmd == "doctor":
+        raise SystemExit(_doctor(args))
+
+
+def _doctor(args):
+    """环境诊断：依赖版本、模型资产、离屏渲染、样例世界能否编译。
+
+    返回进程退出码（0 = 必需项全通过；1 = 有 FAIL，可直接贴给维护者）。
+    """
+    import importlib.metadata as md
+    import platform
+    import sys
+
+    checks = []          # [(level, name, detail)]
+
+    def add(level, name, detail):
+        checks.append((level, name, detail))
+
+    # ---- Python ----
+    v = sys.version_info
+    add("OK" if v >= (3, 10) else "FAIL", "Python",
+        f"{v.major}.{v.minor}.{v.micro}（需要 >= 3.10，"
+        f"{platform.system()} {platform.machine()}）")
+
+    # ---- 依赖：必需 / 可选 ----
+    for mod, pkg, optional, hint in (
+        ("mujoco", "mujoco", False, ""),
+        ("numpy", "numpy", False, ""),
+        ("yaml", "PyYAML", False, ""),
+        ("zmq", "pyzmq", False, ""),
+        ("PySide6", "PySide6-Essentials", True, "GUI"),
+        ("gymnasium", "gymnasium", True, "RL 训练"),
+        ("mujoco_menagerie", "mujoco-menagerie", True, "模型下载回退"),
+    ):
+        try:
+            __import__(mod)
+        except Exception as e:                       # noqa: BLE001 诊断要吞掉一切
+            add("WARN" if optional else "FAIL", pkg,
+                f"未安装{f'（可选：{hint}）' if optional else ''}"
+                f"：{type(e).__name__}")
+            continue
+        try:
+            ver = md.version(pkg)
+        except Exception:                            # noqa: BLE001
+            ver = "已导入（版本未知）"
+        add("OK", pkg, ver + (f"（可选：{hint}）" if optional else ""))
+
+    # ---- 模型资产 ----
+    try:
+        from simovia.zoo import BUNDLED_DIR, MODELS, bundled_model
+        have = sum(1 for k in MODELS if bundled_model(k) is not None)
+        level = "OK" if have == len(MODELS) else ("WARN" if have else "FAIL")
+        detail = f"{have}/{len(MODELS)} 个模型就绪（{BUNDLED_DIR}）"
+        if have < len(MODELS):
+            detail += "；缺失资产需重新 clone 仓库或 pip install -r requirements-models.txt"
+        add(level, "模型资产", detail)
+    except Exception as e:                           # noqa: BLE001
+        add("WARN", "模型资产", f"检查失败：{type(e).__name__}: {e}")
+
+    # ---- 离屏渲染（录制图像 / GUI 实时画面依赖）----
+    try:
+        import mujoco
+        m = mujoco.MjModel.from_xml_string(
+            "<mujoco><worldbody><geom size='0.1'/></worldbody></mujoco>")
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        r = mujoco.Renderer(m, 32, 32)
+        r.update_scene(d)
+        r.render()
+        r.close()
+        add("OK", "离屏渲染", "可用（录制图像 / GUI 实时画面）")
+    except Exception as e:                           # noqa: BLE001
+        add("WARN", "离屏渲染",
+            f"不可用（{type(e).__name__}: {e}）；录制图像与 GUI 实时画面会降级，"
+            "Linux 下可装 libosmesa6 或设 MUJOCO_GL=osmesa")
+
+    # ---- 样例世界能编译（验证路径解析 + 资源完整性）----
+    try:
+        import pathlib
+
+        from simovia.world.builder import build_world
+        from simovia.world.schema import load_world
+        sample = pathlib.Path(__file__).resolve().parents[1] / "worlds" / "pick_cube.yaml"
+        spec = load_world(sample)
+        build_world(spec)
+        add("OK", "样例世界", f"编译通过（{sample.name}）")
+    except Exception as e:                           # noqa: BLE001
+        add("FAIL", "样例世界", f"编译失败：{type(e).__name__}: {e}")
+
+    if getattr(args, "json", False):
+        print(json.dumps(
+            {"ok": not any(lv == "FAIL" for lv, _, _ in checks),
+             "checks": [{"level": lv, "name": n, "detail": d}
+                        for lv, n, d in checks]},
+            ensure_ascii=False, indent=2))
+    else:
+        print("Simovia 环境诊断：")
+        for lv, name, detail in checks:
+            print(f"  [{lv:<4}] {name:<24} {detail}")
+        fails = [n for lv, n, _ in checks if lv == "FAIL"]
+        warns = [n for lv, n, _ in checks if lv == "WARN"]
+        print()
+        if fails:
+            print(f"结论：{len(fails)} 项必需检查未通过（{', '.join(fails)}）。"
+                  "先按上面的提示安装依赖再启动。")
+        elif warns:
+            print(f"结论：必需项全部通过；{len(warns)} 项可选/降级"
+                  f"（{', '.join(warns)}）。仿真与 MCP 可正常使用。")
+        else:
+            print("结论：全部通过。")
+    return 1 if any(lv == "FAIL" for lv, _, _ in checks) else 0
 
 
 def _scenegen(args, argv=None):

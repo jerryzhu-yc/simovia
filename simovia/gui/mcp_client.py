@@ -15,7 +15,11 @@ import codecs
 import json
 import sys
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+
+# 通用请求超时（毫秒）。run 等长任务的响应本来就晚到（服务器延迟应答），
+# 调用方显式传 timeout_ms=None 关闭。
+DEFAULT_TIMEOUT_MS = 60_000
 
 
 # ---------------------------------------------------------------- 纯逻辑层
@@ -53,6 +57,14 @@ class PendingMap:
 
     def pending_ids(self) -> list[int]:
         return list(self._cbs)
+
+    def fail_all(self, message: str, code: int = -32000) -> int:
+        """后端退出/断开时让所有挂起请求以错误返回（界面状态得以释放）。"""
+        cbs = list(self._cbs.values())
+        self._cbs.clear()
+        for cb in cbs:
+            cb({"error": {"code": code, "message": message}})
+        return len(cbs)
 
 
 def tool_response(resp: dict):
@@ -108,17 +120,23 @@ class McpClient(QObject):
         self._utf8_err = codecs.getincrementaldecoder("utf-8")("replace")
         self._pending = PendingMap()
         self._next_id = 0
+        self._timers: dict[int, QTimer] = {}
+        self._closing = False
+        self._status = ""
 
     # ------------------------------------------------------------ 生命周期
 
     def start(self) -> None:
+        self._closing = False
+        self._codec = LineCodec()
+        self._utf8_out = codecs.getincrementaldecoder("utf-8")("replace")
+        self._utf8_err = codecs.getincrementaldecoder("utf-8")("replace")
         self._proc = QProcess(self)
         self._proc.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         self._proc.readyReadStandardOutput.connect(self._on_ready_read)
         self._proc.readyReadStandardError.connect(self._on_ready_err)
         self._proc.finished.connect(self._on_finished)
-        self._proc.errorOccurred.connect(
-            lambda err: self.backendDied.emit(f"后端进程错误: {err}"))
+        self._proc.errorOccurred.connect(self._on_proc_error)
         # cwd=项目根：`python -m simovia mcp` 能找到 simovia 包
         root = self._package_root()
         self._proc.setWorkingDirectory(str(root))
@@ -131,7 +149,9 @@ class McpClient(QObject):
 
     def shutdown(self) -> None:
         """优雅退出：关 stdin（EOF）让服务器收尾，等不到再杀。"""
+        self._closing = True
         if self._proc is None:
+            self._fail_pending("后端已关闭")
             return
         if self._proc.state() != QProcess.ProcessState.NotRunning:
             self._proc.closeWriteChannel()
@@ -139,6 +159,12 @@ class McpClient(QObject):
                 self._proc.kill()
                 self._proc.waitForFinished(2000)
         self._proc = None
+        self._fail_pending("后端已关闭")
+
+    def restart(self) -> None:
+        """重启后端进程（崩溃后恢复用；调用方随后重新 load_world）。"""
+        self.shutdown()
+        self.start()
 
     def is_alive(self) -> bool:
         return (self._proc is not None
@@ -146,23 +172,49 @@ class McpClient(QObject):
 
     # ------------------------------------------------------------ 请求
 
-    def request(self, method: str, params: dict | None, cb) -> int:
-        """发一个 JSON-RPC 请求，响应到达时 cb(resp_dict)。返回请求 id。"""
+    def request(self, method: str, params: dict | None, cb,
+                timeout_ms: int | None = DEFAULT_TIMEOUT_MS) -> int:
+        """发一个 JSON-RPC 请求，响应到达时 cb(resp_dict)。返回请求 id。
+
+        timeout_ms 缺省 60s：超时后 cb 收到错误响应（界面状态可恢复）；
+        None 表示不设超时（run 这类延迟应答的长任务）。
+        """
         self._next_id += 1
         rid = self._next_id
         self._pending.register(rid, cb)
+        if timeout_ms:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(
+                lambda r=rid, m=method: self._on_timeout(r, m))
+            timer.start(int(timeout_ms))
+            self._timers[rid] = timer
         req = {"jsonrpc": "2.0", "id": rid, "method": method}
         if params is not None:
             req["params"] = params
         self._write(req)
         return rid
 
-    def call_tool(self, name: str, args: dict | None, on_done) -> int:
+    def call_tool(self, name: str, args: dict | None, on_done,
+                  timeout_ms: int | None = DEFAULT_TIMEOUT_MS) -> int:
         """tools/call 封装。on_done(is_error, data)——见 tool_response。"""
         def cb(resp):
             err, data = tool_response(resp)
             on_done(err, data)
-        return self.request("tools/call", {"name": name, "arguments": args or {}}, cb)
+        return self.request("tools/call", {"name": name, "arguments": args or {}},
+                            cb, timeout_ms=timeout_ms)
+
+    def _on_timeout(self, rid: int, method: str) -> None:
+        self._timers.pop(rid, None)
+        self._pending.dispatch({"id": rid, "error": {
+            "code": -32001, "message": f"请求超时：{method}"}})
+
+    def _fail_pending(self, message: str) -> None:
+        for timer in self._timers.values():
+            timer.stop()
+            timer.deleteLater()
+        self._timers.clear()
+        self._pending.fail_all(message)
 
     # ------------------------------------------------------------ 内部
 
@@ -181,6 +233,10 @@ class McpClient(QObject):
             except json.JSONDecodeError:
                 continue                  # 服务器输出的坏行直接忽略
             if isinstance(resp, dict):
+                timer = self._timers.pop(resp.get("id"), None)
+                if timer is not None:
+                    timer.stop()
+                    timer.deleteLater()
                 self._pending.dispatch(resp)
 
     def _on_ready_err(self) -> None:
@@ -190,6 +246,16 @@ class McpClient(QObject):
             if line.strip():
                 self.backendLog.emit(line)
 
+    def _on_proc_error(self, err) -> None:
+        if self._closing:
+            return
+        self._fail_pending(f"后端进程错误: {err}")
+        self.backendDied.emit(f"后端进程错误: {err}")
+
     def _on_finished(self, code, status) -> None:
-        if code != 0 or status != QProcess.ExitStatus.NormalExit:
-            self.backendDied.emit(f"后端进程退出 code={code} status={status}")
+        # 无论正常/异常退出，挂起请求都不可能再收到响应：统一以错误返回，
+        # 否则界面会一直停在忙碌状态（spinner 不消失、按钮不恢复）。
+        self._fail_pending("后端进程已退出")
+        if self._closing:
+            return
+        self.backendDied.emit(f"后端进程退出 code={code} status={status}")
