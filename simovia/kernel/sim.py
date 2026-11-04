@@ -138,6 +138,11 @@ class Simulation:
                 [sys.executable, str(path),
                  "--sock", self._addr, "--robot", rd.name],
                 env=env, stdout=subprocess.PIPE, stderr=None)
+            if os.environ.get("SIMOVIA_CTRL_TRACE"):
+                sys.stderr.write(
+                    f"[spawn] {rd.name} pid={proc.pid} addr={self._addr} "
+                    f"cmd={proc.args}\n")
+                sys.stderr.flush()
             self._procs[rd.name] = proc
             self._pumps[rd.name] = self._pump_stdout(rd.name, proc)
 
@@ -532,14 +537,15 @@ class Simulation:
                 return self._stats(t_start, sim_start)
             if time.perf_counter() > hs_deadline:
                 diag = "、".join(
-                    n for n in parts if not self._st[n]["active"])
+                    f"{n}(pid={self._procs[n].pid})"
+                    for n in parts if not self._st[n]["active"])
                 self._abort_controllers()
                 raise WorldError(
                     f"控制器握手超时（{_HANDSHAKE_TIMEOUT:.0f}s）: {diag}。"
                     "进程存活但迟迟未发 hello，常见原因：控制器脚本 import "
                     "或模型加载卡死/极慢（Windows 冷启动尤甚）。控制器 "
                     "stderr 已直通内核错误输出，真实报错请到 GUI 控制台/"
-                    "后端日志查看。")
+                    "后端日志查看；设 SIMOVIA_CTRL_TRACE=1 可打印握手阶段。")
             self._poll_once(timeout_ms)
             self._check_crashes()
 

@@ -372,7 +372,7 @@ class TestAgentLoop:
         proc = subprocess.Popen(
             [_sys.executable, "-m", "simovia", "mcp"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, cwd=str(root), text=True)
+            cwd=str(root), text=True)
         try:
             def send(obj):
                 proc.stdin.write(json.dumps(obj) + "\n")

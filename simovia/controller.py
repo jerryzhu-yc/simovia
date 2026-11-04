@@ -24,18 +24,34 @@ import sys
 
 import zmq
 
+# 启动阶段追踪：设 SIMOVIA_CTRL_TRACE=1 时把握手各阶段打到 stderr
+# （Windows 上"进程活着但内核收不到 hello"只能靠这里定位卡点）。
+_TRACE = bool(os.environ.get("SIMOVIA_CTRL_TRACE"))
+
+
+def _trace(msg: str) -> None:
+    if _TRACE:
+        sys.stderr.write(f"[ctrl {os.getpid()}] {msg}\n")
+        sys.stderr.flush()
+
+
+_trace("module imported")
+
 
 class Robot:
     """控制器脚本里的机器人句柄。"""
 
     def __init__(self):
         ns = self._parse_args()
+        _trace(f"args sock={ns.sock} robot={ns.robot}")
         self.name = ns.robot
         # 心跳：记录父进程（内核）pid。内核是控制器的直接父进程
         # （Simulation spawn），内核一死即被感知——检测方式见
         # _parent_dead()（POSIX 与 Windows 机制不同）
         self._parent_pid = os.getppid()
+        _trace(f"parent pid={self._parent_pid}")
         self._ctx = zmq.Context()
+        _trace("ctx created")
         self._sock = self._ctx.socket(zmq.REQ)
         self._sock.setsockopt(zmq.LINGER, 0)
         # 不设 RCVTIMEO：等待无限。真实 Agent 在 load_world 与 run 之间有
@@ -43,8 +59,10 @@ class Robot:
         # 内核 close() 会 terminate 控制器进程；内核崩溃导致控制器孤儿挂死
         # 属 M0 已知取舍（TODO: M1 心跳）。
         self._sock.connect(ns.sock)
+        _trace("connected (async)")
 
         init = self._rpc({"op": "hello", "robot": self.name})
+        _trace(f"hello reply op={init.get('op')}")
         if init.get("op") == "error":
             raise RuntimeError(f"内核拒绝连接: {init['msg']}")
         self.actuators: list[str] = init["actuators"]
@@ -197,10 +215,15 @@ class Robot:
         """
         poller = zmq.Poller()
         poller.register(self._sock, zmq.POLLIN)
+        waits = 0
         try:
             while True:
                 if poller.poll(100):          # 有消息立即返回（微秒级）
                     return json.loads(self._sock.recv())
+                waits += 1
+                if _TRACE and waits <= 5:
+                    _trace(f"waiting reply #{waits} parent_dead="
+                           f"{self._parent_dead()}")
                 if self._parent_dead():
                     raise RuntimeError(
                         "内核已退出（心跳检测到父进程变化）——请结束控制器脚本")
