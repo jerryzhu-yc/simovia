@@ -935,6 +935,18 @@ class SimoviaSession:
                         "near": s.near, "far": s.far,
                     })
                 sensors.append(item)
+            # 相机在 MuJoCo 里不是 <sensor>（不进 ridx.sensors），但装备页的
+            # 「相机参数」需要它们：YAML 声明的 camera 单独补进 sensors 列表
+            for s in rd.sensors:
+                if s.type != "camera":
+                    continue
+                sensors.append({
+                    "name": s.name, "type": "camera", "dim": 0,
+                    "body": s.body, "pos": list(s.pos),
+                    "quat": list(s.quat) if s.quat is not None else None,
+                    "fovy": s.fovy, "depth": s.depth,
+                    "near": s.near, "far": s.far,
+                })
             robots.append({
                 "name": rd.name,
                 "controller": rd.controller,

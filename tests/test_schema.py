@@ -21,6 +21,17 @@ def _base() -> dict:
     }
 
 
+def test_load_world_gbk_crlf_fallback(tmp_path):
+    """中文 Windows 记事本存的 GBK + CRLF 世界 YAML 也能读（utf-8 优先兜底）。"""
+    import yaml
+    text = yaml.safe_dump({"name": "测试世界", "scene": {"objects": []}},
+                          allow_unicode=True, sort_keys=False)
+    p = tmp_path / "world_gbk.yaml"
+    p.write_bytes(text.replace("\n", "\r\n").encode("gbk"))
+    spec = load_world(p)
+    assert spec.name == "测试世界"
+
+
 class TestValidWorld:
     def test_pick_cube_loads(self):
         spec = load_world(WORLD)

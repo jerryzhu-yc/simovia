@@ -605,7 +605,13 @@ def load_world(yaml_path: str | pathlib.Path) -> WorldSpec:
     if not yaml_path.exists():
         raise WorldError(f"世界文件不存在: {yaml_path}")
     try:
-        d = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        text = yaml_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # 中文 Windows 记事本默认存成本地代码页（GBK/ANSI）：utf-8 优先，
+        # 失败再按 GBK 兜底，避免直接抛裸 UnicodeDecodeError
+        text = yaml_path.read_text(encoding="gbk", errors="replace")
+    try:
+        d = yaml.safe_load(text)
     except yaml.YAMLError as e:
         raise WorldError(f"[{yaml_path}] YAML 语法错误: {e}") from e
     if d is None:

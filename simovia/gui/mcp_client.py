@@ -11,6 +11,7 @@ GUI 与 AI Agent 同构：都只是 MCP 客户端，走同一套工具。
 from __future__ import annotations
 
 import base64
+import codecs
 import json
 import sys
 
@@ -101,6 +102,10 @@ class McpClient(QObject):
         super().__init__(parent)
         self._proc: QProcess | None = None
         self._codec = LineCodec()
+        # 增量 UTF-8 解码器：管道分块可能从多字节汉字中间切断（Windows
+        # QProcess 尤其常见），逐块 decode 会产生 U+FFFD，必须跨块续接
+        self._utf8_out = codecs.getincrementaldecoder("utf-8")("replace")
+        self._utf8_err = codecs.getincrementaldecoder("utf-8")("replace")
         self._pending = PendingMap()
         self._next_id = 0
 
@@ -168,8 +173,8 @@ class McpClient(QObject):
         self._proc.write(data.encode("utf-8"))
 
     def _on_ready_read(self) -> None:
-        chunk = bytes(self._proc.readAllStandardOutput()).decode("utf-8",
-                                                                 errors="replace")
+        raw = bytes(self._proc.readAllStandardOutput())
+        chunk = self._utf8_out.decode(raw)
         for line in self._codec.feed(chunk):
             try:
                 resp = json.loads(line)
@@ -179,8 +184,8 @@ class McpClient(QObject):
                 self._pending.dispatch(resp)
 
     def _on_ready_err(self) -> None:
-        chunk = bytes(self._proc.readAllStandardError()).decode("utf-8",
-                                                                 errors="replace")
+        raw = bytes(self._proc.readAllStandardError())
+        chunk = self._utf8_err.decode(raw)
         for line in chunk.splitlines():
             if line.strip():
                 self.backendLog.emit(line)
