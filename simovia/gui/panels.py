@@ -39,10 +39,21 @@ def _fmt_vec(v, nd=3) -> str:
 
 
 def quat_to_euler(q) -> tuple[float, float, float]:
-    """wxyz 四元数 -> (roll, pitch, yaw) 度（ZYX 内旋序）。属性面板用。"""
+    """wxyz 四元数 -> (roll, pitch, yaw) 度（ZYX 内旋序）。属性面板用。
+
+    pitch=±90° 是万向锁：roll/yaw 不唯一，此处分母 1-2(x²+y²) 会落到
+    ±1e-17，atan2 在不同平台/浮点上返回 0 或 π——同一姿态在面板里会
+    跳成 (0,-90,0) 或 (180,-90,180) 两套角。这里固定取 roll=0，yaw 由
+    x（pitch=-90）或 z（pitch=+90）与 w 合成，结果确定且与输入互逆。
+    """
     w, x, y, z = (float(v) for v in q)
+    sinp = 2 * (w * y - z * x)
+    if sinp >= 1.0 - 1e-12:
+        return (0.0, 90.0, math.degrees(2 * math.atan2(z, w)))
+    if sinp <= -1.0 + 1e-12:
+        return (0.0, -90.0, math.degrees(2 * math.atan2(x, w)))
     roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
-    pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
+    pitch = math.asin(max(-1.0, min(1.0, sinp)))
     yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
     return (math.degrees(roll), math.degrees(pitch), math.degrees(yaw))
 
