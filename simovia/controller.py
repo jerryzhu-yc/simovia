@@ -54,6 +54,8 @@ class Robot:
         self.timestep: float = init["timestep"]
         # 传感器设备清单 [{name,type,dim}]（hello 握手下发；无传感器为 []）
         self.sensors: list[dict] = init.get("sensors", [])
+        # 关节在 qpos 里的宽度（free=7 / ball=4 / 其余=1），joint_state 切分用
+        self.joint_widths: dict[str, int] = init.get("joint_widths", {})
         self._ctrl = [0.0] * len(self.actuators)
 
         self.obs: dict = {}
@@ -96,8 +98,20 @@ class Robot:
         return reply
 
     def joint_state(self) -> dict:
-        """便捷读取：{关节名: 位置}（从最近一次观测取）"""
-        return dict(zip(self.joint_names, self.obs.get("qpos", [])))
+        """便捷读取：{关节名: 位置}。
+
+        浮动机器人的命名 free 关节在 qpos 里占 7 个数（xyz+四元数），ball
+        占 4 个，取出来是定长列表；其余关节返回标量。以前直接 zip
+        joint_names/qpos，浮动机器人从 free 关节之后全部错位。
+        """
+        qpos = self.obs.get("qpos", [])
+        out: dict = {}
+        i = 0
+        for name in self.joint_names:
+            w = int(self.joint_widths.get(name, 1))
+            out[name] = qpos[i] if w == 1 else qpos[i:i + w]
+            i += w
+        return out
 
     def sensor(self, name: str) -> float | list[float]:
         """读传感器最近读数（dim=1 标量；imu 等多维返回列表），从最近一次观测取。

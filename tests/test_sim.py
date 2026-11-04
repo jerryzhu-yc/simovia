@@ -2,6 +2,7 @@
 
 控制器脚本由测试动态生成（tmp_path），走真实子进程 + ZMQ 路径。
 """
+import json
 import pathlib
 import subprocess
 
@@ -353,3 +354,47 @@ sys.exit(0)
         with Simulation(spec) as sim:
             sim.run(max_ticks=2)
         assert "stderr-passthrough-check" in capfd.readouterr().err
+
+
+class TestJointStateAlignment:
+    def test_floating_base_joint_state_not_shifted(self, tmp_path):
+        """浮动机器人（命名 free 关节）的 joint_state 不能整体错位。
+
+        回归点：命名 free 关节在 qpos 里占 7 个值（xyz+四元数）。以前
+        joint_state 直接 dict(zip(joint_names, qpos))，free 关节之后的
+        所有关节都会错位——人形/四足写完控制器读到的位置全不对。
+        """
+        from simovia.zoo import ensure_model
+
+        try:
+            g1 = ensure_model("unitree_g1")
+        except Exception as e:                 # 模型库不可用
+            pytest.skip(f"G1 模型不可用: {e}")
+
+        out = tmp_path / "joint_state.json"
+        ctrl_path = _write_controller(tmp_path, f"""
+import json
+from simovia.controller import Robot
+robot = Robot()
+for name in ("left_elbow_joint", "left_hip_pitch_joint"):
+    robot.set(name, 0.5)
+while robot.step():
+    open({str(out)!r}, "w").write(json.dumps(robot.joint_state()))
+robot.close()
+""")
+        d = {"name": "float_base", "timestep": 0.002, "ctrl_period": 8,
+             "gravity": [0, 0, 0],
+             "scene": {"floor": {"size": [2.0, 2.0]}},
+             "robots": [{"name": "arm", "model": str(g1),
+                         "controller": ctrl_path}]}
+        with Simulation(parse_world(d)) as sim:
+            stats = sim.run(max_ticks=80)
+            truth = {n: float(sim.data.qpos[sim.model.jnt_qposadr[jid]])
+                     for n, jid in sim.index.robots["arm"].joints.items()}
+        assert stats["crashed"] == []
+        js = json.loads(out.read_text())
+        assert set(js) == set(truth)
+        assert len(js["floating_base_joint"]) == 7
+        assert js["left_elbow_joint"] == pytest.approx(truth["left_elbow_joint"])
+        assert js["left_hip_pitch_joint"] == pytest.approx(
+            truth["left_hip_pitch_joint"])

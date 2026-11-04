@@ -25,7 +25,7 @@ import zmq
 
 from simovia import supervisor
 from simovia.errors import WorldError
-from simovia.kernel.task import (robot_obs, root_freejoint_qadr,
+from simovia.kernel.task import (obs_layout, robot_obs, root_freejoint_qadr,
                                   sensors_obs, task_reward, task_success)
 from simovia.world.builder import build_world, resolve_task
 from simovia.world.schema import WorldSpec
@@ -223,6 +223,9 @@ class Simulation:
                   for a in ridx.actuators]
         sensors_manifest = [{"name": six.name, "type": six.kind, "dim": six.dim}
                             for six in ridx.sensors.values()]
+        # 关节在 qpos 观测里的宽度：free=7、ball=4、其余=1。控制器按名字
+        # 切分 qpos 时必须用这张表，否则浮动机器人的 qpos 会整体错位。
+        layout = obs_layout(self.model, ridx)
         self._ident[ident] = rname
         self._send(ident, {
             "op": "init", "robot": rname,
@@ -230,6 +233,7 @@ class Simulation:
             "args": rd.args, "ctrl_period": self.spec.ctrl_period,
             "timestep": self.spec.timestep,
             "sensors": sensors_manifest,
+            "joint_widths": {n: w for n, (_, _, w) in layout.items()},
         })
         self._st[rname]["active"] = True
 
