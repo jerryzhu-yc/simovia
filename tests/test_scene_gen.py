@@ -94,6 +94,40 @@ def test_pallet_smoke(tmp_path, name, params):
         .startswith("zoo://")
 
 
+@pytest.mark.parametrize("name,params", [("tabletop", {}),
+                                         ("tabletop", {"objects": 3}),
+                                         ("pallet", {"cubes": 3}),
+                                         ("pallet", {"cubes": 6})])
+def test_table_is_supported_and_covers_work_area(tmp_path, name, params):
+    """桌面不能悬空：四条腿落地并顶住桌面；cube 与机器人基座都在桌面内。"""
+    import yaml
+
+    d = yaml.safe_load(generate(name, tmp_path, params))
+    objs = {o["name"]: o for o in d["scene"]["objects"]}
+    top = objs["table"]
+    top_z = top["pos"][2] + top["size"][2]
+    legs = [o for n, o in objs.items() if n.startswith("table_leg_")]
+    assert len(legs) == 4
+    for leg in legs:
+        # 腿底贴地、腿顶顶住桌面底面
+        assert leg["pos"][2] - leg["size"][2] == pytest.approx(0.0, abs=1e-9)
+        assert (leg["pos"][2] + leg["size"][2]
+                == pytest.approx(top["pos"][2] - top["size"][2], abs=1e-9))
+    x0 = top["pos"][0] - top["size"][0]
+    x1 = top["pos"][0] + top["size"][0]
+    y0 = top["pos"][1] - top["size"][1]
+    y1 = top["pos"][1] + top["size"][1]
+    cubes = [o for n, o in objs.items() if n.startswith("cube_")]
+    for c in cubes:
+        assert c["pos"][2] - c["size"][2] == pytest.approx(top_z, abs=1e-9)
+        assert x0 < c["pos"][0] < x1 and y0 < c["pos"][1] < y1
+    # 码垛场景的机械臂基座必须落在桌面上，不能悬在桌沿外
+    if name == "pallet":
+        base = d["robots"][0]["pos"]
+        assert base[2] == pytest.approx(top_z, abs=1e-9)
+        assert x0 < base[0] < x1 and y0 < base[1] < y1
+
+
 def test_deterministic(tmp_path):
     for name in TEMPLATES:
         if name == "pallet" and not _UR5E:

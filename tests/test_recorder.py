@@ -43,8 +43,8 @@ def test_pick_cube_record_layout(tmp_path):
     assert data["arm.joint_pos"].shape == (30, 9)
     assert data["arm.joint_vel"].shape == (30, 9)
     assert data["arm.action"].shape == (30, 8)
-    assert data["object_pos"].shape == (30, 6)   # pick_cube 有 2 个物体
-    assert data["object_quat"].shape == (30, 8)
+    assert data["object_pos"].shape == (30, 18)   # 6 个物体（桌面 + 4 腿 + cube）
+    assert data["object_quat"].shape == (30, 24)
 
     meta = json.loads((ep / "meta.json").read_text(encoding="utf-8"))
     assert meta["format"] == "simovia-episode-v1"
@@ -55,7 +55,8 @@ def test_pick_cube_record_layout(tmp_path):
     digest = meta["contract_digests"]["arm"]
     assert isinstance(digest, str) and len(digest) == 64
     assert meta["stats"]["ticks"] == stats["ticks"] == 30
-    assert meta["objects"] == ["table", "cube"]
+    assert meta["objects"] == ["table", "table_leg_0", "table_leg_1",
+                               "table_leg_2", "table_leg_3", "cube"]
     assert meta["files"]["frames"] is None
 
 

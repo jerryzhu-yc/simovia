@@ -66,6 +66,29 @@ def _obj(name: str, size: tuple, pos: tuple, color: str,
     return o
 
 
+def _table(name: str, x0: float, x1: float, y0: float, y1: float,
+           top_z: float, color: str = "#6B7280",
+           thickness: float = 0.04, leg: float = 0.03) -> list[dict]:
+    """带四条腿的工作台（桌面 + 腿都落地，避免整块桌面悬空）。
+
+    x0/x1、y0/y1 是桌面在世界坐标里的外沿；top_z 是桌面顶面高度。
+    腿从地面 (z=0) 长到桌面底面，四角各一根，四周内缩一个 leg 半径。
+    """
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    objs = [_obj(name, ((x1 - x0) / 2.0, (y1 - y0) / 2.0, thickness / 2.0),
+                 (cx, cy, top_z - thickness / 2.0), color, static=True)]
+    leg_h = top_z - thickness
+    if leg_h <= 0:
+        return objs
+    for i, (lx, ly) in enumerate(((x0 + leg, y0 + leg),
+                                  (x1 - leg, y0 + leg),
+                                  (x0 + leg, y1 - leg),
+                                  (x1 - leg, y1 - leg))):
+        objs.append(_obj(f"{name}_leg_{i}", (leg, leg, leg_h / 2.0),
+                         (lx, ly, leg_h / 2.0), color, static=True))
+    return objs
+
+
 def _base_world(name: str, objects: list, robots: list,
                 task: dict | None = None) -> dict:
     w = {
@@ -97,9 +120,9 @@ def _tpl_tabletop(p, base):
     """机械臂桌面抓取：桌面 + N 个 cube + 抬升成功区"""
     n = p["objects"]
     _check_range("objects", n, 1, 3)
-    table = _obj("table", (0.20, 0.20, 0.075), (0.50, 0, 0.075),
-                 "#6B7280", static=True)
-    cubes = [_obj(f"cube_{i}", (0.03, 0.03, 0.03), (0.35 + 0.15 * i, 0, 0.18),
+    # 桌面顶面 z=0.15，四条腿落地；cube 全部落在桌面外沿内
+    table = _table("table", 0.28, 0.72, -0.22, 0.22, top_z=0.15)
+    cubes = [_obj(f"cube_{i}", (0.03, 0.03, 0.03), (0.38 + 0.12 * i, 0, 0.18),
                   "#F59E0B", mass=0.05, friction=0.6) for i in range(n)]
     zone = {"min": [0.40, -0.10, 0.35], "max": [0.60, 0.10, 0.50]}
     task = {
@@ -110,7 +133,7 @@ def _tpl_tabletop(p, base):
         ],
         "max_ticks": 5000,
     }
-    w = _base_world(f"tabletop_{n}", [table] + cubes,
+    w = _base_world(f"tabletop_{n}", table + cubes,
                     [_robot("arm", "zoo://franka_emika_panda", base, (0, 0, 0),
                             gripper="onrobot_2fg7")], task)
     # panda 高刚度位置伺服（kp=4500）依赖隐式积分（同 worlds/pick_cube.yaml）
@@ -255,11 +278,9 @@ def _tpl_pallet(p, base):
     def yi(i):
         return round((i - (n - 1) / 2.0) * gap, 4)
 
-    objects = [
-        # 工作台（顶 z=0.75）
-        _obj("table", (0.40, 0.40, 0.03), (0.45, 0, top_z - 0.03),
-             "#6B7280", static=True),
-    ]
+    objects = []
+    # 工作台（顶 z=0.75）：四条腿落地；桌面后沿覆盖机器人基座（x=0）
+    objects.extend(_table("table", -0.12, 0.85, -0.36, 0.36, top_z=top_z))
     zones = []
     for i in range(n):
         y = yi(i)

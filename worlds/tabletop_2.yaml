@@ -11,14 +11,38 @@ scene:
   objects:
   - name: table
     type: box
-    size: [0.2, 0.2, 0.075]
-    pos: [0.5, 0.0, 0.075]
+    size: [0.22, 0.22, 0.02]
+    pos: [0.5, 0.0, 0.13]
+    color: '#6B7280'
+    static: true
+  - name: table_leg_0
+    type: box
+    size: [0.03, 0.03, 0.055]
+    pos: [0.31, -0.19, 0.055]
+    color: '#6B7280'
+    static: true
+  - name: table_leg_1
+    type: box
+    size: [0.03, 0.03, 0.055]
+    pos: [0.69, -0.19, 0.055]
+    color: '#6B7280'
+    static: true
+  - name: table_leg_2
+    type: box
+    size: [0.03, 0.03, 0.055]
+    pos: [0.31, 0.19, 0.055]
+    color: '#6B7280'
+    static: true
+  - name: table_leg_3
+    type: box
+    size: [0.03, 0.03, 0.055]
+    pos: [0.69, 0.19, 0.055]
     color: '#6B7280'
     static: true
   - name: cube_0
     type: box
     size: [0.03, 0.03, 0.03]
-    pos: [0.35, 0.0, 0.18]
+    pos: [0.38, 0.0, 0.18]
     color: '#F59E0B'
     mass: 0.05
     friction: 0.6
@@ -33,7 +57,8 @@ robots:
 - name: arm
   model: zoo://franka_emika_panda
   pos: [0.0, 0.0, 0.0]
-  end_effectors: [{model: onrobot_2fg7}]
+  end_effectors:
+  - {model: onrobot_2fg7}
 task:
   success:
     body: cube_0

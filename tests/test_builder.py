@@ -23,9 +23,9 @@ def built():
 class TestCompile:
     def test_model_counts(self, built):
         _, model, _ = built
-        # worldbody + table + cube + (link0..link7, attachment,
+        # worldbody + table + 4 桌腿 + cube + (link0..link7, attachment,
         #   gripper_base, left_finger, right_finger)
-        assert model.nbody == 15
+        assert model.nbody == 19
         # cube freejoint + panda 7 hinge + gripper 2 slide
         assert model.njnt == 10
         assert model.nu == 8      # panda 7 执行器 + gripper_act
@@ -45,12 +45,11 @@ class TestCompile:
 class TestNameIndex:
     def test_objects(self, built):
         _, model, index = built
+        names = ["table", "table_leg_0", "table_leg_1", "table_leg_2",
+                 "table_leg_3", "cube"]
         assert index.objects == {
-            "table": mujoco.mj_name2id(
-                model, mujoco.mjtObj.mjOBJ_BODY, "table"),
-            "cube": mujoco.mj_name2id(
-                model, mujoco.mjtObj.mjOBJ_BODY, "cube"),
-        }
+            n: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, n)
+            for n in names}
 
     def test_robot_actuators(self, built):
         _, _, index = built

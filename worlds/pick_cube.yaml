@@ -13,13 +13,17 @@ scene:
   lights:
     - {pos: [0, 0, 3]}
   objects:
-    # 工作台（顶面 z=0.68）：panda 立于桌后缘 (0,0,0.68)
+    # 工作台（顶面 z=0.68）：桌面 + 四条落地桌腿；桌面后沿覆盖 panda 基座 (0,0)
     - name: table
       type: box
-      size: [0.35, 0.25, 0.03]
-      pos: [0.325, 0, 0.65]
+      size: [0.40, 0.25, 0.02]
+      pos: [0.32, 0, 0.66]
       color: "#6B7280"
       static: true
+    - {name: table_leg_0, type: box, size: [0.025, 0.025, 0.32], pos: [-0.055, -0.225, 0.32], color: "#6B7280", static: true}
+    - {name: table_leg_1, type: box, size: [0.025, 0.025, 0.32], pos: [0.695, -0.225, 0.32], color: "#6B7280", static: true}
+    - {name: table_leg_2, type: box, size: [0.025, 0.025, 0.32], pos: [-0.055, 0.225, 0.32], color: "#6B7280", static: true}
+    - {name: table_leg_3, type: box, size: [0.025, 0.025, 0.32], pos: [0.695, 0.225, 0.32], color: "#6B7280", static: true}
     # 60mm 方块（0.1kg/摩擦1.0：满握每指压力 ~1.35N，抗 0.98N 重力余量 2.7 倍）
     - name: cube
       type: box

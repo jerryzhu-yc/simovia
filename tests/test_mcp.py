@@ -47,7 +47,8 @@ class TestAgentLoop:
             info = s.call_tool("load_world", {"yaml_path": str(WORLD)})
             assert info["world"] == "pick_cube"
             assert info["robots"] == ["arm"]
-            assert info["objects"] == ["table", "cube"]
+            assert info["objects"] == ["table", "table_leg_0", "table_leg_1",
+                                       "table_leg_2", "table_leg_3", "cube"]
 
             text = s.call_tool("read_world", {})
             assert "name: pick_cube" in text

@@ -44,8 +44,7 @@ class TestValidWorld:
         assert table.name == "table"
         assert table.static is True
 
-        cube = spec.scene.objects[1]
-        assert cube.name == "cube"
+        cube = next(o for o in spec.scene.objects if o.name == "cube")
         assert cube.type == "box"
         assert cube.size == (0.03, 0.03, 0.03)
         assert cube.mass == 0.1
