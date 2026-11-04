@@ -378,12 +378,14 @@ def detect_end_effectors(child: mujoco.MjSpec) -> list[dict]:
       +z 沿手伸出的方向，供夹爪库的通用安装变换直接使用。
     """
     nodes: dict[str, tuple[str, list[float]]] = {}
+    world = child.worldbody
     for b in child.bodies:
         # worldbody 也在这份列表里，而它的 parent 在 C 侧是 NULL：读
-        # b.parent.name 会段错误（mujoco 3.13 实测），必须先跳过
-        if b is child.worldbody or not b.name:
+        # b.parent.name 会段错误（mujoco 3.13 实测），必须先跳过。
+        # 同时按名字兜底，避免不同平台上 wrapper 缓存策略差异
+        if not b.name or b is world or b.name == world.name:
             continue
-        parent = "" if b.parent is child.worldbody else (b.parent.name or "")
+        parent = "" if b.parent is world else (b.parent.name or "")
         nodes[b.name] = (parent, [float(x) for x in b.pos])
     hand_names = [n for n in nodes if _looks_like_end_effector(n)]
     if not hand_names:
