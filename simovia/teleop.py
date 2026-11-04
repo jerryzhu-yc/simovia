@@ -10,8 +10,8 @@
   只做平移 + 绕 z 偏航，符合"看着相机怼上去抓"的直觉）。
 - 目标位姿按 tick 积分（速度 × 控制周期），不是一步跳到位——位置伺服
   跟得平滑，也不会一脚把方块踢飞。
-- 夹爪开合归一化为 0=闭合 / 1=张开，按 gripper 库的 open/close 映射；
-  无夹爪时忽略 grip 指令。
+- 末端执行器开合归一化为 0=闭合 / 1=张开，按末端执行器库的 open/close
+  映射；未装末端执行器时忽略 grip 指令。
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import mujoco
 import numpy as np
 
 from simovia.errors import WorldError
-from simovia.grippers import GRIPPERS
+from simovia.grippers import END_EFFECTORS
 
 # 缺省速度（按住 Shift 乘倍率）
 LINEAR_SPEED = 0.30      # m/s
@@ -33,6 +33,11 @@ _IK_ITERS = 60
 _IK_DAMPING = 0.02
 _IK_MAX_STEP = 0.2       # 单次迭代关节增量上限（rad）
 _REANCHOR_POS_ERR = 0.05  # 位置残差超过此值视为不可达：目标回到当前位姿
+
+
+def _is_ee_joint(name: str) -> bool:
+    """末端执行器关节：装配前缀是 gripper/（单个）或 gripper_<side>/（多个）。"""
+    return name.startswith("gripper/") or name.startswith("gripper_")
 
 
 def _rotvec_from_matrix(R: np.ndarray) -> np.ndarray:
@@ -63,9 +68,9 @@ class ArmTeleop:
         self._ridx = ridx
         self.ctrl_period = int(spec.ctrl_period)
 
-        # ---- 机械臂关节（排除 gripper/ 前缀的夹爪关节）
+        # ---- 机械臂关节（排除 gripper/、gripper_left/ 等末端执行器关节）
         self._joints = [(name, jid) for name, jid in ridx.joints.items()
-                        if not name.startswith("gripper/")
+                        if not _is_ee_joint(name)
                         and int(model.jnt_type[jid])
                         in (int(mujoco.mjtJoint.mjJNT_HINGE),
                             int(mujoco.mjtJoint.mjJNT_SLIDE))]
@@ -249,21 +254,29 @@ class ArmTeleop:
                 if full.endswith(f"/{needle}") or full == needle:
                     return mujoco.mj_name2id(
                         m, mujoco.mjtObj.mjOBJ_SITE, full)
+        # 左右手挂点（left/right_hand_attachment_site）
+        for full in names:
+            if full.endswith("_attachment_site"):
+                return mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, full)
         raise WorldError(
             f"机器人 '{robot_name}' 没有可用于遥操作的 TCP site（可用: "
             f"{[n[len(robot_name) + 1:] for n in names]}）；"
             "请在 teleop_start 里用 site 参数指定")
 
     def _resolve_gripper(self, spec, robot_name, ridx):
-        """夹爪开合执行器与 open/close 目标；没有夹爪返回 (None, None, None)。"""
+        """末端执行器开合执行器与 open/close 目标；没有则 (None, None, None)。
+
+        左右手各装一个时取第一个单执行器条目（遥操作一次只控一路开合）。
+        """
         rd = next((r for r in spec.robots if r.name == robot_name), None)
-        info = None
-        if rd is not None and rd.gripper is not None:
-            info = GRIPPERS.get(rd.gripper.model)
-        if info is not None and "actuator" in info:
-            aid = ridx.actuators.get(f"gripper/{info['actuator']}")
-            if aid is not None:
-                return int(aid), float(info["open"]), float(info["close"])
+        for ee in (rd.end_effectors if rd is not None else []):
+            info = END_EFFECTORS.get(ee.model)
+            if info is None or "actuator" not in info:
+                continue
+            target = info["actuator"]
+            for aname, aid in ridx.actuators.items():
+                if aname.split("/")[-1] == target:
+                    return int(aid), float(info["open"]), float(info["close"])
         # 兜底：找名字带 gripper/finger 的关节执行器，ctrlrange 高值当张开
         for aname, aid in ridx.actuators.items():
             if "gripper" in aname or "finger" in aname:

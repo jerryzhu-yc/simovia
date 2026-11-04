@@ -27,11 +27,11 @@ robots:
   - name: arm_a
     model: zoo://franka_emika_panda
     pos: [0, 0, 0]
-    gripper: {model: onrobot_2fg7}
+    end_effectors: [{model: onrobot_2fg7}]
   - name: arm_b
     model: zoo://franka_emika_panda
     pos: [0.6, 0, 0]
-    gripper: {model: onrobot_2fg7}
+    end_effectors: [{model: onrobot_2fg7}]
 
 task:
   reward:

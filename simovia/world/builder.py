@@ -21,8 +21,9 @@ from dataclasses import dataclass, field
 import mujoco
 
 from simovia.errors import WorldError
-from simovia.grippers import (GRIPPER_PREFIX, GRIPPERS, ensure_gripper,
-                               gripper_info, mount_for)
+from simovia.grippers import (END_EFFECTOR_PREFIX, END_EFFECTORS,
+                               ensure_end_effector, end_effector_info,
+                               mount_for)
 from simovia.world.schema import (
     WorldSpec, RobotSpec, SensorSpec, TaskSpec, DistanceReward, ZoneReward,
     ContactReward, hex_to_rgba,
@@ -75,6 +76,9 @@ class NameIndex:
     #: 每台机器人自带末端（人形灵巧手/夹爪）的检测结果，供 GUI 列出/删除。
     #: [{"key","anchor","bodies","site","pos","quat","stripped"}]
     end_effectors: dict[str, list[dict]] = field(default_factory=dict)
+    #: 每台机器人的末端执行器挂载位（左右手各一个；单臂为默认挂点）。
+    #: [{"side","site","label","builtin"}]——GUI/manifest 按此列出可装位置。
+    mounts: dict[str, list[dict]] = field(default_factory=dict)
 
     def resolve_body(self, ref: str) -> int:
         """按 物体名 -> 完整前缀名 -> 任意机器人前缀 依次解析 body 引用。"""
@@ -310,10 +314,10 @@ def _ensure_actuator_names(child: mujoco.MjSpec) -> list[str]:
 
 
 def _load_gripper_xml(gmodel: str, spec: WorldSpec) -> pathlib.Path:
-    """夹爪 model 字段 -> MJCF 路径：夹爪库 key 优先，否则按世界相对路径。"""
-    if gmodel in GRIPPERS:
-        return ensure_gripper(gmodel)
-    return _resolve_path(spec.base_dir, gmodel, "夹爪模型")
+    """末端执行器 model 字段 -> MJCF 路径：库 key 优先，否则按世界相对路径。"""
+    if gmodel in END_EFFECTORS:
+        return ensure_end_effector(gmodel)
+    return _resolve_path(spec.base_dir, gmodel, "末端执行器模型")
 
 
 # ---------------------------------------------------------------- 自带末端
@@ -484,9 +488,26 @@ def _has_attachment_site(child: mujoco.MjSpec) -> bool:
                for s in child.sites)
 
 
-def _gripper_side(model: str) -> str | None:
-    """夹爪库声明的侧别（leap_hand 是左手），用于挑挂点/替换哪只手。"""
-    return (GRIPPERS.get(model) or {}).get("side")
+def _end_effector_side(model: str) -> str | None:
+    """末端执行器库声明的侧别（leap_hand 是左手），用于挑挂点/替换哪只手。"""
+    return (END_EFFECTORS.get(model) or {}).get("side")
+
+
+def _side_of_key(key: str) -> str | None:
+    """自带末端 key（left_hand/right_hand）-> 侧别。"""
+    return "left" if key.startswith("left") else \
+        "right" if key.startswith("right") else None
+
+
+def _mount_label(side: str | None) -> str:
+    return {"left": "左手", "right": "右手"}.get(side or "", "默认挂点")
+
+
+def _end_effector_prefix(index: int, total: int, side: str | None) -> str:
+    """attach 前缀：单个沿用 gripper/（既有控制器兼容）；多个按侧别区分。"""
+    if total <= 1:
+        return END_EFFECTOR_PREFIX
+    return f"gripper_{side}/" if side else f"gripper_{index + 1}/"
 
 
 def detect_wrist_sites(child: mujoco.MjSpec) -> list[dict]:
@@ -532,20 +553,58 @@ def detect_wrist_sites(child: mujoco.MjSpec) -> list[dict]:
     return sites
 
 
-def _auto_strip_keys(groups: list[dict], robot: RobotSpec) -> set[str]:
-    """装夹爪但没有挂点时，要自动替换的自带末端（按夹爪侧别优先匹配）。
+def _mount_slots(child: mujoco.MjSpec, groups: list[dict]) -> list[dict]:
+    """末端执行器挂载位：有自带手时左右手各一位；无手按腕部/挂点推导。
 
-    人形双手都在时只删要装夹爪的那一侧（leap_hand 左手 -> left_hand），
-    另一侧的手保留；无法判断侧别时取排序第一组。
+    返回 [{"side","site","label","builtin"}]。GUI/manifest 用这份清单让
+    用户选择“装左手还是右手”，不必自己猜 site 名。
+    """
+    slots: list[dict] = []
+    for g in groups:
+        side = _side_of_key(g["key"])
+        slots.append({"side": side, "site": g["site"],
+                      "label": _mount_label(side), "builtin": g["key"]})
+    if slots:
+        return slots
+    for w in detect_wrist_sites(child):
+        side = _side_of_key(w["key"])
+        slots.append({"side": side, "site": w["site"],
+                      "label": _mount_label(side), "builtin": None})
+    if slots:
+        return slots
+    for s in sorted(child.sites, key=lambda x: x.name or ""):
+        if s.name and s.name.endswith("attachment_site"):
+            slots.append({"side": None, "site": s.name,
+                          "label": "默认挂点", "builtin": None})
+    return slots
+
+
+def _auto_strip_keys(groups: list[dict], robot: RobotSpec) -> set[str]:
+    """装末端执行器但没有挂点时，要自动替换的自带末端（按侧别优先匹配）。
+
+    人形双手都在时可以左右各挂一个：左手末端删 left_hand、右手末端删
+    right_hand，另一侧没人用就保留；side 缺省时按库声明侧别推断，仍无法
+    判断则取当前剩余的第一个。
     """
     if not groups:
         return set()
-    side = _gripper_side(robot.gripper.model) if robot.gripper else None
-    if side:
-        for g in groups:
-            if g["key"] == f"{side}_hand":
-                return {g["key"]}
-    return {sorted(groups, key=lambda g: g["key"])[0]["key"]}
+    available = {g["key"] for g in groups}
+    chosen: set[str] = set()
+    for ee in robot.end_effectors:
+        if ee.site is not None:
+            continue
+        side = ee.side or _end_effector_side(ee.model)
+        key = f"{side}_hand" if side else None
+        if key in available:
+            chosen.add(key)
+            available.discard(key)
+            continue
+        if not available:
+            break
+        pick = sorted(available)[0]
+        chosen.add(pick)
+        available.discard(pick)
+    return chosen
 
 
 def _drop_end_effector_geoms(child: mujoco.MjSpec) -> mujoco.MjSpec:
@@ -747,16 +806,68 @@ def _load_robot_child(spec: WorldSpec, robot: RobotSpec) -> mujoco.MjSpec:
             f"机器人 '{robot.name}' 模型解析失败 ({model_path}): {e}") from e
 
 
+def _resolve_ee_site(child: mujoco.MjSpec, robot: RobotSpec,
+                     ee, side: str | None) -> tuple[mujoco.MjSpec, str]:
+    """为一条末端执行器解析挂点，必要时先删同侧自带末端。
+
+    返回 (可能已删手的 child, 挂点 site 名)。规则：
+    - 显式 site：真 site 直接用；写的是自带末端 key（left_hand）就先删它
+    - 未指定 site：优先替换同侧自带手（left/right 各一个），没有手则用
+      同侧已有的自动挂点；完全没有挂点就按腕部末端 body 生成
+    """
+    groups = detect_end_effectors(child)
+    by_key = {g["key"]: g for g in groups}
+
+    def _strip(key: str) -> tuple[mujoco.MjSpec, str]:
+        new, stripped = _strip_end_effectors(child, robot, keys={key})
+        g = next((x for x in stripped if x["key"] == key), None)
+        if g is None:
+            raise WorldError(
+                f"机器人 '{robot.name}' 删除自带末端 '{key}' 后没有生成挂点")
+        return new, g["site"]
+
+    if ee.site is not None:
+        if ee.site in by_key:
+            return _strip(ee.site)
+        return child, ee.site
+
+    if side and f"{side}_hand" in by_key:
+        return _strip(f"{side}_hand")
+
+    site_names = {s.name for s in child.sites}
+    preferred = f"{side}_hand_attachment_site" if side else None
+    if preferred and preferred in site_names:
+        return child, preferred
+    if "attachment_site" in site_names:
+        return child, "attachment_site"
+    if groups:                 # 侧别不明：占用剩余的第一个自带末端
+        return _strip(sorted(by_key)[0])
+
+    child = _ensure_wrist_sites(child)
+    site_names = {s.name for s in child.sites}
+    if preferred and preferred in site_names:
+        return child, preferred
+    side_sites = sorted(n for n in site_names
+                        if n.endswith("_attachment_site"))
+    if side_sites:
+        return child, side_sites[0]
+    if "attachment_site" in site_names:
+        return child, "attachment_site"
+    raise WorldError(
+        f"机器人 '{robot.name}' 没有可用的末端执行器挂点，"
+        f"可用 site: {sorted(site_names)}")
+
+
 def _assemble_robot_child(spec: WorldSpec,
                           robot: RobotSpec) -> tuple[mujoco.MjSpec, list[str]]:
-    """装配单台机器人的合并 MjSpec（机器人本体 + 可选夹爪 + 传感器）。
+    """装配单台机器人的合并 MjSpec（机器人本体 + 可选末端执行器 + 传感器）。
 
     统一入口：attach 到世界（_attach_robot）与建设备索引
     （_child_actuator_names/_child_joint_names）都调它，保证三处看到的
     是同一份装配结果，不再各自重新 load。
 
-    顺序很关键：先挂夹爪（site-attach 到腕部），再注入传感器——这样触觉
-    传感器可以引用夹爪手指 body（body 名以 "gripper/" 开头）。
+    顺序很关键：先挂末端执行器（site-attach 到腕部），再注入传感器——这样
+    触觉传感器可以引用末端执行器手指 body（body 名以 "gripper/" 开头）。
     返回 (合并后的 child spec, 全部执行器短名列表)。
     """
     child = _load_robot_child(spec, robot)
@@ -764,67 +875,76 @@ def _assemble_robot_child(spec: WorldSpec,
     # ---- 自带末端（人形灵巧手/夹爪）：按需删除并补腕部挂点 ----
     child, _ = _strip_end_effectors(child, robot)
 
-    # ---- 夹爪 site-attach 到机器人腕部挂点 ----
-    if robot.gripper is not None:
-        g = robot.gripper
-        if g.site is None and not _has_attachment_site(child):
-            # 模型没有挂点：装夹爪即替换自带末端。有自带手就删对应侧（顺手
-            # 补腕部挂点，leap_hand 是左手就只删 left_hand），没手就按腕部
-            # 末端连杆生成挂点（如 zoo 的 unitree_g1 是 29dof 无手模型）。
-            groups = detect_end_effectors(child)
-            if groups:
-                child, _ = _strip_end_effectors(
-                    child, robot, keys=_auto_strip_keys(groups, robot))
-            else:
-                child = _ensure_wrist_sites(child)
-        grip_path = _load_gripper_xml(g.model, spec)
+    # 要装外挂末端的腕部先一次性删掉对应自带手：分两侧先后删会让第二侧
+    # 只剩一个手组，挂点名退化回 attachment_site（左右两侧就混在一个挂点上）。
+    groups_now = detect_end_effectors(child)
+    key_set = {g["key"] for g in groups_now}
+    auto_keys = _auto_strip_keys(groups_now, robot)
+    auto_keys |= {ee.site for ee in robot.end_effectors
+                  if ee.site is not None and ee.site in key_set}
+    site_override: dict[str, str] = {}
+    if auto_keys:
+        child, stripped = _strip_end_effectors(child, robot, keys=auto_keys)
+        site_override = {g["key"]: g["site"] for g in stripped}
+
+    # ---- 末端执行器 site-attach 到机器人腕部挂点（可左右各一个）----
+    # 分两趟：先把全部挂点解析好（这一步可能删自带手并 to_xml/from_string
+    # 重建 child），再逐个 attach 末端执行器——否则第二趟改 child 会把已经
+    # attach 进去的末端 mesh 相对路径（modelfiledir）弄丢，编译时报
+    # "Error opening file 'assets/xxx.obj'"。
+    total = len(robot.end_effectors)
+    used_sites: set[str] = set()
+    plans: list[tuple[int, object, str | None, str]] = []
+    for i, ee in enumerate(robot.end_effectors):
+        side = ee.side or _end_effector_side(ee.model)
+        if ee.site in site_override:
+            site_name = site_override[ee.site]
+        else:
+            child, site_name = _resolve_ee_site(child, robot, ee, side)
+        if site_name in used_sites:
+            raise WorldError(
+                f"机器人 '{robot.name}' 的两条末端执行器都挂到同一挂点 "
+                f"'{site_name}'；请在 end_effectors 里用 side（left/right）"
+                f"或 site 区分左右")
+        used_sites.add(site_name)
+        plans.append((i, ee, side, site_name))
+
+    for i, ee, side, site_name in plans:
+        site_names = {s.name for s in child.sites}
+        if site_name not in site_names:
+            raise WorldError(
+                f"机器人 '{robot.name}' 模型里没有挂点 site '{site_name}'，"
+                f"可用: {sorted(site_names)}（末端执行器 {ee.model}）")
+        grip_path = _load_gripper_xml(ee.model, spec)
         try:
             grip = mujoco.MjSpec.from_file(str(grip_path))
         except Exception as e:
             raise WorldError(
-                f"机器人 '{robot.name}' 的夹爪解析失败 ({grip_path}): {e}") from e
-        site_names = {s.name for s in child.sites}
-        auto_sites = sorted(n for n in site_names
-                            if n == "attachment_site"
-                            or n.endswith("_attachment_site"))
-        if g.site is not None:
-            site_name = g.site          # 显式指定：缺失时直接报错
-        elif "attachment_site" in site_names:
-            site_name = "attachment_site"
-        elif auto_sites:                # 双手都删除后自动挑腕部挂点
-            side = _gripper_side(g.model)
-            preferred = f"{side}_hand_attachment_site" if side else None
-            site_name = (preferred if preferred in site_names
-                         else auto_sites[0])
-        elif g.model in GRIPPERS:
-            site_name = gripper_info(g.model)["site"]
-        else:                           # 自定义 MJCF 路径：menagerie 惯例挂点名
-            site_name = "attachment_site"
-        if site_name not in site_names:
-            raise WorldError(
-                f"机器人 '{robot.name}' 模型里没有挂点 site '{site_name}'，"
-                f"可用: {sorted(site_names)}（夹爪 {g.model}）")
-        if g.model in GRIPPERS:
+                f"机器人 '{robot.name}' 的末端执行器解析失败 "
+                f"({grip_path}): {e}") from e
+        if ee.model in END_EFFECTORS:
             # allow_generic：未逐臂标定的机器人（人形/自定义模型）用
             # 通用安装变换——挂点已由 builder 按机器人末端自动生成，
             # origin 在法兰面、+z 沿工具轴，与通用变换的约定一致。
-            xf = mount_for(g.model, robot.model or "", g.pos, g.quat,
+            xf = mount_for(ee.model, robot.model or "", ee.pos, ee.quat,
                            allow_generic=True)
-        elif g.pos is None or g.quat is None:
+        elif ee.pos is None or ee.quat is None:
             raise WorldError(
-                f"自定义夹爪 '{g.model}' 不在夹爪库、无标定 mount，必须在 "
-                f"gripper 下同时显式写 pos 与 quat 指定相对挂点 '{site_name}' "
-                f"的安装变换（库内夹爪则自动标定）")
+                f"自定义末端执行器 '{ee.model}' 不在末端执行器库、无标定 "
+                f"mount，必须在 end_effectors 下同时显式写 pos 与 quat 指定"
+                f"相对挂点 '{site_name}' 的安装变换（库内条目则自动标定）")
         else:
-            xf = {"pos": list(g.pos), "quat": list(g.quat)}
+            xf = {"pos": list(ee.pos), "quat": list(ee.quat)}
         try:
-            grip_frame = child.attach(grip, site=site_name,
-                                      prefix=GRIPPER_PREFIX)
+            frame = child.attach(
+                grip, site=site_name,
+                prefix=_end_effector_prefix(i, total, side))
         except Exception as e:
             raise WorldError(
-                f"机器人 '{robot.name}' 挂载夹爪 '{g.model}' 失败: {e}") from e
-        grip_frame.pos[:] = list(xf["pos"])
-        grip_frame.quat[:] = list(xf["quat"])
+                f"机器人 '{robot.name}' 挂载末端执行器 '{ee.model}' 失败: "
+                f"{e}") from e
+        frame.pos[:] = list(xf["pos"])
+        frame.quat[:] = list(xf["quat"])
 
     _add_child_sensors(robot, child)          # 在合并 spec 上注入（触觉可挂手指）
     act_names = _ensure_actuator_names(child)  # 无名执行器补名（attach 前改名才存活）
@@ -935,12 +1055,12 @@ def _build_index(model: mujoco.MjModel, spec: WorldSpec) -> NameIndex:
         try:
             orig = _load_robot_child(spec, rd)
             groups = detect_end_effectors(orig)
-            # 装夹爪但没有挂点时会自动替换对应侧自带末端，索引要一致
-            auto = (set() if rd.gripper is None or rd.gripper.site is not None
-                    or _has_attachment_site(orig)
+            # 装外挂末端但没有挂点时会自动替换对应侧自带末端，索引要一致
+            auto = (set() if not rd.end_effectors or _has_attachment_site(orig)
                     else _auto_strip_keys(groups, rd))
+            mounts = _mount_slots(orig, groups)
         except Exception:
-            groups, auto = [], set()
+            groups, auto, mounts = [], set(), []
         want = rd.strip_hands
         for g in groups:
             g["stripped"] = bool(
@@ -948,6 +1068,7 @@ def _build_index(model: mujoco.MjModel, spec: WorldSpec) -> NameIndex:
                                  and g["key"] in want)
                 or g["key"] in auto)
         index.end_effectors[rd.name] = groups
+        index.mounts[rd.name] = mounts
         for act_name in _child_actuator_names(spec, rd):
             aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR,
                                      f"{prefix}{act_name}")

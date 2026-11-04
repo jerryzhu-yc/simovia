@@ -88,18 +88,26 @@ class SensorSpec:
 
 
 @dataclass
-class GripperSpec:
-    """末端夹爪声明：经 site-attach 挂到机器人腕部挂点。
+class EndEffectorSpec:
+    """末端执行器声明：经 site-attach 挂到机器人腕部挂点。
 
-    model：夹爪库 key（如 onrobot_2fg7）或 MJCF 路径（相对世界文件）。
-    site：挂到机器人的哪个 body site，缺省由夹爪库给定（attachment_site）。
+    model：末端执行器库 key（如 onrobot_2fg7）或 MJCF 路径（相对世界文件）。
+    side：装到哪一侧（left/right）。人形左右手各有挂载位时可以各写一条；
+        缺省按库声明的侧别推断，再缺省自动挑可用挂点。
+    site：显式挂点 site 名；也可以写自带末端 key（如 left_hand），表示
+        先删除该侧自带末端、再挂到生成的腕部挂点。
     pos/quat：一般不写——builder 用 grippers.py 里按机器人模型标定的 mount
     变换；显式写则覆盖 mount 表（非标准臂/手动微调）。
     """
     model: str
+    side: str | None = None
     site: str | None = None
     pos: tuple[float, float, float] | None = None
     quat: tuple[float, float, float, float] | None = None
+
+
+# 兼容旧导入名（旧代码/第三方可能直接 import GripperSpec）
+GripperSpec = EndEffectorSpec
 
 
 @dataclass
@@ -115,11 +123,18 @@ class RobotSpec:
     controller: str | None = None   # 控制器脚本路径（相对世界文件）
     args: dict = field(default_factory=dict)
     sensors: list[SensorSpec] = field(default_factory=list)
-    gripper: GripperSpec | None = None
+    #: 外挂末端执行器（可多条：人形左右手各一个）。旧字段名 gripper
+    #: 仍被解析为单条列表，保证既有世界文件继续可用。
+    end_effectors: list[EndEffectorSpec] = field(default_factory=list)
     #: 删除机器人自带末端（人形灵巧手/夹爪）：true=全部，
     #: 或列出自带末端 key（如 ["left_hand"]）。删除后 builder 在腕部
-    #: 自动生成挂点 site，可再挂夹爪库里的末端。
+    #: 自动生成挂点 site，可再挂末端执行器库里的末端。
     strip_hands: bool | list[str] = False
+
+    @property
+    def gripper(self) -> EndEffectorSpec | None:
+        """兼容旧字段名：返回第一个外挂末端执行器（没有则 None）。"""
+        return self.end_effectors[0] if self.end_effectors else None
 
 
 @dataclass
@@ -387,11 +402,11 @@ def _parse_robots(d, path: str, seen: dict) -> list[RobotSpec]:
         if not isinstance(args, dict):
             raise _err(f"{p}.args", f"需要字典，实际是: {args!r}")
         sensors = _parse_sensors(rd, p)
-        gripper = _parse_gripper(rd.get("gripper"), f"{p}.gripper")
+        end_effectors = _parse_end_effectors(rd, p)
         strip_hands = _parse_strip_hands(rd.get("strip_hands"), f"{p}.strip_hands")
         robots.append(RobotSpec(name=name, model=model, spec=inline, pos=pos,
                                 quat=quat, controller=controller, args=args,
-                                sensors=sensors, gripper=gripper,
+                                sensors=sensors, end_effectors=end_effectors,
                                 strip_hands=strip_hands))
     return robots
 
@@ -410,12 +425,31 @@ def _parse_strip_hands(v, path: str) -> "bool | list[str]":
     raise _err(path, f"需要 true/false 或字符串列表，实际是: {v!r}")
 
 
-def _parse_gripper(gd, path: str) -> "GripperSpec | None":
-    if gd is None:
-        return None
+def _parse_end_effectors(rd: dict, path: str) -> list["EndEffectorSpec"]:
+    """解析末端执行器列表；旧字段 gripper（单条字典）自动兼容。"""
+    v = rd.get("end_effectors")
+    p = f"{path}.end_effectors"
+    if v is None and "gripper" in rd:
+        v = rd.get("gripper")
+        p = f"{path}.gripper"
+    if v is None:
+        return []
+    if isinstance(v, dict):            # 单条也接受，方便手写
+        v = [v]
+    if not isinstance(v, list):
+        raise _err(p, f"需要字典或字典列表（model/side/site/pos/quat），实际是: {v!r}")
+    return [_parse_end_effector(gd, f"{p}[{i}]") for i, gd in enumerate(v)]
+
+
+def _parse_end_effector(gd, path: str) -> "EndEffectorSpec":
     if not isinstance(gd, dict):
-        raise _err(path, f"需要字典（model/site/pos/quat），实际是: {gd!r}")
+        raise _err(path, f"需要字典（model/side/site/pos/quat），实际是: {gd!r}")
     model = _str(_req(gd, "model", path), f"{path}.model")
+    side = gd.get("side")
+    if side is not None:
+        side = _str(side, f"{path}.side").lower()
+        if side not in ("left", "right"):
+            raise _err(f"{path}.side", f"必须是 left/right，实际是: {side!r}")
     site = gd.get("site")
     if site is not None:
         site = _str(site, f"{path}.site")
@@ -425,7 +459,8 @@ def _parse_gripper(gd, path: str) -> "GripperSpec | None":
         gpos = _vec(gpos, 3, f"{path}.pos")
     if gquat is not None:
         gquat = _vec(gquat, 4, f"{path}.quat")
-    return GripperSpec(model=model, site=site, pos=gpos, quat=gquat)
+    return EndEffectorSpec(model=model, side=side, site=site,
+                           pos=gpos, quat=gquat)
 
 
 def _parse_zone(d, path: str) -> ZoneSpec:

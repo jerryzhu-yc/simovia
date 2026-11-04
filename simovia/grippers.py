@@ -1,4 +1,4 @@
-"""夹爪库：末端执行器（gripper/end-effector）注册表与装配解析。
+"""末端执行器库：注册表与装配解析（兼容旧的 gripper 命名）。
 
 与 zoo.py（机器人库）同构，但夹爪不是独立世界实体——它通过 MjSpec 的
 site-attach 挂到某台机器人腕部的挂点 site（如 menagerie 机械臂标配的
@@ -42,9 +42,11 @@ from simovia.errors import WorldError
 ROOT = pathlib.Path(__file__).resolve().parents[1]   # 仓库根（含 models/）
 GRIPPER_DIR = ROOT / "models" / "grippers"
 
-# 内层 attach 的固定前缀：夹爪 body/joint/actuator 去掉机器人前缀后都以
-# "gripper/" 开头，避免与机器人本体同名设备冲突
-GRIPPER_PREFIX = "gripper/"
+# 内层 attach 的固定前缀：末端执行器 body/joint/actuator 去掉机器人前缀后
+# 都以 "gripper/" 开头，避免与机器人本体同名设备冲突。这个名字是控制器
+# 可见的运行期契约，保持不变；左右各挂一个时 builder 用 gripper_left/ 等区分。
+END_EFFECTOR_PREFIX = "gripper/"
+GRIPPER_PREFIX = END_EFFECTOR_PREFIX          # 兼容旧导入名
 
 #: 2FG7 安装朝向（site 局部系，wxyz）：Rot_x(-90°)，把沿 body -y 伸出的
 #: 手指转到 site +z（法兰法向），四臂挂点轴约定一致，共用此朝向
@@ -115,7 +117,7 @@ _LEAP_POSES = {
               0.6, 0.0, 1.0, 1.0],
 }
 
-GRIPPERS: dict[str, dict] = {
+END_EFFECTORS: dict[str, dict] = {
     "onrobot_2fg7": {
         "title": "OnRobot 2FG7 平行夹爪",
         "cat": "平行夹爪",
@@ -174,21 +176,28 @@ GRIPPERS: dict[str, dict] = {
 }
 
 
-def ensure_gripper(key: str) -> pathlib.Path:
-    """返回夹爪入口 MJCF 的绝对路径（夹爪资产随仓库，无需下载）。"""
-    if key not in GRIPPERS:
+def ensure_end_effector(key: str) -> pathlib.Path:
+    """返回末端执行器入口 MJCF 的绝对路径（资产随仓库，无需下载）。"""
+    if key not in END_EFFECTORS:
         raise WorldError(
-            f"夹爪库没有 '{key}'，可用: {sorted(GRIPPERS)}")
-    path = GRIPPER_DIR / GRIPPERS[key]["xml"]
+            f"末端执行器库没有 '{key}'，可用: {sorted(END_EFFECTORS)}")
+    path = GRIPPER_DIR / END_EFFECTORS[key]["xml"]
     if not path.exists():
-        raise WorldError(f"夹爪 '{key}' 的模型文件缺失: {path}")
+        raise WorldError(f"末端执行器 '{key}' 的模型文件缺失: {path}")
     return path
 
 
-def gripper_info(key: str) -> dict:
-    if key not in GRIPPERS:
-        raise WorldError(f"夹爪库没有 '{key}'，可用: {sorted(GRIPPERS)}")
-    return GRIPPERS[key]
+def end_effector_info(key: str) -> dict:
+    if key not in END_EFFECTORS:
+        raise WorldError(
+            f"末端执行器库没有 '{key}'，可用: {sorted(END_EFFECTORS)}")
+    return END_EFFECTORS[key]
+
+
+# 兼容旧导入名
+GRIPPERS = END_EFFECTORS
+ensure_gripper = ensure_end_effector
+gripper_info = end_effector_info
 
 
 def mount_for(key: str, robot_model: str,
@@ -217,6 +226,6 @@ def mount_for(key: str, robot_model: str,
     if allow_generic and key in _MOUNT_GENERIC:
         return dict(_MOUNT_GENERIC[key])
     raise WorldError(
-        f"夹爪 '{key}' 没有为机器人模型 '{base}' 标定安装位姿，"
-        f"已标定: {sorted(info['mounts'])}。可在世界 YAML 的 gripper 下"
+        f"末端执行器 '{key}' 没有为机器人模型 '{base}' 标定安装位姿，"
+        f"已标定: {sorted(info['mounts'])}。可在世界 YAML 的 end_effectors 下"
         f"显式写 pos/quat 手动指定，或在 grippers.py mount 表补一条。")

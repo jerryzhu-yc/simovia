@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
         self.agent.stopRequested.connect(self._on_agent_stop)
         self.agent.configureRequested.connect(self._on_agent_config)
         self.gear = GearPanel()
-        self.gear.apply_gripper.connect(self._on_gear_gripper)
+        self.gear.apply_end_effector.connect(self._on_gear_end_effector)
         self.gear.add_sensor.connect(self._on_gear_add_sensor)
         self.gear.remove_sensor.connect(self._on_gear_remove_sensor)
         self.gear.set_hand.connect(self._on_gear_set_hand)
@@ -1625,10 +1625,21 @@ class MainWindow(QMainWindow):
 
     # ============================================================ 装备面板
 
-    def _on_gear_gripper(self, robot_name: str, gripper: dict | None):
-        """应用/移除夹爪：改 robots[i].gripper 后全文重载。"""
-        if self._spec is None or self._edit_blocked("装配夹爪"):
+    def _on_gear_end_effector(self, robot_name: str, side: str | None,
+                              spec: dict | None):
+        """应用/移除某一侧的末端执行器：改 robots[i].end_effectors 后重载。
+
+        spec 为 None 表示移除该侧；spec 带 model 表示装库内末端执行器；
+        spec 带 builtin 表示恢复自带灵巧手。
+        """
+        if self._spec is None or self._edit_blocked("装配末端执行器"):
             return
+        from simovia.grippers import END_EFFECTORS
+
+        def _side_of(e: dict) -> str | None:
+            return e.get("side") or (END_EFFECTORS.get(e.get("model")) or {}).get("side")
+
+        side_label = {"left": "左手", "right": "右手"}.get(side or "", "")
 
         def got_yaml(err, text):
             if err:
@@ -1640,12 +1651,52 @@ class MainWindow(QMainWindow):
                 if rd is None:
                     self._log(f"世界 YAML 里没找到机器人 '{robot_name}'", "warn")
                     return
-                if gripper is None:
-                    rd.pop("gripper", None)
-                    msg = f"{robot_name} 已移除夹爪"
+                # 归一化：旧 gripper 字段迁移成 end_effectors 列表
+                raw = rd.get("end_effectors")
+                if raw is None and "gripper" in rd:
+                    raw = rd.pop("gripper")
+                if isinstance(raw, dict):
+                    raw = [raw]
+                ees = list(raw or [])
+                if spec is not None and "builtin" in spec:
+                    # 恢复自带灵巧手：从 strip_hands 里去掉该侧 key
+                    keys = [e["key"] for e in
+                            next((r.get("builtin_end_effectors", [])
+                                  for r in (self._manifest or {}).get("robots", [])
+                                  if r.get("name") == robot_name), [])]
+                    cur = rd.get("strip_hands", False)
+                    base = set(keys) if isinstance(cur, bool) and cur else (
+                        set() if isinstance(cur, bool) else set(cur))
+                    base.discard(spec["builtin"])
+                    if not base:
+                        rd.pop("strip_hands", None)
+                    elif keys and base >= set(keys):
+                        rd["strip_hands"] = True
+                    else:
+                        rd["strip_hands"] = sorted(base)
+                    msg = f"{robot_name} 已恢复自带末端 {spec['builtin']}"
+                elif spec is None:
+                    kept = [e for e in ees if _side_of(e) != side]
+                    if len(kept) == len(ees) and side is None and len(ees) == 1:
+                        kept = []      # 默认挂点且只有一个外挂：直接卸掉
+                    ees = kept
+                    msg = f"{robot_name} 已移除{side_label}末端执行器"
                 else:
-                    rd["gripper"] = gripper
-                    msg = f"{robot_name} 已装配夹爪 {gripper['model']}"
+                    entry = dict(spec)
+                    if side:
+                        entry["side"] = side
+                    idx = next((i for i, e in enumerate(ees)
+                                if _side_of(e) == side), None)
+                    if idx is None:
+                        ees.append(entry)
+                    else:
+                        ees[idx] = entry
+                    model = entry.get("model", "?")
+                    msg = (f"{robot_name} 已装配{side_label}末端执行器 {model}")
+                if ees:
+                    rd["end_effectors"] = ees
+                else:
+                    rd.pop("end_effectors", None)
                 new_text = yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
             except Exception as e:
                 self._log(f"YAML 修改失败: {e}", "error"); return
@@ -1719,7 +1770,7 @@ class MainWindow(QMainWindow):
         keys = []
         for r in (self._manifest or {}).get("robots", []):
             if r.get("name") == robot_name:
-                keys = [e["key"] for e in r.get("end_effectors", [])]
+                keys = [e["key"] for e in r.get("builtin_end_effectors", [])]
                 break
         if not keys:
             self._log(f"{robot_name} 没有检测到自带末端", "warn")
@@ -1735,11 +1786,11 @@ class MainWindow(QMainWindow):
                 if rd is None:
                     self._log(f"世界 YAML 里没找到机器人 '{robot_name}'", "warn")
                     return
-                if not stripped and rd.get("gripper") is not None:
-                    # 装了夹爪的腕部挂点就是靠删自带手生成的：先卸夹爪再恢复
+                if not stripped and rd.get("end_effectors"):
+                    # 装了末端执行器的腕部挂点就是靠删自带手生成的：先卸末端再恢复
                     self._log(
-                        f"{robot_name} 已装配夹爪，恢复自带末端的挂点会消失；"
-                        f"请先移除夹爪", "warn")
+                        f"{robot_name} 已装配末端执行器，恢复自带末端的挂点会消失；"
+                        f"请先移除末端执行器", "warn")
                     return
                 cur = rd.get("strip_hands", False)
                 if isinstance(cur, bool):

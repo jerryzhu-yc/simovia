@@ -317,7 +317,7 @@ def test_no_attachment_site_raises(tmp_path):
         "<position name='a2' joint='j2' kp='50'/></actuator>"
         "</mujoco>", encoding="utf-8")
     spec = parse_world(_world_dict(str(xml)))
-    with pytest.raises(WorldError, match="没有挂点 site"):
+    with pytest.raises(WorldError, match="没有可用的末端执行器挂点"):
         build_world(spec)
 
 
@@ -767,5 +767,75 @@ def test_manifest_reports_multi_actuator_gripper():
         assert cat["onrobot_2fg7"]["open"] == GRIPPERS["onrobot_2fg7"]["open"]
         assert cat["onrobot_2fg7"]["close"] == GRIPPERS["onrobot_2fg7"]["close"]
         assert "actuators" not in cat["onrobot_2fg7"]
+    finally:
+        s.close()
+
+
+def test_g1_left_and_right_end_effectors():
+    """人形双手各装一个：左手 LEAP、右手 2FG7，各自只替换同侧自带手。"""
+    import pathlib
+
+    g1 = pathlib.Path(_menagerie_xml("unitree_g1"))
+    model_path = g1.parent / "g1_with_hands.xml"
+    if not model_path.is_file():
+        pytest.skip("G1 with hands 资产缺失")
+
+    wd = {"name": "g1_two_ee", "timestep": 0.002, "ctrl_period": 8,
+          "integrator": "implicitfast", "impratio": 100,
+          "scene": {"floor": {"size": [2.0, 2.0]}},
+          "robots": [{"name": "g1", "model": str(model_path),
+                      "pos": [0, 0, 0],
+                      "end_effectors": [
+                          {"model": "leap_hand", "side": "left"},
+                          {"model": "onrobot_2fg7", "side": "right"}]}]}
+    model, index = build_world(parse_world(wd))
+
+    ee = {g["key"]: g for g in index.end_effectors["g1"]}
+    assert ee["left_hand"]["stripped"] is True
+    assert ee["right_hand"]["stripped"] is True
+    # 两只末端用左右前缀隔离，执行器可分别驱动
+    acts = index.robots["g1"].actuators
+    assert GRIPPER_PREFIX + "if_mcp_act" not in acts
+    assert "gripper_left/if_mcp_act" in acts
+    assert "gripper_right/gripper_act" in acts
+    # 挂载位仍是左右两个
+    assert [m["side"] for m in index.mounts["g1"]] == ["left", "right"]
+    assert mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_SITE,
+        "g1/right_hand_attachment_site") >= 0
+
+
+def test_manifest_reports_mounts_and_unified_end_effectors():
+    """manifest 输出左右挂载位 + 统一末端列表（library/builtin 同列）。"""
+    import pathlib
+    import yaml as _yaml
+    from simovia.mcp_server import SimoviaSession
+
+    g1 = pathlib.Path(_menagerie_xml("unitree_g1"))
+    model_path = g1.parent / "g1_with_hands.xml"
+    if not model_path.is_file():
+        pytest.skip("G1 with hands 资产缺失")
+    wd = {"name": "g1_manifest", "timestep": 0.002, "ctrl_period": 8,
+          "integrator": "implicitfast", "impratio": 100,
+          "scene": {"floor": {"size": [2.0, 2.0]}},
+          "robots": [{"name": "g1", "model": str(model_path),
+                      "pos": [0, 0, 0],
+                      "end_effectors": [
+                          {"model": "onrobot_2fg7", "side": "right"}]}]}
+    s = SimoviaSession()
+    try:
+        s.call_tool("load_world", {"yaml_text": _yaml.safe_dump(wd),
+                                   "base_dir": "/tmp"})
+        m = s.call_tool("get_robot_manifest", {})
+        r = m["robots"][0]
+        mounts = {x["side"]: x for x in r["mounts"]}
+        assert set(mounts) == {"left", "right"}
+        assert mounts["right"]["end_effector"]["key"] == "onrobot_2fg7"
+        assert mounts["left"]["end_effector"] is None
+        lib = [e for e in r["end_effectors"] if e["source"] == "library"]
+        builtin = [e for e in r["end_effectors"] if e["source"] == "builtin"]
+        assert [e["key"] for e in lib] == ["onrobot_2fg7"]
+        assert {e["key"] for e in builtin} == {"left_hand", "right_hand"}
+        assert "end_effector_catalog" in m
     finally:
         s.close()

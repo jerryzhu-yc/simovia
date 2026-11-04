@@ -193,6 +193,47 @@ class TestGripperParsing:
         assert "quat" in str(e.value)
 
 
+class TestEndEffectorsParsing:
+    """末端执行器列表解析：左右手各一个 + 旧 gripper 字段兼容。"""
+
+    def _robot(self, **extra):
+        d = _base()
+        d["robots"] = [{"name": "g1", "model": "x.xml", **extra}]
+        return parse_world(d).robots[0]
+
+    def test_single_dict_accepted(self):
+        rd = self._robot(end_effectors={"model": "onrobot_2fg7"})
+        assert len(rd.end_effectors) == 1
+        assert rd.end_effectors[0].model == "onrobot_2fg7"
+        assert rd.gripper.model == "onrobot_2fg7"   # 旧属性取第一个
+
+    def test_left_and_right(self):
+        rd = self._robot(end_effectors=[
+            {"model": "leap_hand", "side": "left"},
+            {"model": "onrobot_2fg7", "side": "right"}])
+        assert [e.side for e in rd.end_effectors] == ["left", "right"]
+        assert rd.gripper.model == "leap_hand"
+
+    def test_side_case_insensitive(self):
+        rd = self._robot(end_effectors=[{"model": "m", "side": "RIGHT"}])
+        assert rd.end_effectors[0].side == "right"
+
+    def test_bad_side(self):
+        with pytest.raises(WorldError) as e:
+            self._robot(end_effectors=[{"model": "m", "side": "middle"}])
+        assert "side" in str(e.value)
+
+    def test_must_be_dict_or_list(self):
+        with pytest.raises(WorldError) as e:
+            self._robot(end_effectors="onrobot_2fg7")
+        assert "end_effectors" in str(e.value)
+
+    def test_old_gripper_migrated(self):
+        rd = self._robot(gripper={"model": "onrobot_2fg7"})
+        assert len(rd.end_effectors) == 1
+        assert rd.end_effectors[0].model == "onrobot_2fg7"
+
+
 class TestCameraAndHandsParsing:
     """相机深度参数与自带末端删除开关（schema 层，不含物理）。"""
 

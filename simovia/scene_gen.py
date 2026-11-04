@@ -48,7 +48,7 @@ def _robot(name: str, model_file: str, base: pathlib.Path,
     if controller:
         r["controller"] = _rel(CONTROLLERS / controller, base)
     if gripper:
-        r["gripper"] = {"model": gripper}
+        r["end_effectors"] = [{"model": gripper}]
     return r
 
 
@@ -284,7 +284,7 @@ def _tpl_pallet(p, base):
         "name": "arm",
         "model": "zoo://universal_robots_ur5e",
         "pos": [0, 0, top_z],
-        "gripper": {"model": "onrobot_2fg7"},
+        "end_effectors": [{"model": "onrobot_2fg7"}],
     }
     w = _base_world(f"pallet_{n}", objects, [arm], task)
     w["integrator"] = "implicitfast"

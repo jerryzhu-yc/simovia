@@ -34,7 +34,7 @@ import yaml
 
 from simovia import supervisor
 from simovia.errors import WorldError
-from simovia.grippers import GRIPPERS as _GRIPPERS
+from simovia.grippers import END_EFFECTORS as _END_EFFECTORS
 from simovia.kernel.sim import Simulation
 from simovia.render import depth_to_rgb, encode_png, render_offscreen
 from simovia.teleop import ArmTeleop
@@ -904,23 +904,54 @@ class SimoviaSession:
                     sites.append(full[len(prefix):])
             sites.sort()
 
-            gripper = None
-            if rd.gripper is not None:
+            # ---- 末端执行器：外挂（库内/自定义）+ 自带（灵巧手）统一列表 ----
+            # source=library：YAML end_effectors 里显式装的；source=builtin：
+            # 机器人模型自带的手（未装外挂时也在列，stripped 标记是否被删）。
+            ees: list[dict] = []
+            for idx, ee in enumerate(rd.end_effectors):
+                side = ee.side or (_END_EFFECTORS.get(ee.model) or {}).get("side")
                 info = None
-                if rd.gripper.model in _GRIPPERS:
-                    gi = _GRIPPERS[rd.gripper.model]
-                    info = {"key": rd.gripper.model, "title": gi["title"]}
+                if ee.model in _END_EFFECTORS:
+                    gi = _END_EFFECTORS[ee.model]
+                    info = {"key": ee.model, "title": gi["title"]}
+                    if len(rd.end_effectors) == 1:
+                        prefix = "gripper/"
+                    elif side:
+                        prefix = f"gripper_{side}/"
+                    else:
+                        prefix = f"gripper_{idx + 1}/"
                     if "actuator" in gi:       # 单执行器（平行夹爪）
                         info.update({
-                            "actuator": f"gripper/{gi['actuator']}",
+                            "actuator": f"{prefix}{gi['actuator']}",
                             "open": gi["open"], "close": gi["close"]})
                     else:                       # 多执行器（灵巧手）
                         info.update({
-                            "actuators": [f"gripper/{a}"
+                            "actuators": [f"{prefix}{a}"
                                           for a in gi["actuators"]],
                             "poses": gi["poses"]})
-                gripper = {"model": rd.gripper.model,
-                           "site": rd.gripper.site, "info": info}
+                ees.append({"source": "library", "key": ee.model,
+                            "model": ee.model, "side": side,
+                            "site": ee.site, "info": info})
+            for g in self.sim.index.end_effectors.get(rd.name, []):
+                side = ("left" if g["key"].startswith("left")
+                        else "right" if g["key"].startswith("right") else None)
+                ees.append({"source": "builtin", "key": g["key"], "side": side,
+                            "site": g["site"], "anchor": g["anchor"],
+                            "bodies": g["bodies"], "stripped": g["stripped"]})
+            # 挂载位：左右手各一个（单臂为默认挂点），附当前已装的外挂条目
+            mounts = []
+            for slot in self.sim.index.mounts.get(rd.name, []):
+                cur = next(
+                    (e for e in ees if e["source"] == "library"
+                     and (e["side"] == slot["side"]
+                          or (slot["side"] is None
+                              and len(rd.end_effectors) == 1))), None)
+                mounts.append({**slot, "end_effector": cur})
+            # 旧字段兼容：gripper = 第一个外挂末端执行器
+            first = next((e for e in ees if e["source"] == "library"), None)
+            gripper = (None if first is None else
+                       {"model": first["model"], "site": first["site"],
+                        "info": first["info"]})
 
             sensors = []
             by_name = {s.name: s for s in rd.sensors}
@@ -957,10 +988,22 @@ class SimoviaSession:
                 "bodies": {f"{rd.name}/{short}": short for short in ridx.bodies},
                 "sensors": sensors,
                 "cameras": list(ridx.cameras),
-                "gripper": gripper,
-                "end_effectors": self.sim.index.end_effectors.get(rd.name, []),
+                "gripper": gripper,          # 旧字段兼容（第一个外挂条目）
+                "end_effectors": ees,        # 统一列表：library + builtin
+                "builtin_end_effectors": self.sim.index.end_effectors.get(
+                    rd.name, []),
+                "mounts": mounts,            # 左右手挂载位
                 "strip_hands": rd.strip_hands,
             })
+        catalog = [
+            {"key": k, "title": v["title"], "cat": v["cat"],
+             # 单执行器条目照旧给 open/close；多执行器给 actuators/poses
+             **({"open": v["open"], "close": v["close"]}
+                if "actuator" in v else
+                {"actuators": list(v["actuators"]),
+                 "poses": v["poses"]}),
+             "supported_robots": sorted(v["mounts"])}
+            for k, v in _END_EFFECTORS.items()]
         return {
             "world": self.spec.name,
             "timestep": self.spec.timestep,
@@ -968,15 +1011,8 @@ class SimoviaSession:
             "robots": robots,
             "objects": [{"name": o.name, "type": o.type, "pos": list(o.pos)}
                         for o in self.spec.scene.objects],
-            "gripper_catalog": [
-                {"key": k, "title": v["title"], "cat": v["cat"],
-                 # 单执行器条目照旧给 open/close；多执行器给 actuators/poses
-                 **({"open": v["open"], "close": v["close"]}
-                    if "actuator" in v else
-                    {"actuators": list(v["actuators"]),
-                     "poses": v["poses"]}),
-                 "supported_robots": sorted(v["mounts"])}
-                for k, v in _GRIPPERS.items()],
+            "end_effector_catalog": catalog,
+            "gripper_catalog": catalog,      # 旧字段兼容
         }
 
     def _tool_save_state(self, args: dict):

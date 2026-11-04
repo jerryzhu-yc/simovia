@@ -33,7 +33,7 @@ robots:
   - name: arm
     model: zoo://franka_emika_panda
     pos: [0, 0, 0.68]
-    gripper: {model: onrobot_2fg7}
+    end_effectors: [{model: onrobot_2fg7}]
     controller: ../controllers/pick_place.py
 
 task:

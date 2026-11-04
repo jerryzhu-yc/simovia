@@ -754,6 +754,13 @@ def test_code_panel_save_signal(qapp, tmp_path):
 # ================================================================ M6 装备面板
 
 def _gear_manifest():
+    builtin = [
+        {"key": "left_hand", "anchor": "left_wrist", "site": "left_hand_attachment_site",
+         "bodies": ["left_hand"], "stripped": False},
+        {"key": "right_hand", "anchor": "right_wrist",
+         "site": "right_hand_attachment_site",
+         "bodies": ["right_hand"], "stripped": False},
+    ]
     return {
         "robots": [{
             "name": "arm",
@@ -762,50 +769,74 @@ def _gear_manifest():
             "actuators": [{"name": "a1", "ctrlrange": [-1.0, 1.0]}],
             "joints": [{"name": "j1", "type": "hinge", "limited": True,
                         "range": [-3.14, 3.14]}],
-            "sites": ["attachment_site", "gripper/left_pad_site"],
+            "sites": ["left_hand_attachment_site", "right_hand_attachment_site",
+                      "attachment_site", "gripper/left_pad_site"],
             "bodies": {"arm/base": "base", "arm/link1": "link1"},
             "sensors": [{"name": "wrist_imu", "type": "imu", "dim": 6}],
             "cameras": [],
             "gripper": None,
+            "end_effectors": [{"source": "builtin", **e} for e in builtin],
+            "builtin_end_effectors": builtin,
+            "mounts": [
+                {"side": "left", "site": "left_hand_attachment_site",
+                 "label": "左手", "builtin": "left_hand", "end_effector": None},
+                {"side": "right", "site": "right_hand_attachment_site",
+                 "label": "右手", "builtin": "right_hand", "end_effector": None},
+            ],
         }],
-        "gripper_catalog": [
+        "end_effector_catalog": [
             {"key": "onrobot_2fg7", "title": "OnRobot 2FG7 平行夹爪",
              "cat": "parallel", "open": 0.038, "close": 0.0,
              "supported_robots": ["ur5e.xml"]}],
     }
 
 
-def test_gear_panel_apply_gripper(qapp):
+def _combo_find(combo, **want) -> int:
+    """按 data 字典里指定字段找下拉项下标（PySide6 的 findData 对 dict
+    比较不可靠，这里显式遍历）。"""
+    return next(i for i in range(combo.count())
+                if isinstance(combo.itemData(i), dict)
+                and all(combo.itemData(i).get(k) == v
+                        for k, v in want.items()))
+
+
+def test_gear_panel_apply_end_effector(qapp):
     from simovia.gui.panels import GearPanel
     p = GearPanel()
     got = []
-    p.apply_gripper.connect(lambda r, g: got.append((r, g)))
+    p.apply_end_effector.connect(lambda r, side, g: got.append((r, side, g)))
     try:
         p.set_manifest(_gear_manifest(), "/tmp")
         assert p._robot_combo.currentData()["name"] == "arm"
-        # 选中目录里的 2FG7 并应用
-        idx = p._gripper_combo.findData("onrobot_2fg7")
-        assert idx >= 0
-        p._gripper_combo.setCurrentIndex(idx)
+        # 安装位置默认第一项（左手），切到右手后装 2FG7
+        idx = _combo_find(p._mount_combo, side="right")
+        p._mount_combo.setCurrentIndex(idx)
+        gi = _combo_find(p._gripper_combo, model="onrobot_2fg7")
+        p._gripper_combo.setCurrentIndex(gi)
         p._on_apply_gripper()
-        assert got == [("arm", {"model": "onrobot_2fg7"})]
-        # 移除夹爪
+        assert got == [("arm", "right", {"model": "onrobot_2fg7"})]
+        # 移除右手末端
         p._on_remove_gripper()
-        assert got[-1] == ("arm", None)
+        assert got[-1] == ("arm", "right", None)
+        # 下拉里能选“自带灵巧手”，发出恢复指令
+        bi = _combo_find(p._gripper_combo, builtin="right_hand")
+        p._gripper_combo.setCurrentIndex(bi)
+        p._on_apply_gripper()
+        assert got[-1] == ("arm", "right", {"builtin": "right_hand"})
     finally:
         p.deleteLater()
 
 
-def test_gear_panel_gripper_with_pose(qapp):
-    """填了 pos/rot 时发出的 gripper dict 带 pos/quat。"""
+def test_gear_panel_end_effector_with_pose(qapp):
+    """填了 pos/rot 时发出的末端执行器 dict 带 pos/quat。"""
     from simovia.gui.panels import GearPanel
     p = GearPanel()
     got = []
-    p.apply_gripper.connect(lambda r, g: got.append(g))
+    p.apply_end_effector.connect(lambda r, side, g: got.append(g))
     try:
         p.set_manifest(_gear_manifest(), "/tmp")
         p._gripper_combo.setCurrentIndex(
-            p._gripper_combo.findData("onrobot_2fg7"))
+            _combo_find(p._gripper_combo, model="onrobot_2fg7"))
         p._site_combo.setCurrentIndex(
             p._site_combo.findData("gripper/left_pad_site"))
         p._pos_spins[2].setValue(0.01)

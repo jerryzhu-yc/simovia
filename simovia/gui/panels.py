@@ -869,16 +869,26 @@ class AgentConfigDialog(QDialog):
                            model=self.ed_model.text().strip())
 
 
+def _combo_index_of(combo: QComboBox, key: str, value) -> int:
+    """按 itemData 字典里某个字段找下拉下标（找不到返回 0）。"""
+    for i in range(combo.count()):
+        d = combo.itemData(i)
+        if isinstance(d, dict) and d.get(key) == value:
+            return i
+    return 0
+
+
 class GearPanel(QWidget):
-    """装备面板：机器人下拉 + 夹爪配置 + 自带末端 + 传感器 + 相机参数。
+    """装备面板：机器人下拉 + 末端执行器 + 自带末端 + 传感器 + 相机参数。
 
     信号：
-      apply_gripper(robot, dict|None)   装/卸夹爪
+      apply_end_effector(robot, side, dict|None) 装/卸某一侧末端执行器
       add_sensor/remove_sensor          传感器增删
       set_hand(robot, key, stripped)    删除/恢复自带灵巧手
       update_sensor(robot, name, patch) 改相机参数（fovy/depth/near/far）
     """
-    apply_gripper = Signal(str, object)   # robot_name, gripper_dict | None
+    # robot_name, side（left/right/None）, 末端执行器 dict | None
+    apply_end_effector = Signal(str, object, object)
     add_sensor = Signal(str, object)      # robot_name, sensor_dict
     remove_sensor = Signal(str, str)      # robot_name, sensor_name
     set_hand = Signal(str, str, bool)     # robot_name, key, stripped
@@ -900,17 +910,26 @@ class GearPanel(QWidget):
         self._robot_row.addStretch()
         lay.addLayout(self._robot_row)
 
-        # 夹爪组
-        self._gripper_box = QGroupBox("末端夹爪")
+        # 末端执行器组（左右手各有挂载位）
+        self._gripper_box = QGroupBox("末端执行器")
         gripper_lay = QFormLayout(self._gripper_box)
+        # 安装位置：左手/右手/默认挂点（由 manifest 的 mounts 给出）
+        self._mount_combo = QComboBox()
+        self._mount_combo.currentIndexChanged.connect(self._on_mount_changed)
+        gripper_lay.addRow("安装位置：", self._mount_combo)
+        # 末端执行器：无 / 自带灵巧手 / 库内条目
         self._gripper_combo = QComboBox()
-        self._gripper_combo.addItem("（无夹爪）", None)
         self._gripper_combo.currentIndexChanged.connect(self._on_gripper_changed)
-        gripper_lay.addRow("夹爪：", self._gripper_combo)
+        gripper_lay.addRow("末端执行器：", self._gripper_combo)
+
+        self._ee_status = QLabel("")
+        self._ee_status.setWordWrap(True)
+        self._ee_status.setStyleSheet(f"color:{theme.C_TEXT_DIM}; font-size:11px;")
+        gripper_lay.addRow("", self._ee_status)
 
         self._site_combo = QComboBox()
         self._site_combo.setPlaceholderText("attachment_site（自动）")
-        gripper_lay.addRow("挂点：", self._site_combo)
+        gripper_lay.addRow("挂点（高级）：", self._site_combo)
 
         self._pos_spins = [QDoubleSpinBox() for _ in range(3)]
         pos_row = QHBoxLayout()
@@ -930,9 +949,9 @@ class GearPanel(QWidget):
         rot_row.addWidget(QLabel("（roll/pitch/yaw deg）"))
         gripper_lay.addRow("rot:", rot_row)
 
-        self._bt_apply_gripper = QPushButton("应用夹爪")
+        self._bt_apply_gripper = QPushButton("应用末端执行器")
         self._bt_apply_gripper.clicked.connect(self._on_apply_gripper)
-        self._bt_remove_gripper = QPushButton("移除夹爪")
+        self._bt_remove_gripper = QPushButton("移除")
         self._bt_remove_gripper.clicked.connect(self._on_remove_gripper)
         gripper_btn_row = QHBoxLayout()
         gripper_btn_row.addStretch()
@@ -942,7 +961,7 @@ class GearPanel(QWidget):
         lay.addWidget(self._gripper_box)
 
         # 自带末端（人形灵巧手/夹爪）组
-        self._hand_box = QGroupBox("自带末端（灵巧手 / 夹爪）")
+        self._hand_box = QGroupBox("自带末端执行器（灵巧手 / 夹爪）")
         hand_lay = QVBoxLayout(self._hand_box)
         self._hand_list = QListWidget()
         self._hand_list.setMaximumHeight(110)
@@ -956,7 +975,7 @@ class GearPanel(QWidget):
         hand_btns.addStretch()
         hand_btns.addWidget(self._bt_strip_hand)
         hand_lay.addLayout(hand_btns)
-        hand_hint = QLabel("删除后自动在腕部生成挂点 site，可再挂夹爪库里的末端")
+        hand_hint = QLabel("删除后自动在腕部生成挂点 site，可再挂末端执行器库里的末端")
         hand_hint.setWordWrap(True)
         hand_hint.setStyleSheet(f"color:{theme.C_TEXT_DIM}; font-size:11px;")
         hand_lay.addWidget(hand_hint)
@@ -1067,6 +1086,7 @@ class GearPanel(QWidget):
 
     def _clear(self):
         self._robot_combo.clear()
+        self._mount_combo.clear()
         self._gripper_combo.clear()
         self._site_combo.clear()
         self._hand_list.clear()
@@ -1078,8 +1098,9 @@ class GearPanel(QWidget):
     def _current_robot(self) -> dict | None:
         return self._robot_combo.currentData()
 
-    def _current_gripper_catalog(self) -> dict:
-        return {g["key"]: g for g in self._manifest.get("gripper_catalog", [])}
+    def _ee_catalog(self) -> list[dict]:
+        m = self._manifest or {}
+        return m.get("end_effector_catalog") or m.get("gripper_catalog") or []
 
     def _on_robot_changed(self):
         r = self._current_robot()
@@ -1089,30 +1110,32 @@ class GearPanel(QWidget):
         self._cam_box.setEnabled(r is not None)
         if r is None:
             return
-        # 填充夹爪目录
-        gc = self._current_gripper_catalog()
-        self._gripper_combo.clear()
-        self._gripper_combo.addItem("（无夹爪）", None)
-        for k, gi in gc.items():
-            self._gripper_combo.addItem(gi["title"], k)
-        # 预填当前夹爪（如果有）
-        curr_g = r.get("gripper")
-        if curr_g is not None:
-            idx = self._gripper_combo.findData(curr_g["model"])
-            if idx >= 0:
-                self._gripper_combo.setCurrentIndex(idx)
-        # 挂点下拉
+        # ---- 末端执行器：安装位置（左手/右手/默认）+ 当前状态 ----
+        self._manifest_ees = r.get("end_effectors", [])
+        mounts = r.get("mounts") or [
+            {"side": None, "site": None, "label": "默认挂点",
+             "builtin": None, "end_effector": r.get("gripper")}]
+        self._mount_combo.blockSignals(True)
+        self._mount_combo.clear()
+        for m in mounts:
+            label = m.get("label") or "默认挂点"
+            if m.get("builtin"):
+                label += "（自带末端）"
+            self._mount_combo.addItem(label, m)
+        self._mount_combo.blockSignals(False)
+        # 挂点下拉（高级手填）：默认按安装位置自动
         self._site_combo.clear()
-        self._site_combo.addItem("attachment_site（自动）", None)
+        self._site_combo.addItem("自动（按安装位置）", None)
         for s in r.get("sites", []):
             self._site_combo.addItem(s, s)
+        self._refresh_ee_choices()
         # 传感器列表
         self._sensor_list.clear()
         for s in r.get("sensors", []):
             self._sensor_list.addItem(f"{s['name']} ({s['type']})")
         # 自带末端列表（灵巧手/夹爪）
         self._hand_list.clear()
-        for ee in r.get("end_effectors", []):
+        for ee in r.get("builtin_end_effectors", []):
             st = "已移除" if ee.get("stripped") else "自带"
             item = QListWidgetItem(
                 f"{ee['key']} · {st} · 腕部 {ee['anchor']} · "
@@ -1148,32 +1171,97 @@ class GearPanel(QWidget):
         self._radius_label.setVisible(t == "tactile")
         self._radius_spin.setVisible(t == "tactile")
 
+    def _current_mount(self) -> dict | None:
+        return self._mount_combo.currentData()
+
+    def _refresh_ee_choices(self):
+        """按当前安装位置重建末端执行器下拉：无 / 自带灵巧手 / 库内条目。"""
+        mount = self._current_mount() or {}
+        current = mount.get("end_effector") or {}
+        self._gripper_combo.blockSignals(True)
+        self._gripper_combo.clear()
+        self._gripper_combo.addItem("无（该侧不装）", None)
+        builtin = mount.get("builtin")
+        builtin_stripped = False
+        if builtin:
+            stripped = any(
+                e.get("key") == builtin and e.get("stripped")
+                for e in getattr(self, "_manifest_ees", []))
+            builtin_stripped = stripped
+            label = f"自带灵巧手（{builtin}）" + ("" if stripped else "（已装配）")
+            self._gripper_combo.addItem(label, {"builtin": builtin})
+        for c in self._ee_catalog():
+            title = c.get("title") or c["key"]
+            self._gripper_combo.addItem(f"{title}（{c['key']}）",
+                                        {"model": c["key"]})
+        # 选中当前已装的条目：外挂条目优先，否则自带手（未删除时视为已装）
+        if current.get("model"):
+            for i in range(self._gripper_combo.count()):
+                d = self._gripper_combo.itemData(i)
+                if d and d.get("model") == current["model"]:
+                    self._gripper_combo.setCurrentIndex(i)
+                    break
+        elif builtin and not builtin_stripped:
+            self._gripper_combo.setCurrentIndex(
+                _combo_index_of(self._gripper_combo, "builtin", builtin))
+        self._gripper_combo.blockSignals(False)
+        self._refresh_ee_status()
+        self._on_gripper_changed()
+
+    def _refresh_ee_status(self):
+        """当前安装位状态（库内型号 / 自带灵巧手 / 空）。"""
+        mount = self._current_mount() or {}
+        current = mount.get("end_effector")
+        if current and current.get("model"):
+            text = f"当前：{current['model']}（挂点 {current.get('site')}）"
+        elif mount.get("builtin"):
+            stripped = any(
+                e.get("key") == mount["builtin"] and e.get("stripped")
+                for e in getattr(self, "_manifest_ees", []))
+            text = (f"当前：自带灵巧手 {mount['builtin']}（已移除）"
+                    if stripped else
+                    f"当前：自带灵巧手 {mount['builtin']}（已装配）")
+        else:
+            text = "当前：未装末端执行器"
+        self._ee_status.setText(text)
+
+    def _on_mount_changed(self):
+        self._refresh_ee_choices()
+
     def _on_gripper_changed(self):
-        self._bt_apply_gripper.setEnabled(self._gripper_combo.currentData() is not None)
-        # 如果选了 catalog 夹爪，自动选挂点为 None（自动 attachment_site）
-        self._site_combo.setCurrentIndex(0)
+        self._bt_apply_gripper.setEnabled(
+            self._gripper_combo.currentData() is not None)
+        self._bt_remove_gripper.setEnabled(self._current_mount() is not None)
+        # 选了库内条目时挂点默认按安装位置自动
+        if isinstance(self._gripper_combo.currentData(), dict) and \
+                self._gripper_combo.currentData().get("model"):
+            self._site_combo.setCurrentIndex(0)
 
     def _on_apply_gripper(self):
         r = self._current_robot()
-        k = self._gripper_combo.currentData()
-        if r is None or k is None:
+        mount = self._current_mount()
+        data = self._gripper_combo.currentData()
+        if r is None or mount is None or data is None:
             return
-        gd = {"model": k}
-        site = self._site_combo.currentData()
-        if site is not None:
-            gd["site"] = site
-        pos = tuple(round(s.value(), 4) for s in self._pos_spins)
-        if pos != (0.0, 0.0, 0.0):
-            gd["pos"] = list(pos)
-        quat = tuple(round(s.value(), 4) for s in self._rot_spins)
-        if quat != (0.0, 0.0, 0.0):
-            gd["quat"] = list(euler_to_quat(*quat))
-        self.apply_gripper.emit(r["name"], gd)
+        side = mount.get("side")
+        spec = dict(data)
+        if "model" in spec:
+            site = self._site_combo.currentData()
+            if site is not None:
+                spec["site"] = site
+            pos = tuple(round(s.value(), 4) for s in self._pos_spins)
+            if pos != (0.0, 0.0, 0.0):
+                spec["pos"] = list(pos)
+            quat = tuple(round(s.value(), 4) for s in self._rot_spins)
+            if quat != (0.0, 0.0, 0.0):
+                spec["quat"] = list(euler_to_quat(*quat))
+        self.apply_end_effector.emit(r["name"], side, spec)
 
     def _on_remove_gripper(self):
         r = self._current_robot()
-        if r is not None:
-            self.apply_gripper.emit(r["name"], None)
+        mount = self._current_mount()
+        if r is not None and mount is not None:
+            self.apply_end_effector.emit(r["name"], mount.get("side"), None)
 
     def _on_add_sensor(self):
         r = self._current_robot()

@@ -56,7 +56,8 @@ robots: 机器人列表，字段：
   controller: 控制器 .py 路径（可选；没有控制器机器人不动，纯场景摆放可不写）
   sensors: 传感器列表（可选）[{name, type: encoder|imu|tactile|joint_torque|camera,
             joint 或 body（写机器人内部短名，如 base、link7）， pos}]
-  gripper: {model: 夹爪 key，取下方夹爪清单}（可选，仅机械臂）
+  end_effectors: 末端执行器列表（可选）[{model: 末端执行器 key，取下方清单,
+            side: left|right（人形左右手可各挂一个，单臂可省略）}]
 
 task: 任务（可选）
   success: {body: 物体名或机器人内部 body 短名（如 base，不要写机器人名）,
@@ -95,12 +96,12 @@ def _zoo_catalog() -> str:
 
 
 def _gripper_catalog() -> str:
-    """夹爪清单（注入 prompt，从 GRIPPERS 动态生成，不再硬编码）。"""
-    from simovia.grippers import GRIPPERS
-    if not GRIPPERS:
+    """末端执行器清单（注入 prompt，从库动态生成，不再硬编码）。"""
+    from simovia.grippers import END_EFFECTORS
+    if not END_EFFECTORS:
         return ""
-    lines = ["可用夹爪（robots[].gripper.model 写 key；仅机械臂可挂）："]
-    for key, g in GRIPPERS.items():
+    lines = ["可用末端执行器（robots[].end_effectors[].model 写 key）："]
+    for key, g in END_EFFECTORS.items():
         arms = ", ".join(sorted(g.get("mounts", {})))
         lines.append(f"- {key}：{g['title']}（已标定臂: {arms}）")
     return "\n".join(lines)
@@ -121,7 +122,7 @@ robots:
   - name: arm
     model: zoo://universal_robots_ur5e
     pos: [-0.5, 0, 0]
-    gripper: {model: onrobot_2fg7}
+    end_effectors: [{model: onrobot_2fg7}]
 task:
   success: {body: red_cube, zone: {min: [0.8, -0.1, 0], max: [1.0, 0.1, 0.2]}}
   reward:

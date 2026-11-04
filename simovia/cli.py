@@ -141,8 +141,9 @@ def _inspect(args):
             print("  传感器: 无")
         if ridx.cameras:
             print(f"  相机: {', '.join(ridx.cameras)}")
-        if rd.gripper is not None:
-            print(f"  夹爪: {rd.gripper.model}")
+        for ee in rd.end_effectors:
+            side = ee.side or ""
+            print(f"  末端执行器: {ee.model}" + (f"（{side}）" if side else ""))
     task = spec.task
     if task.success is not None:
         limit = task.max_ticks if task.max_ticks is not None else "不限"
