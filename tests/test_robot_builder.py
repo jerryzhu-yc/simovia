@@ -94,6 +94,53 @@ def test_matrix_matches_kinematics(dlg):
         assert np.allclose(data.xmat[bid].reshape(3, 3), f.R_world, atol=1e-9)
 
 
+def test_save_button_always_asks_path(dlg, monkeypatch):
+    """已打开文件后点"保存为机器人 YAML…"仍要询问路径（实测 P1）。
+
+    回归点：clicked 会把 checked(False) 当 _save 的第一个位置参数传进去，
+    直接连 _save 会被当成"不用问"，静默覆盖原文件。
+    """
+    from PySide6.QtWidgets import QFileDialog, QPushButton
+    dlg._doc_path = "/tmp/不应被覆盖.yaml"
+    calls = []
+
+    def fake_save(parent, caption, directory, *args, **kwargs):
+        calls.append(caption)
+        return ("", "")                   # 用户在对话框里取消
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", fake_save)
+    btn = next(b for b in dlg.findChildren(QPushButton)
+               if b.text().startswith("保存为机器人"))
+    btn.click()
+    assert calls == ["保存机器人 YAML"]
+
+
+def test_esc_respects_unsaved_changes(dlg, monkeypatch):
+    """Esc 走 reject()：有未保存修改时必须先确认，不能直接关掉丢改动。"""
+    dlg._dirty = True
+    asked = []
+    monkeypatch.setattr(dlg, "_confirm_discard",
+                        lambda action: asked.append(action) or False)
+    dlg.show()
+    dlg.reject()
+    assert asked == ["关闭"]
+    assert dlg.isVisible()                # 拒绝后窗口仍在
+    dlg._dirty = False                    # 让 fixture close() 能正常关闭
+    dlg.hide()
+
+
+def test_layout_fits_1024_screen(dlg):
+    """默认窗口三栏 + 旋转矩阵在 1024 宽屏幕内完整可见（实测 P2）。
+
+    回归点：预览 QLabel 会把 420px 原图当最小宽度、按钮行四个并排，
+    整窗最小宽度曾达 1033px，矩阵第三列被挤出屏幕。
+    """
+    assert dlg.minimumSizeHint().width() <= 1000
+    assert dlg.tb_rel.minimumWidth() == 150 and dlg.tb_world.minimumWidth() == 150
+    # 两表并排不超过右栏可用宽度（312 = 150*2 + 间距）
+    assert dlg.tb_rel.width() + dlg.tb_world.width() <= 320
+
+
 def test_save_load_roundtrip(dlg, tmp_path):
     """保存的 YAML 能被 load_robot 原样读回，且连杆姿态一致。"""
     import yaml

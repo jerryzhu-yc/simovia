@@ -19,8 +19,8 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QScrollArea, QTableWidget, QTableWidgetItem, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from simovia.errors import WorldError
@@ -81,6 +81,7 @@ class RobotBuilderDialog(QDialog):
 
     def _build_ui(self):
         root = QHBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 6)   # 1024 宽屏幕也能整窗放下三栏
 
         # 左：连杆树
         left = QVBoxLayout()
@@ -100,12 +101,15 @@ class RobotBuilderDialog(QDialog):
         left.addLayout(row)
         left_w = QWidget()
         left_w.setLayout(left)
-        left_w.setFixedWidth(300)
+        # 220：1024×768 屏幕上三栏 + 旋转矩阵仍能完整显示（F11 复测）
+        left_w.setFixedWidth(220)
         root.addWidget(left_w)
 
         # 中：属性表单（可滚动）
         box = QGroupBox("选中连杆")
         form = QFormLayout(box)
+        # 标签另起一行：三轴 spin 并排时不再被标签挤到需要横向滚动
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.ed_name = QLineEdit()
         self.ed_name.editingFinished.connect(self._on_name_changed)
         form.addRow("名称", self.ed_name)
@@ -159,13 +163,19 @@ class RobotBuilderDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(mid_w)
-        scroll.setFixedWidth(330)
+        # 370：三轴 spin（3×96 + 间距）放得下，不出现横向滚动条
+        scroll.setFixedWidth(370)
         root.addWidget(scroll)
 
         # 右：预览 + 旋转矩阵
         right = QVBoxLayout()
         self.lbl_img = QLabel("预览")
-        self.lbl_img.setMinimumSize(380, 380)
+        # 最小 240：窄屏时优先保三栏和矩阵，预览随剩余空间缩放
+        self.lbl_img.setMinimumSize(240, 240)
+        # Ignored：否则 QLabel 会把 420px 原图当成最小宽度，把整窗撑出屏幕
+        self.lbl_img.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                   QSizePolicy.Policy.Ignored)
+        self._preview_pix: QPixmap | None = None
         self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setStyleSheet(
             "background:#111827; color:#9CA3AF; border-radius:6px;")
@@ -180,15 +190,18 @@ class RobotBuilderDialog(QDialog):
         # 深色背景上用浅灰：原来的 #374151 几乎看不见（F11）
         self.lbl_formula.setStyleSheet("font-family:monospace; color:#9CA3AF;")
         gb_lay.addWidget(self.lbl_formula)
-        # 3 列各占 68px：两表并排不再需要横向滚动（F11）
+        # 3 列各占 50px：两表并排（300px）在 1024 宽屏幕上也能放下第三列
         self.tb_rel = QTableWidget(3, 3)
         self.tb_world = QTableWidget(3, 3)
         for tb in (self.tb_rel, self.tb_world):
             tb.horizontalHeader().setVisible(False)
             tb.verticalHeader().setVisible(False)
+            tb.horizontalHeader().setDefaultSectionSize(50)
+            tb.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             tb.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             tb.setFixedHeight(96)
-            tb.setFixedWidth(212)
+            tb.setFixedWidth(150)
         row2 = QHBoxLayout()
         col1 = QVBoxLayout()
         col1.addWidget(QLabel("相对父连杆  R_rel"))
@@ -217,15 +230,22 @@ class RobotBuilderDialog(QDialog):
         b_open.clicked.connect(self._open)
         b_save = QPushButton("保存为机器人 YAML…")
         b_save.setObjectName("primary")
-        b_save.clicked.connect(self._save)
+        # 显式传 ask：clicked 会把 checked(False) 当第一个位置参数传进来，
+        # 直接连 _save 会被误判为"不用问路径"，导致静默覆盖已打开的文件
+        b_save.clicked.connect(lambda: self._save(ask=True))
         b_close = QPushButton("关闭")
         b_close.clicked.connect(self.close)
         btns.addWidget(b_new)
         btns.addWidget(b_open)
         btns.addStretch(1)
-        btns.addWidget(b_save)
         btns.addWidget(b_close)
         right.addLayout(btns)
+        # "保存为…"独占一行：四个按钮并排会把右栏最小宽度顶到 389px，
+        # 1024 宽屏幕加上窗口边框就整窗超出（矩阵第三列被挤出可见区）
+        save_row = QHBoxLayout()
+        save_row.addStretch(1)
+        save_row.addWidget(b_save)
+        right.addLayout(save_row)
         root.addLayout(right, 1)
 
     @staticmethod
@@ -554,7 +574,8 @@ class RobotBuilderDialog(QDialog):
             return False
         if r == QMessageBox.StandardButton.Discard:
             return True
-        return self._save()
+        # 已有来源文件：直接写回，不再弹出路径选择
+        return self._save(ask=not self._doc_path)
 
     def _new_robot(self):
         if not self._confirm_discard("新建机器人"):
@@ -744,14 +765,40 @@ class RobotBuilderDialog(QDialog):
         rgb = self._renderer.render()
         h, w, _ = rgb.shape
         img = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
-        self.lbl_img.setPixmap(QPixmap.fromImage(img))
+        self._preview_pix = QPixmap.fromImage(img)
+        self._fit_preview()
+
+    def _fit_preview(self):
+        """按预览区当前尺寸等比缩放：窗口变窄时图跟着缩，不撑破布局。"""
+        if getattr(self, "_preview_pix", None) is None:
+            return
+        self.lbl_img.setPixmap(self._preview_pix.scaled(
+            self.lbl_img.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_preview()
+
+    def _release_preview(self):
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
 
     def closeEvent(self, ev):
         # 只在用户可见时确认（程序性 close/测试里没有展示过就不弹模态框）
         if self.isVisible() and not self._confirm_discard("关闭"):
             ev.ignore()
             return
-        if self._renderer is not None:
-            self._renderer.close()
-            self._renderer = None
+        self._release_preview()
         super().closeEvent(ev)
+
+    def reject(self):
+        """Esc / 窗口关闭按钮走 reject()，不经过 closeEvent。
+
+        不复用 closeEvent 的确认逻辑的话，Esc 会绕过未保存提示直接丢改动。
+        """
+        if self.isVisible() and not self._confirm_discard("关闭"):
+            return
+        self._release_preview()
+        super().reject()

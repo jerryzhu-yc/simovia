@@ -33,7 +33,8 @@ class CameraView(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(160, 120)
+        # 最小尺寸压小：停靠面板在 1024×768 下不给滚动条留横向溢出
+        self.setMinimumSize(120, 80)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Expanding)
@@ -93,6 +94,12 @@ class TeleopPanel(QWidget):
         self.robot_combo = QComboBox()
         self.camera_combo = QComboBox()
         self.res_combo = QComboBox()
+        # 长相机名不撑宽 dock：内容最短 6 字符宽，超出省略显示（悬停看全名）
+        for cb in (self.robot_combo, self.camera_combo):
+            cb.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            cb.setMinimumContentsLength(6)
+            cb.setMinimumWidth(90)
         for label, w, h in _RESOLUTIONS:
             self.res_combo.addItem(label, (w, h))
         self.res_combo.setCurrentIndex(1)
@@ -118,25 +125,30 @@ class TeleopPanel(QWidget):
         lay.addLayout(preview_row)
 
         # 深度画面（近红远蓝伪彩）+ 裁剪面，可随时切换
-        depth_row = QHBoxLayout()
+        # 开关和裁剪面分两行：单行并排会在 1024 宽停靠时顶出横向滚动条
         self.depth_chk = QCheckBox("深度图")
         self.depth_chk.setToolTip("以近红远蓝伪彩显示相机深度，用于判断抓取距离")
-        depth_row.addWidget(self.depth_chk)
-        depth_row.addWidget(QLabel("near:"))
+        lay.addWidget(self.depth_chk)
+
+        clip_row = QHBoxLayout()
+        clip_row.addWidget(QLabel("near:"))
         self.near_spin = QDoubleSpinBox()
         self.near_spin.setRange(0.001, 10.0)
         self.near_spin.setDecimals(3)
         self.near_spin.setSingleStep(0.01)
         self.near_spin.setValue(0.01)
-        depth_row.addWidget(self.near_spin)
-        depth_row.addWidget(QLabel("far:"))
+        self.near_spin.setMaximumWidth(76)
+        clip_row.addWidget(self.near_spin)
+        clip_row.addWidget(QLabel("far:"))
         self.far_spin = QDoubleSpinBox()
         self.far_spin.setRange(0.1, 1000.0)
         self.far_spin.setDecimals(1)
         self.far_spin.setSingleStep(1.0)
         self.far_spin.setValue(50.0)
-        depth_row.addWidget(self.far_spin)
-        lay.addLayout(depth_row)
+        self.far_spin.setMaximumWidth(76)
+        clip_row.addWidget(self.far_spin)
+        clip_row.addStretch(1)
+        lay.addLayout(clip_row)
 
         # 持久配置 vs 临时覆盖：切换相机时回填世界 YAML 里的相机配置，
         # 面板上的改动只影响本次预览/遥操作，不回写世界文件
@@ -180,6 +192,8 @@ class TeleopPanel(QWidget):
 
         hint = QLabel("W/S 前后 · A/D 左右 · Q/E 升降 · J/L 偏航\n"
                       "Shift 加速 · 空格 夹爪开合（点视口后按键）")
+        # 换行：长键位说明是面板最小宽度的主要来源，窄 dock 会横向裁掉画面
+        hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{theme.C_TEXT_DIM}; font-size:11px;")
         lay.addWidget(hint)
 

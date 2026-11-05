@@ -1542,6 +1542,40 @@ def test_teleop_panel_preview_and_camera_backfill(qapp):
         p.deleteLater()
 
 
+def test_teleop_panel_fits_narrow_dock(qapp):
+    """停靠面板最小宽度收敛：1024 宽屏幕右栏不出现横向裁切（实测 P3）。"""
+    from simovia.gui.teleop_panel import TeleopPanel
+    p = TeleopPanel()
+    try:
+        # 键位说明换行 + 裁剪面分两行 + 相机区最小 120x80
+        assert p.minimumSizeHint().width() <= 240
+        assert p.camera.minimumHeight() <= 80
+    finally:
+        p.deleteLater()
+
+
+def test_import_spawn_z_returns_plain_float(tmp_path):
+    """导入自建机器人 YAML：贴地高度必须是 Python float（实测 P2）。
+
+    回归点：圆柱/网格分支直接拿 numpy 标量参与 round()，得到 np.float64，
+    写回世界 YAML 时 yaml.safe_dump 报 "cannot represent an object"。
+    """
+    import yaml
+    from simovia.gui.app import _import_spawn_z
+    p = tmp_path / "r.yaml"
+    p.write_text(
+        "name: r\n"
+        "links:\n"
+        "  - name: base\n"
+        "    pos: [0, 0, 0.08]\n"
+        "    geom: {type: cylinder, size: [0.07, 0.06], pos: [0, 0, 0.06]}\n",
+        encoding="utf-8")
+    z = _import_spawn_z(p)
+    assert type(z) is float
+    assert z > 0.0
+    yaml.safe_dump({"pos": [0.0, 0.0, z]})   # 修复前这里抛 RepresenterError
+
+
 def test_gear_camera_backfill_validation_and_selection(qapp):
     """切相机回填/非法裁剪面就地报错/清单刷新保持选择（F07/F12/F13）。"""
     from PySide6.QtCore import Qt

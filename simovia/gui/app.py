@@ -119,8 +119,10 @@ def _import_spawn_z(p) -> float:
         if gtype == mujoco.mjtGeom.mjGEOM_PLANE:
             continue                      # 无限大地板不参与
         pos = data.geom_xpos[gid]
+        # 一律转 Python float：numpy 标量进 YAML 会报
+        # "cannot represent an object, np.float64(...)"（导入机器人失败）
         if gtype == mujoco.mjtGeom.mjGEOM_SPHERE:
-            z = pos[2] - model.geom_size[gid][0]
+            z = float(pos[2] - model.geom_size[gid][0])
         elif gtype == mujoco.mjtGeom.mjGEOM_BOX:
             # 半边长盒的 8 个角点旋转到世界取最低（精确）
             s = model.geom_size[gid]
@@ -129,7 +131,7 @@ def _import_spawn_z(p) -> float:
             world = corners @ data.geom_xmat[gid].reshape(3, 3).T + pos
             z = float(world[:, 2].min())
         else:                              # cylinder/mesh 等：包围球保守
-            z = pos[2] - model.geom_rbound[gid]
+            z = float(pos[2] - model.geom_rbound[gid])
         zmin = min(zmin, z)
     if zmin == float("inf"):
         return 0.0                         # 无几何体（罕见）
@@ -1449,7 +1451,8 @@ class MainWindow(QMainWindow):
                 d = yaml.safe_load(text)
                 robots = d.setdefault("robots", [])
                 rd = {"name": self._unique_name(key), "model": xml,
-                      "pos": [round(x, 4), round(y, 4), round(z, 4)]}
+                      "pos": [round(float(x), 4), round(float(y), 4),
+                              round(float(z), 4)]}
                 robots.append(rd)
                 new_text = yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
             except Exception as e:
@@ -1657,7 +1660,7 @@ class MainWindow(QMainWindow):
                         if r.get("name") == name:
                             p = list(r.get("pos") or [0, 0, 0])
                             p = [p[0] + dx, p[1] + dy, p[2] + dz]
-                            r["pos"] = [round(v, 4) for v in p]
+                            r["pos"] = [round(float(v), 4) for v in p]
                             moved = True
                             break
                 elif kind == "object":
@@ -1665,7 +1668,7 @@ class MainWindow(QMainWindow):
                         if o.get("name") == name:
                             p = list(o.get("pos") or [0, 0, 0])
                             p = [p[0] + dx, p[1] + dy, p[2] + dz]
-                            o["pos"] = [round(v, 4) for v in p]
+                            o["pos"] = [round(float(v), 4) for v in p]
                             moved = True
                             break
                 if not moved:
@@ -2056,7 +2059,13 @@ class MainWindow(QMainWindow):
         self.view.set_world(spec)
         self.view.set_hud_state("就绪")
         self._last_obs_key = None                 # 新世界：去重键作废
-        self.scene_tree.set_world(spec)
+        # set_world 会 setCurrentItem(根节点) -> nodeSelected：重载是程序性
+        # 刷新，不能把装备页的编辑者拽回"属性"页（F12 复测）
+        self._restoring_select = True
+        try:
+            self.scene_tree.set_world(spec)
+        finally:
+            self._restoring_select = False
         self.code.set_world(spec, spec.base_dir)
         # Agent worker：注入当前世界名 + 世界目录（本地文件工具根）+
         # MCP 工具清单（内核侧 _TOOLS 的快照——本进程在线 manifest）
