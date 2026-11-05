@@ -13,8 +13,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QSizePolicy,
-                               QVBoxLayout, QWidget)
+                               QLineEdit, QPushButton, QScrollArea,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from simovia.gui import theme
 
@@ -84,11 +84,19 @@ class TeleopPanel(QWidget):
         self._loading = False
         self._teleop_running = False
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
 
         self.camera = CameraView()
-        lay.addWidget(self.camera, 1)
+        # 画面留在滚动区外：dock 再矮也只会滚控件，相机不会被滚掉一截
+        self.camera.setMinimumHeight(110)
+        outer.addWidget(self.camera, 1)
+
+        # 控件区自己滚动（外层 dock 不再包 QScrollArea）
+        ctrl = QWidget()
+        lay = QVBoxLayout(ctrl)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
 
         form = QFormLayout()
         self.robot_combo = QComboBox()
@@ -201,6 +209,12 @@ class TeleopPanel(QWidget):
         self.status.setWordWrap(True)
         self.status.setStyleSheet(f"color:{theme.C_TEXT_DIM};")
         lay.addWidget(self.status)
+
+        self.ctrl_scroll = QScrollArea()
+        self.ctrl_scroll.setWidgetResizable(True)
+        self.ctrl_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.ctrl_scroll.setWidget(ctrl)
+        outer.addWidget(self.ctrl_scroll, 0)
 
     # ------------------------------------------------------------ 外部接口
 

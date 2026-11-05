@@ -1547,10 +1547,17 @@ def test_teleop_panel_fits_narrow_dock(qapp):
     from simovia.gui.teleop_panel import TeleopPanel
     p = TeleopPanel()
     try:
-        # 键位说明换行 + 裁剪面分两行 + 相机区最小 120x80
+        # 键位说明换行 + 裁剪面分两行 + 长相机名省略
         assert p.minimumSizeHint().width() <= 240
-        assert p.camera.minimumHeight() <= 80
+        # 画面在滚动区外且有独立最小高度：矮 dock 只滚控件，不裁画面
+        assert p.camera.parent() is p
+        p.resize(300, 220)
+        p.show()
+        qapp.processEvents()
+        assert p.camera.height() >= 100
+        assert p.camera.geometry().bottom() < p.height()
     finally:
+        p.hide()
         p.deleteLater()
 
 

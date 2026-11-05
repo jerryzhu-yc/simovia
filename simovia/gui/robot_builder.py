@@ -17,10 +17,10 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QDoubleSpinBox,
+    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTableWidget,
+    QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from simovia.errors import WorldError
@@ -76,6 +76,11 @@ class RobotBuilderDialog(QDialog):
         self._refresh_tree()
         self._select_link("link1")
         self._refresh_preview()
+        # 进程退出前主动释放 GL：否则 Renderer 在解释器收尾时才析构，
+        # EGL 上下文已拆，独立脚本退出时会报错甚至段错误
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._release_preview)
 
     # ------------------------------------------------------------ UI 骨架
 
@@ -179,7 +184,8 @@ class RobotBuilderDialog(QDialog):
         self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setStyleSheet(
             "background:#111827; color:#9CA3AF; border-radius:6px;")
-        right.addWidget(self.lbl_img)
+        # 预览吃掉全部剩余高度：矩阵组不设上限时会把它挤扁甚至压上去
+        right.addWidget(self.lbl_img, 1)
         self.lbl_err = QLabel("")
         self.lbl_err.setWordWrap(True)
         self.lbl_err.setStyleSheet("color:#DC2626;")
@@ -220,7 +226,9 @@ class RobotBuilderDialog(QDialog):
         self.lbl_pose = QLabel("")
         self.lbl_pose.setStyleSheet("font-family:monospace;")
         gb_lay.addWidget(self.lbl_pose)
-        right.addWidget(gb)
+        # 上限 300：矩阵组内容实际约 230px，封顶后不会再抢走预览的空间
+        gb.setMaximumHeight(300)
+        right.addWidget(gb, 0)
 
         # 底部按钮
         btns = QHBoxLayout()
@@ -781,6 +789,9 @@ class RobotBuilderDialog(QDialog):
         self._fit_preview()
 
     def _release_preview(self):
+        # 先停定时器：关窗后 120ms 到点的刷新会给已关闭的窗口重建 GL 上下文，
+        # 进程退出时再由 Renderer.__del__ 收尾就是段错误/EGL 报错
+        self._preview_timer.stop()
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
@@ -791,7 +802,9 @@ class RobotBuilderDialog(QDialog):
             ev.ignore()
             return
         self._release_preview()
-        super().closeEvent(ev)
+        # 不能再调 super().closeEvent：QDialog 的实现会转调 reject()，
+        # 于是"丢弃并关闭"之后又弹一次确认，取消时渲染器已被释放
+        ev.accept()
 
     def reject(self):
         """Esc / 窗口关闭按钮走 reject()，不经过 closeEvent。

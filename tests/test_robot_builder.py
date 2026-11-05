@@ -129,6 +129,37 @@ def test_esc_respects_unsaved_changes(dlg, monkeypatch):
     dlg.hide()
 
 
+def test_preview_not_overlapped_by_matrix(dlg):
+    """旋转矩阵组不得压住预览（实测 P2 复测）。
+
+    回归点：右栏没给预览 stretch、矩阵组也没高度上限时，布局把矩阵组
+    分到 655px，几何上直接盖在预览区上。
+    """
+    from PySide6.QtWidgets import QApplication, QGroupBox
+    gb = next(g for g in dlg.findChildren(QGroupBox)
+              if g.title().startswith("旋转矩阵"))
+    for size in ((1180, 760), (954, 575)):
+        dlg.resize(*size)
+        dlg.show()
+        QApplication.processEvents()
+        assert not dlg.lbl_img.geometry().intersects(gb.geometry()), size
+        assert dlg.lbl_img.height() >= 240, size
+    dlg.hide()
+
+
+def test_close_confirms_only_once(dlg, monkeypatch):
+    """选"丢弃"后关闭只确认一次；第二次取消不应发生在渲染器已释放之后。"""
+    dlg._dirty = True
+    asked = []
+    monkeypatch.setattr(dlg, "_confirm_discard",
+                        lambda action: asked.append(action) or True)
+    dlg.show()
+    dlg.close()
+    assert asked == ["关闭"]
+    assert not dlg.isVisible()
+    assert dlg._renderer is None
+
+
 def test_layout_fits_1024_screen(dlg):
     """默认窗口三栏 + 旋转矩阵在 1024 宽屏幕内完整可见（实测 P2）。
 

@@ -584,11 +584,11 @@ class MainWindow(QMainWindow):
         self.dock_console = self._make_dock("控制台", self.console,
                                             Qt.DockWidgetArea.BottomDockWidgetArea,
                                             "dock_console")
-        # 遥操作面板同样包滚动区：相机预览 + 表单的 minimumSizeHint 会把
-        # dock 顶死（拖分隔条/浮动都没反应），包一层后 dock 可任意拖动缩放
+        # 遥操作面板自带"控件滚动区"，相机画面固定在外层不参与滚动：
+        # 再包一层 QScrollArea 会出现双滚动条，且矮 dock 下画面被滚掉一截
         self.teleop.setMinimumWidth(0)
         self.dock_teleop = self._make_dock(
-            "遥操作 / 实时画面", _scrollable(self.teleop),
+            "遥操作 / 实时画面", self.teleop,
             Qt.DockWidgetArea.RightDockWidgetArea, "dock_teleop")
         self.dock_teleop.setMinimumWidth(200)
         self.dock_right.setMinimumWidth(240)   # 可拖更窄（内容出滚动条）
