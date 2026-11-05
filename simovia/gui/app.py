@@ -1525,9 +1525,10 @@ class MainWindow(QMainWindow):
                                     float(lookat[0]), float(lookat[1]), z)
         else:
             # 无世界：新建仅含该机器人的世界（Ctrl+S 可另存）
+            # floor 必须写在 scene 下；尺寸与初始场景一致，避免四足跑出地面
             d = {"name": f"{stem}_import",
-                 "floor": {},
-                 "scene": {"objects": []},
+                 "scene": {"floor": {"size": [15.0, 15.0], "texture": "grid"},
+                           "objects": []},
                  "robots": [{"name": stem, "model": p.resolve().as_posix(),
                              "pos": [0.0, 0.0, z]}]}
             text = yaml.safe_dump(d, allow_unicode=True, sort_keys=False)

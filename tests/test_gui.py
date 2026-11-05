@@ -377,8 +377,8 @@ class TestScenePresentation:
                          width=64, height=48)
         try:
             assert rm.cam.elevation == pytest.approx(-34.0)
-            assert rm.cam.distance < 8.0        # 旧版 floor*1.6 = 8.0
-            assert rm.cam.distance == pytest.approx(5.0 * 1.15)
+            # 地面上限 12 m：30×30 m 的网格整块入画会把实体推得太远
+            assert rm.cam.distance == pytest.approx(12.0)
         finally:
             rm.close()
 

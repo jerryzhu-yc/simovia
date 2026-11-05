@@ -543,7 +543,9 @@ def generate(key: str, out_dir: str | pathlib.Path | None = None,
         # 超硬接触），Euler 显式积分会数值震荡弹跳——attach 用世界值
         # 覆盖模型原值，故必须显式声明
         "integrator": "implicitfast",
-        "scene": {"floor": {"size": [4.0, 4.0], "texture": "grid",
+        # 地面给够大（半尺寸 15 m -> 30×30 m）：四足演示动辄跑十几米，
+        # 8×8 m 的地面几秒就跑到边缘外
+        "scene": {"floor": {"size": [15.0, 15.0], "texture": "grid",
                             "friction": 0.8},
                   "lights": [{"pos": [0, 0, 3]}]},
         "robots": [{"name": key, "pos": meta["pos"],

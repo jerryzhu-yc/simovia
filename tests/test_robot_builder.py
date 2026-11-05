@@ -172,6 +172,45 @@ def test_layout_fits_1024_screen(dlg):
     assert dlg.tb_rel.width() + dlg.tb_world.width() <= 320
 
 
+def test_axes_overlay_always_visible(dlg):
+    """轴标是画在图像上的 2D 叠加：黑色背景（机身遮住的像素）也能看到三轴。
+
+    回归点：旧实现把三轴做成场景里的 3D 胶囊，参与深度测试，轴指向
+    连杆内部时被几何体完全遮住，看不出坐标系方向。
+    """
+    import math
+    from types import SimpleNamespace
+
+    from PySide6.QtGui import QImage
+
+    img = QImage(240, 240, QImage.Format.Format_RGB888)
+    img.fill(0)                              # 黑色 = 被机身挡住的像素
+    az, el = math.radians(135.0), math.radians(-22.0)
+    cam = SimpleNamespace(
+        pos=np.array([0.9, -0.9, 0.5]),
+        # 与预览相机一致：orbit 视角推导出的 forward/up
+        forward=np.array([-math.sin(az) * math.cos(el),
+                          -math.cos(az) * math.cos(el), math.sin(el)]),
+        up=np.array([math.sin(az) * math.sin(el),
+                     math.cos(az) * math.sin(el), math.cos(el)]),
+        frustum_near=1.0, frustum_top=math.tan(math.radians(22.5)))
+    frame = SimpleNamespace(p_world=np.array([0.0, 0.0, 0.3]),
+                            R_world=np.eye(3))
+    dlg._draw_axes(img, cam, frame)
+
+    dominant = {"r": 0, "g": 0, "b": 0}
+    for y in range(240):
+        for x in range(240):
+            r, g, b = img.pixelColor(x, y).getRgb()[:3]
+            if r > 160 and g < 120 and b < 120:
+                dominant["r"] += 1
+            elif g > 160 and r < 140 and b < 140:
+                dominant["g"] += 1
+            elif b > 160 and r < 140 and g < 160:
+                dominant["b"] += 1
+    assert all(n > 10 for n in dominant.values()), dominant
+
+
 def test_save_load_roundtrip(dlg, tmp_path):
     """保存的 YAML 能被 load_robot 原样读回，且连杆姿态一致。"""
     import yaml

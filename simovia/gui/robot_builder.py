@@ -10,12 +10,13 @@
 from __future__ import annotations
 
 import copy
+import math
 import pathlib
 
 import mujoco
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
@@ -54,6 +55,35 @@ DEFAULT_ROBOT = {
 
 #: 关节类型下拉顺序（与 cb_joint.addItems 一一对应）
 _JOINT_LABELS = ["fixed", "revolute", "prismatic", "ball", "free"]
+
+
+def _world_to_screen(glcam, point, w: int, h: int):
+    """世界坐标 -> 离屏图像像素坐标；点在相机后方或退化时返回 None。
+
+    mjvGLCamera.frustum_width 在 update_scene 后仍为 0，只能用
+    frustum_top/frustum_near 还原垂直半视角，再乘宽高比得到水平方向。
+    """
+    pos = np.asarray(glcam.pos, dtype=float)
+    fwd = np.asarray(glcam.forward, dtype=float)
+    up = np.asarray(glcam.up, dtype=float)
+    near, top = float(glcam.frustum_near), float(glcam.frustum_top)
+    if near <= 0.0 or top <= 0.0:
+        return None
+    tan_v = top / near
+    aspect = w / max(h, 1)
+    right = np.cross(fwd, up)
+    norm = float(np.linalg.norm(right))
+    if norm < 1e-9:
+        return None
+    right /= norm
+    cam_up = np.cross(right, fwd)
+    d = np.asarray(point, dtype=float) - pos
+    depth = float(np.dot(d, fwd))
+    if depth <= 1e-6:
+        return None
+    x_ndc = float(np.dot(d, right)) / (depth * tan_v * aspect)
+    y_ndc = float(np.dot(d, cam_up)) / (depth * tan_v)
+    return ((x_ndc + 1.0) * 0.5 * w, (1.0 - y_ndc) * 0.5 * h)
 
 
 class RobotBuilderDialog(QDialog):
@@ -690,7 +720,7 @@ class RobotBuilderDialog(QDialog):
         self._preview_timer.start()
 
     def _preview_spec(self, floor_z: float):
-        """编译预览模型：机器人 + 地面 + 灯（编译后由调用方加轴标）。"""
+        """编译预览模型：机器人 + 地面 + 灯（轴标渲染后以 2D 叠加绘制）。"""
         mj = build_robot_spec(self.robot)
         mj.worldbody.add_geom(
             name="preview_floor", type=mujoco.mjtGeom.mjGEOM_PLANE,
@@ -710,23 +740,6 @@ class RobotBuilderDialog(QDialog):
             frames = {f.name: f for f in link_frames(self.robot)}
             zmin = min([0.0] + [float(f.p_world[2]) for f in frames.values()])
             mj = self._preview_spec(min(0.0, zmin - 0.01))
-            # 轴三色标：R 的三列就是连杆坐标系 x/y/z 轴在世界系的方向
-            if name and name in frames:
-                f = frames[name]
-                triad = mj.worldbody.add_body(
-                    name="preview_triad",
-                    pos=[float(v) for v in f.p_world],
-                    quat=[float(v) for v in matrix_to_quat(f.R_world)])
-                L = 0.09
-                for axis, rgb, quat in (
-                        ((1, 0, 0), [1, 0.25, 0.25, 1], [0.7071, 0, 0.7071, 0]),
-                        ((0, 1, 0), [0.25, 0.85, 0.35, 1], [0.7071, -0.7071, 0, 0]),
-                        ((0, 0, 1), [0.35, 0.55, 1, 1], [1, 0, 0, 0])):
-                    triad.add_geom(
-                        type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-                        size=[0.006, L / 2], quat=quat,
-                        pos=[L * a / 2 for a in axis], rgba=rgb,
-                        contype=0, conaffinity=0)
             model = mj.compile()
         except (WorldError, ValueError, TypeError) as e:
             self.lbl_err.setText(str(e))
@@ -773,8 +786,67 @@ class RobotBuilderDialog(QDialog):
         rgb = self._renderer.render()
         h, w, _ = rgb.shape
         img = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+        frame = frames.get(name) if name else None
+        if frame is not None:
+            self._draw_axes(img, self._renderer.scene.camera[0], frame)
         self._preview_pix = QPixmap.fromImage(img)
         self._fit_preview()
+
+    #: 轴标颜色：x 红 / y 绿 / z 蓝（与常见三维软件一致）
+    _AXIS_COLORS = ((1.0, 0.25, 0.25), (0.25, 0.85, 0.35), (0.35, 0.55, 1.0))
+
+    def _draw_axes(self, img: QImage, glcam, frame) -> None:
+        """在渲染结果上叠加当前连杆坐标系的三轴。
+
+        原来三轴用 3D 胶囊画进场景，参与深度测试时会被连杆几何挡住
+        （轴指向机体内部时完全看不见），方向无从判断；这里按相机投影
+        改成固定像素长度的 2D 叠加，任何视角都能看到三轴指向。
+        """
+        w, h = img.width(), img.height()
+        origin = np.asarray(frame.p_world, dtype=float)
+        ox, oy = _world_to_screen(glcam, origin, w, h) or (None, None)
+        if ox is None:
+            return
+        R = np.asarray(frame.R_world, dtype=float)
+        length = min(w, h) * 0.14
+        head = length * 0.24
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        try:
+            # 原点圆点：标出关节/连杆原点，白描黑边在任何底色上都醒目
+            painter.setBrush(QColor(255, 255, 255, 235))
+            painter.setPen(QPen(QColor(0, 0, 0, 200), 1.5))
+            painter.drawEllipse(QPointF(ox, oy), 4.0, 4.0)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for i, rgb in enumerate(self._AXIS_COLORS):
+                # 世界方向 = R 的第 i 列；取一段短线段投影只为得到屏幕方向
+                tip = _world_to_screen(glcam, origin + R[:, i] * 0.05, w, h)
+                if tip is None:
+                    continue
+                dx, dy = tip[0] - ox, tip[1] - oy
+                norm = math.hypot(dx, dy)
+                if norm < 1e-6:
+                    continue
+                dx, dy = dx / norm, dy / norm
+                ex, ey = ox + dx * length, oy + dy * length
+                px, py = -dy, dx          # 屏幕内法向：箭头两翼
+                segs = (
+                    ((ox, oy), (ex, ey)),
+                    ((ex, ey), (ex - head * dx + head * 0.5 * px,
+                                ey - head * dy + head * 0.5 * py)),
+                    ((ex, ey), (ex - head * dx - head * 0.5 * px,
+                                ey - head * dy - head * 0.5 * py)),
+                )
+                # 白色描边 + 彩色线，深浅背景都清楚
+                for pen in (QPen(QColor(255, 255, 255, 210), 4.5,
+                                 Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap),
+                            QPen(QColor.fromRgbF(*rgb), 2.2,
+                                 Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)):
+                    painter.setPen(pen)
+                    for a, b in segs:
+                        painter.drawLine(QPointF(*a), QPointF(*b))
+        finally:
+            painter.end()
 
     def _fit_preview(self):
         """按预览区当前尺寸等比缩放：窗口变窄时图跟着缩，不撑破布局。"""

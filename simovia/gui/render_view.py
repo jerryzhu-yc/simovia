@@ -98,7 +98,9 @@ class RenderModel:
         self._default_lookat = np.array([0.0, 0.0, 0.0])
         floor = spec.scene.floor.size
         if not spec.robots and not spec.scene.objects:
-            self._default_distance = max(floor) * 1.15
+            # 大地面（默认 30×30 m）全塞进画面会离得太远，机器只剩几个像素：
+            # 距离加个上限，宁可地面边缘出画也要保证实体看得清
+            self._default_distance = min(max(floor) * 1.15, 12.0)
             elevation = -34.0
         else:
             bbox = self._scene_bbox()

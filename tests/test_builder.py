@@ -249,7 +249,8 @@ class TestEmptyWorld:
 
     def test_empty_world_builds_runs_skybox(self):
         spec = load_world(ROOT / "worlds" / "empty.yaml")
-        assert spec.scene.floor.size == (5.0, 5.0)
+        # 初始场景地面要够大（30×30 m），否则四足几秒就跑出地面边缘
+        assert spec.scene.floor.size == (15.0, 15.0)
         assert spec.scene.objects == []
         assert spec.robots == []
         model, index = build_world(spec)
