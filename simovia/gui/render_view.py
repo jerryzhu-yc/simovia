@@ -749,6 +749,10 @@ class RenderView(QWidget):
                                                  + i * fm.height()), t)
             return y + h + 6
 
+        # 小窗口（1024x768 及以下）精简 HUD：只留状态与一行操作提示，
+        # 否则左下相机卡与右下提示会横向重叠成一片（F14）
+        compact = self.width() < 900 or self.height() < 620
+
         # 左上：世界名 + 运行状态（编辑态提示）
         state_line = f"状态  {self._hud_state}"
         if self.edit_allowed:
@@ -766,7 +770,7 @@ class RenderView(QWidget):
                      accent=theme.C_OK)
 
         # 左下：相机参数 + 显示帧率（空闲时没有新帧，显示 —）
-        if self.rm is not None:
+        if self.rm is not None and not compact:
             c = self.rm.cam
             idle = time.perf_counter() - self._last_render_t > 0.4
             fps = "—" if idle or self._fps_ema <= 0 else f"{self._fps_ema:.0f}"
@@ -775,16 +779,19 @@ class RenderView(QWidget):
                   f"dist {c.distance:.2f}",
                   f"显示 {fps:>5} FPS · {self.rm.quality}画质"])
 
-        # 右下：鼠标操作提示
-        help_lines = ["左键 选中/拖动   拖 XYZ 轴单轴移动   Ctrl+左键 调高度(Z)",
-                      "中键 俯仰   右键 平移   滚轮 缩放   F 聚焦   模型库可拖入"]
+        # 右下：鼠标操作提示（小窗口压成一行，避免与左下信息卡重叠）
+        help_lines = (["左键选中/拖动 · 右键平移 · 滚轮缩放 · F 聚焦"]
+                      if compact else
+                      ["左键 选中/拖动   拖 XYZ 轴单轴移动   Ctrl+左键 调高度(Z)",
+                       "中键 俯仰   右键 平移   滚轮 缩放   F 聚焦   模型库可拖入"])
         w = max(fm.horizontalAdvance(t) for t in help_lines) + 14
         x = self.width() - w - 10
-        y = self.height() - 12 - fm.height() * 2 - 10
+        y = (self.height() - 12 - fm.height() - 10 if compact else
+             self.height() - 12 - fm.height() * 2 - 10)
         p.setPen(QPen(QColor(255, 255, 255, 14)))
         p.setBrush(QColor(13, 15, 18, 150))
-        p.drawRoundedRect(int(x), int(y), int(w), int(fm.height() * 2 + 12),
-                          6, 6)
+        p.drawRoundedRect(int(x), int(y), int(w),
+                           int(fm.height() * len(help_lines) + 12), 6, 6)
         p.setPen(QPen(QColor(theme.C_TEXT_DIM)))
         for i, t in enumerate(help_lines):
             p.drawText(int(x + 7), int(y + 6 + fm.ascent() + i * fm.height()), t)

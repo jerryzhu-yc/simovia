@@ -646,6 +646,37 @@ def resolve_zoo_models(d: dict, on_download=None) -> dict:
     return d
 
 
+def absolutize_world_paths(text: str, base_dir) -> str:
+    """把世界 YAML 里相对的 model/controller 改成绝对路径。
+
+    "另存为"到别的目录后，相对路径会跟着新 base_dir 走而失效；统一改绝对
+    后任何目录重开都行。zoo:// 引用原样保留。无法解析时原样返回。
+    """
+    if not base_dir:
+        return text
+    try:
+        d = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return text
+    if not d:
+        return text
+    base = pathlib.Path(base_dir)
+    changed = False
+    for r in d.get("robots") or []:
+        for key in ("model", "controller"):
+            v = r.get(key)
+            if not v or str(v).startswith("zoo://"):
+                continue
+            q = pathlib.Path(str(v))
+            if q.is_absolute():
+                continue
+            r[key] = (base / q).resolve().as_posix()
+            changed = True
+    if not changed:
+        return text
+    return yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
+
+
 def load_world(yaml_path: str | pathlib.Path) -> WorldSpec:
     """从 YAML 文件加载世界。路径（model/controller）按世界文件所在目录解析；
     robots[].model 支持 zoo://<key> 模型库引用（资产随仓库自带，离线即用）。"""

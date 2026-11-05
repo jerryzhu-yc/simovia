@@ -343,12 +343,10 @@ def dump_robot(robot: RobotDoc) -> dict:
         if lk.joint.type != "fixed":
             item["joint"] = joint
         if lk.geom is not None:
-            item["geom"] = {
-                "type": lk.geom["type"],
-                "size": [round(v, 6) for v in lk.geom["size"]],
-                **({"pos": list(lk.geom["pos"])} if "pos" in lk.geom else {}),
-                **({"color": lk.geom["color"]} if "color" in lk.geom else {}),
-            }
+            g = dict(lk.geom)
+            g.update(type=lk.geom["type"],
+                     size=[round(v, 6) for v in lk.geom["size"]])
+            item["geom"] = g
         if lk.color:
             item["color"] = lk.color
         links.append(item)
@@ -392,14 +390,38 @@ def link_frames(robot: RobotDoc) -> list[LinkFrame]:
 # ---------------------------------------------------------------- 编译
 
 def build_robot_spec(robot: RobotDoc) -> mujoco.MjSpec:
-    """连杆树 -> MjSpec（尚未 compile，可被世界 builder attach）。"""
+    """连杆树 -> MjSpec（尚未 compile，可被世界 builder attach）。
+
+    links 列表不保证父连杆在前：按父子关系拓扑排序后再建 body，否则
+    "把 link1 的父连杆改成列表后面的 link4"会 KeyError（F03）。
+    """
     mj = mujoco.MjSpec()
     mj.modelname = robot.name
     bodies: dict[str, object] = {}
     joint_names: set[str] = set()
     act_targets: list[tuple[str, LinkDoc]] = []
 
-    for i, lk in enumerate(robot.links):
+    by_name = {lk.name: lk for lk in robot.links}
+    index = {lk.name: i for i, lk in enumerate(robot.links)}
+    order: list[tuple[int, LinkDoc]] = []
+    done: set[str] = set()
+
+    def visit(lk: LinkDoc) -> None:
+        if lk.name in done:
+            return
+        done.add(lk.name)           # 先标记：环会被 _validate_tree 拦下，这里只防死递归
+        if lk.parent is not None:
+            parent = by_name.get(lk.parent)
+            if parent is None:
+                raise WorldError(
+                    f"连杆 '{lk.name}' 的父连杆 '{lk.parent}' 不存在")
+            visit(parent)
+        order.append((index[lk.name], lk))
+
+    for lk in robot.links:
+        visit(lk)
+
+    for i, lk in order:
         parent = (mj.worldbody if lk.parent is None else bodies[lk.parent])
         if parent is None:      # _validate_tree 已保证不会发生
             raise WorldError(f"连杆 '{lk.name}' 的父连杆尚未创建")

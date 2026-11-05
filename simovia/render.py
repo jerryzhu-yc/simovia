@@ -18,19 +18,15 @@ _FREE_AZIMUTH = 135.0
 _FREE_ELEVATION = -30.0
 
 
-def _sync_lights(model: mujoco.MjModel, data: mujoco.MjData) -> None:
-    """补齐灯的派生位姿（mj_kinematics 只算 body/geom/site/camera）。
+def _sync_camlights(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    """补齐相机与灯的派生位姿（mj_kinematics 只算 body/geom/site）。
 
-    灯的 xpos/xdir 是 mj_forward 才算的；刚 load 或 load_state 后直接截图，
-    所有灯都停在原点（z=0 的地面里），画面只剩 headlight——整片发暗、没有
-    投影。这里按 body 位姿手算一遍，与 mj_forward 的灯部分等价，但只写
-    light_xpos/light_xdir，不碰 warmstart（load 后不能 forward）。
+    cam_xpos/cam_xmat 与 light_xpos/light_xdir 都由 mj_camlight 计算；刚
+    load / reset / load_state / teleport 后没有步进就截图时，这些量还是全零，
+    相机停在原点、灯全在地面里——画面机位错误且整片发暗。mj_camlight 只写
+    这些派生量，不碰 qvel/warmstart，因此不影响物理状态。
     """
-    for i in range(model.nlight):
-        b = model.light_bodyid[i]
-        rot = data.xmat[b].reshape(3, 3)
-        data.light_xpos[i] = data.xpos[b] + rot @ model.light_pos[i]
-        data.light_xdir[i] = rot @ model.light_dir[i]
+    mujoco.mj_camlight(model, data)
 
 
 def probe_offscreen_gl(timeout: float = 60.0) -> tuple[bool, str]:
@@ -81,15 +77,26 @@ def render_offscreen(model: mujoco.MjModel, data: mujoco.MjData,
     - renderer：传入则复用（session 按 (w,h) 缓存），不传入则自建自毁
     - free_cam：自由机位的替代机位（遥操作时跟随末端 TCP 用）
     - depth=True：返回深度图（MuJoCo 深度渲染，单位米）；near/far 设置
-      裁剪面（影响深度精度，None 保持渲染器默认）
+      裁剪面（None 保持渲染器默认）
     """
+    if near is not None or far is not None:
+        _check_clip(near, far)
     mujoco.mj_kinematics(model, data)      # 只重算运动学，不碰 warmstart
-    _sync_lights(model, data)              # 灯位姿不在 kinematics 里，单独补
+    _sync_camlights(model, data)           # 相机/灯位姿不在 kinematics 里
     own = renderer is None
     if own:
         renderer = mujoco.Renderer(model, height, width)
     if depth:
         renderer.enable_depth_rendering()
+    # near/far 必须写 model.vis.map：mjv 用它同时推导光栅化 frustum 与深度
+    # 反投影系数。只改 scene.camera.frustum_* 会让两者不一致，深度值按错误
+    # 的 near/far 换算（0.8 m 的平面会被读成 0.11 m）。
+    old_znear, old_zfar = model.vis.map.znear, model.vis.map.zfar
+    scale = float(model.stat.extent) or 1.0
+    if near is not None:
+        model.vis.map.znear = float(near) / scale
+    if far is not None:
+        model.vis.map.zfar = float(far) / scale
     try:
         if camera is None:
             if free_cam is not None:
@@ -103,18 +110,26 @@ def render_offscreen(model: mujoco.MjModel, data: mujoco.MjData,
                 renderer.update_scene(data, camera=cam)
         else:
             renderer.update_scene(data, camera=camera)
-        if near is not None or far is not None:
-            for cam in renderer.scene.camera:
-                if near is not None:
-                    cam.frustum_near = float(near)
-                if far is not None:
-                    cam.frustum_far = float(far)
         return renderer.render()
     finally:
+        model.vis.map.znear = old_znear
+        model.vis.map.zfar = old_zfar
         if depth:
             renderer.disable_depth_rendering()
         if own:
             renderer.close()
+
+
+def _check_clip(near: float | None, far: float | None) -> None:
+    """near/far 合法性：near>0 且 far>near（否则光栅化与深度换算都会失真）。"""
+    n = float(near) if near is not None else None
+    f = float(far) if far is not None else None
+    if n is not None and (not np.isfinite(n) or n <= 0):
+        raise ValueError(f"near 必须是正数，实际: {near}")
+    if f is not None and (not np.isfinite(f) or f <= 0):
+        raise ValueError(f"far 必须是正数，实际: {far}")
+    if n is not None and f is not None and f <= n:
+        raise ValueError(f"far 必须大于 near，实际: near={near}, far={far}")
 
 
 def depth_to_rgb(depth: np.ndarray, near: float = 0.01,

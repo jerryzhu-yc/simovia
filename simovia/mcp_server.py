@@ -40,7 +40,8 @@ from simovia.kernel.sim import Simulation
 from simovia.render import depth_to_rgb, encode_png, render_offscreen
 from simovia.teleop import ArmTeleop
 from simovia.world.schema import load_world as _load_world_file
-from simovia.world.schema import parse_world, resolve_zoo_models
+from simovia.world.schema import (absolutize_world_paths, parse_world,
+                                  resolve_zoo_models)
 
 _PROTOCOL = "2024-11-05"
 
@@ -1090,36 +1091,8 @@ class SimoviaSession:
 
         text = self.yaml_text
         base = self.spec.base_dir if self.spec else None
-        try:
-            d = yaml.safe_load(text)
-        except yaml.YAMLError:
-            d = None
-        if base and d:
-            # 相对资源改绝对（model/controller）；as_posix 统一正斜杠
-            # （Windows 反斜杠进 YAML 跨平台重开也一致）
-            def abs_of(v):
-                if not v:
-                    return v
-                s = str(v)
-                if s.startswith("zoo://"):   # 模型库引用非文件路径，原样保留
-                    return s
-                q = pathlib.Path(s)
-                if q.is_absolute():
-                    return q.as_posix()
-                return (base / q).resolve().as_posix()
-            changed = False
-            for r in d.get("robots") or []:
-                if r.get("model") and not str(r["model"]).startswith("zoo://") \
-                        and not pathlib.Path(str(r["model"])) \
-                        .is_absolute():
-                    r["model"] = abs_of(r["model"])
-                    changed = True
-                if r.get("controller") and not pathlib.Path(str(r["controller"])) \
-                        .is_absolute():
-                    r["controller"] = abs_of(r["controller"])
-                    changed = True
-            if changed:
-                text = yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
+        # 相对资源改绝对（model/controller）；另存到别的目录后重开也有效
+        text = absolutize_world_paths(text, base)
 
         p.write_text(text, encoding="utf-8")
         return {"saved": str(p), "bytes": len(text.encode("utf-8")),

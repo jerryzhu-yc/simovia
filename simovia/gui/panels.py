@@ -12,15 +12,16 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import pathlib
+from collections import deque
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import (QColor, QFont, QIcon, QKeySequence, QPixmap,
-                           QShortcut, QSyntaxHighlighter, QTextCharFormat,
-                           QTextCursor)
+from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtGui import (QColor, QFont, QIcon, QKeySequence, QPainter,
+                           QPen, QPixmap, QPolygonF, QShortcut,
+                           QSyntaxHighlighter, QTextCharFormat, QTextCursor)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
-                               QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QMenu,
+                               QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+                               QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+                               QLineEdit, QListWidget, QListWidgetItem, QMenu,
                                QMessageBox, QPlainTextEdit, QPushButton,
                                QStackedWidget, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
@@ -417,10 +418,166 @@ class PropertiesPanel(QWidget):
 
 # ================================================================ 观测树（保留 M1 接口）
 
+class JointCurveWidget(QWidget):
+    """单关节曲线：实际 q 与指令 u 的折线（自绘，不依赖 pyqtgraph）。
+
+    - 目标/实际对比：u 是控制器输出（位置执行器即目标），q 是实际反馈
+    - 纵轴按数据 + 执行器限位自动缩放，左上角标注单位
+    - 限位画虚线，q 越出控制限位时整条曲线转红提示
+    """
+
+    MAX_POINTS = 600
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._t: deque = deque(maxlen=self.MAX_POINTS)
+        self._q: deque = deque(maxlen=self.MAX_POINTS)
+        self._u: deque = deque(maxlen=self.MAX_POINTS)
+        self._lo: float | None = None
+        self._hi: float | None = None
+        self._unit = ""
+        self._joint = ""
+        self.setMinimumHeight(140)
+        self.setToolTip("q = 实际关节量，u = 控制器输出（位置模式即目标）")
+
+    # ------------------------------------------------------------ 数据
+    def clear(self) -> None:
+        self._t.clear()
+        self._q.clear()
+        self._u.clear()
+        self._lo = self._hi = None
+        self._unit = ""
+        self._joint = ""
+        self.update()
+
+    def sample_count(self) -> int:
+        return len(self._t)
+
+    def add_sample(self, t: float, q: float | None, u: float | None,
+                   lo: float | None = None, hi: float | None = None,
+                   unit: str = "", joint: str = "") -> None:
+        self._t.append(float(t))
+        self._q.append(q)
+        self._u.append(u)
+        self._lo, self._hi = lo, hi
+        self._unit, self._joint = unit, joint
+        self.update()
+
+    def export_csv(self, path: str) -> int:
+        """把已采样的曲线写 CSV（时间/实际/指令/限位/单位）。"""
+        import csv
+        rows = list(zip(self._t, self._q, self._u))
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            wr = csv.writer(fh)
+            wr.writerow(["time", "q_actual", "u_command", "limit_lo",
+                         "limit_hi", "unit", "joint"])
+            for t, q, u in rows:
+                wr.writerow([f"{t:.6f}",
+                             "" if q is None else f"{q:.6f}",
+                             "" if u is None else f"{u:.6f}",
+                             "" if self._lo is None else f"{self._lo:.6f}",
+                             "" if self._hi is None else f"{self._hi:.6f}",
+                             self._unit, self._joint])
+        return len(rows)
+
+    # ------------------------------------------------------------ 绘制
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(theme.C_BG))
+        left, right, top, bottom = 48, 10, 26, 18
+        w = max(1, self.width() - left - right)
+        h = max(1, self.height() - top - bottom)
+        p.setPen(QPen(QColor(theme.C_BORDER), 1))
+        p.drawRect(left, top, w, h)
+
+        font = QFont()
+        font.setPointSize(8)
+        p.setFont(font)
+        p.setPen(QColor(theme.C_TEXT_DIM))
+        if not self._t:
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                       "暂无曲线：运行仿真后按关节查看 q / u")
+            return
+
+        vals = [v for v in (*self._q, *self._u) if v is not None]
+        if self._lo is not None:
+            vals.append(self._lo)
+        if self._hi is not None:
+            vals.append(self._hi)
+        if not vals:
+            return
+        lo = min(vals)
+        hi = max(vals)
+        if hi - lo < 1e-9:
+            lo, hi = lo - 1.0, hi + 1.0
+        pad = (hi - lo) * 0.08
+        lo -= pad
+        hi += pad
+        span = hi - lo
+
+        def ymap(v: float) -> float:
+            return top + h - (v - lo) / span * h
+
+        def xmap(t: float) -> float:
+            t0, t1 = self._t[0], self._t[-1]
+            if t1 - t0 < 1e-9:
+                return left + w
+            return left + (t - t0) / (t1 - t0) * w
+
+        # 限位：虚线 + 顶部标注
+        if self._lo is not None and self._hi is not None:
+            p.setPen(QPen(QColor(theme.C_WARN), 1, Qt.PenStyle.DashLine))
+            for v in (self._lo, self._hi):
+                y = ymap(v)
+                p.drawLine(QPointF(left, y), QPointF(left + w, y))
+            p.setPen(QColor(theme.C_WARN))
+            p.drawText(left + 2, top - 6,
+                       f"限位 [{self._lo:+.3f}, {self._hi:+.3f}]")
+
+        # 曲线：实际 q（主色）与指令 u（绿色虚线）
+        over = any(v is not None and self._lo is not None and
+                   (v < self._lo - 1e-9 or v > self._hi + 1e-9)
+                   for v in self._q)
+        q_color = QColor(theme.C_ERR if over else theme.C_ACCENT)
+        self._draw_series(p, self._t, self._q, xmap, ymap, q_color,
+                          dashed=False)
+        self._draw_series(p, self._t, self._u, xmap, ymap,
+                          QColor(theme.C_OK), dashed=True)
+
+        # 轴刻度 + 单位 + 图例
+        p.setPen(QColor(theme.C_TEXT_DIM))
+        p.drawText(2, int(ymap(hi)) + 8, f"{hi:+.3f}")
+        p.drawText(2, int(ymap(lo)), f"{lo:+.3f}")
+        unit = f" [{self._unit}]" if self._unit else ""
+        p.drawText(left, top - 6, f"{self._joint}{unit}")
+        if over:
+            p.setPen(QColor(theme.C_ERR))
+            p.drawText(left + w - 76, top - 6, "q 超出控制限位")
+
+    @staticmethod
+    def _draw_series(p: QPainter, times, vals, xmap, ymap, color: QColor,
+                     dashed: bool) -> None:
+        poly = QPolygonF()
+        for t, v in zip(times, vals):
+            if v is None:
+                continue
+            poly.append(QPointF(xmap(t), ymap(v)))
+        if poly.size() < 2:
+            return
+        pen = QPen(color, 1.6)
+        if dashed:
+            pen.setStyle(Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.drawPolyline(poly)
+
+
 class ObsPanel(QWidget):
-    """观测树：逐机器人关节 qpos/ctrl + 传感器读数 + 物体 pos/quat。
+    """观测面板：数字树 + 可选关节曲线（q 实际 vs u 指令）。
 
     保留 self._tree 与 update_obs/clear 接口（tests/test_gui.py 依赖）。
+    曲线与树在同一面板：「暂停查看」冻结两者，便于读数/截图；曲线数据
+    可导出 CSV 做离线分析（振荡、跟踪误差、限位饱和）。
     """
 
     def __init__(self, parent=None):
@@ -437,9 +594,41 @@ class ObsPanel(QWidget):
             0, self._tree.header().ResizeMode.ResizeToContents)
         self._tree.header().setSectionResizeMode(
             1, self._tree.header().ResizeMode.Stretch)
-        lay.addWidget(self._tree)
+        lay.addWidget(self._tree, stretch=2)
 
+        bar = QHBoxLayout()
+        self.chk_curve = QCheckBox("曲线")
+        self.chk_curve.setChecked(True)
+        self.chk_curve.setToolTip("显示 q（实际）与 u（控制器输出/目标）曲线")
+        bar.addWidget(self.chk_curve)
+        self.combo_curve = QComboBox()
+        self.combo_curve.setToolTip("选择要绘制的机器人 / 关节")
+        self.combo_curve.setMinimumWidth(120)
+        bar.addWidget(self.combo_curve, stretch=1)
+        self.chk_pause = QCheckBox("暂停查看")
+        self.chk_pause.setToolTip("冻结观测树与曲线（仿真继续跑），便于读数")
+        bar.addWidget(self.chk_pause)
+        btn_export = QPushButton("导出 CSV")
+        btn_export.setToolTip("导出当前关节曲线的采样数据（时间/q/u/限位）")
+        btn_export.clicked.connect(self._export_clicked)
+        bar.addWidget(btn_export)
+        lay.addLayout(bar)
+
+        self.curve = JointCurveWidget()
+        lay.addWidget(self.curve, stretch=2)
+        self.chk_curve.toggled.connect(self.curve.setVisible)
+        self.combo_curve.currentIndexChanged.connect(self._on_signal_changed)
+
+        self._last_key = None
+
+    # ------------------------------------------------------------ 刷新
     def update_obs(self, obs: dict) -> None:
+        if self.chk_pause.isChecked():
+            return                      # 冻结视图：树与曲线都不再跳动
+        self._refresh_tree(obs)
+        self._update_curve(obs)
+
+    def _refresh_tree(self, obs: dict) -> None:
         # 记录当前展开状态，刷新后保持（避免每帧折叠抖动）
         expanded = {self._tree.topLevelItem(i).text(0)
                     for i in range(self._tree.topLevelItemCount())
@@ -479,6 +668,92 @@ class ObsPanel(QWidget):
                 f"quat=({', '.join(f'{x:+.2f}' for x in quat)})"])
             self._tree.addTopLevelItem(top)
 
+    # ------------------------------------------------------------ 曲线
+    def _signals(self, obs: dict) -> list[tuple[str, str, dict, dict]]:
+        """[(robot, joint, joint_dict, actuator_dict)]，只收标量关节。"""
+        out = []
+        for rname, robs in (obs.get("robots") or {}).items():
+            joints = robs.get("joints") or {}
+            if joints:
+                acts = robs.get("actuators") or {}
+                for jname, j in joints.items():
+                    q = j.get("q") or []
+                    if len(q) != 1:
+                        continue               # 球关节/浮动基座不画单值曲线
+                    act = next((a for a in acts.values()
+                                if a.get("joint") == jname), {})
+                    out.append((rname, jname, j, act))
+            else:                             # 旧 payload：按下标对应的标量
+                names = robs.get("joint_names") or []
+                qpos = robs.get("qpos") or []
+                ctrl = robs.get("ctrl") or []
+                for i, jn in enumerate(names):
+                    if i >= len(qpos):
+                        continue
+                    out.append((rname, jn,
+                                {"q": [qpos[i]], "unit": ""},
+                                {"u": ctrl[i] if i < len(ctrl) else None}))
+        return out
+
+    def _update_curve(self, obs: dict) -> None:
+        sigs = self._signals(obs)
+        keys = [f"{r} · {j}" for r, j, _j, _a in sigs]
+        if keys != [self.combo_curve.itemText(i)
+                    for i in range(self.combo_curve.count())]:
+            cur = self.combo_curve.currentText()
+            self.combo_curve.blockSignals(True)
+            self.combo_curve.clear()
+            self.combo_curve.addItems(keys)
+            if cur in keys:
+                self.combo_curve.setCurrentText(cur)
+            self.combo_curve.blockSignals(False)
+            if keys and self.combo_curve.currentIndex() < 0:
+                self.combo_curve.setCurrentIndex(0)
+        idx = self.combo_curve.currentIndex()
+        if idx < 0 or idx >= len(sigs):
+            return
+        rname, jname, j, act = sigs[idx]
+        t = obs.get("time")
+        if t is None:
+            t = float(self.curve.sample_count())
+        key = (rname, jname, t)
+        if key == self._last_key:
+            return                            # 同一物理状态：不重复采样
+        if self._last_key and self._last_key[:2] != (rname, jname):
+            self.curve.clear()
+        self._last_key = key
+        q = (j.get("q") or [None])[0]
+        u = act.get("u")
+        rng = act.get("ctrlrange") or (None, None)
+        self.curve.add_sample(float(t), q, u, rng[0], rng[1],
+                              j.get("unit") or "", jname)
+
+    def _on_signal_changed(self, _idx: int) -> None:
+        self.curve.clear()
+        self._last_key = None
+
+    # ------------------------------------------------------------ 导出
+    def export_csv(self, path: str) -> int:
+        return self.curve.export_csv(path)
+
+    def _export_clicked(self) -> None:
+        if self.curve.sample_count() == 0:
+            QMessageBox.information(self, "导出观测数据",
+                                    "还没有曲线采样（先运行仿真）。")
+            return
+        name = self.combo_curve.currentText().replace(" · ", "_") or "obs"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出观测数据", f"{name}.csv", "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            n = self.export_csv(path)
+        except OSError as e:
+            QMessageBox.warning(self, "导出观测数据", f"写入失败：{e}")
+            return
+        QMessageBox.information(self, "导出观测数据",
+                                f"已导出 {n} 个采样点到\n{path}")
+
     @staticmethod
     def _build_named(top, joints: dict, actuators: dict) -> None:
         """按名字配对关节与执行器（不依赖 qpos/ctrl 的下标顺序）。"""
@@ -517,6 +792,9 @@ class ObsPanel(QWidget):
 
     def clear(self) -> None:
         self._tree.clear()
+        self.curve.clear()
+        self._last_key = None
+        self.combo_curve.clear()
 
 
 # ================================================================ 控制台
@@ -688,7 +966,8 @@ class CodePanel(QWidget):
     丢改动），标题栏按钮显示 "保存并运行 *"；"重读"需确认后才丢弃草稿。
     """
 
-    saveRequested = Signal(str, str)          # robot 名, 文件全文
+    saveRequested = Signal(str, str)          # robot 名, 文件全文（保存并运行）
+    saveOnlyRequested = Signal(str, str)      # robot 名, 文件全文（仅保存）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -703,6 +982,10 @@ class CodePanel(QWidget):
         btn_reload.setToolTip("放弃修改，从磁盘重读当前控制器")
         btn_reload.clicked.connect(self._reload_from_disk)
         bar.addWidget(btn_reload)
+        self.btn_save_only = QPushButton("保存")
+        self.btn_save_only.setToolTip("只写回控制器文件（不重载世界、不运行）")
+        self.btn_save_only.clicked.connect(self._on_save_only)
+        bar.addWidget(self.btn_save_only)
         self.btn_save = QPushButton("保存并运行")
         self.btn_save.setToolTip("写回控制器文件 -> 重载世界（控制器进程重启，"
                                  "新代码生效）-> 自动运行")
@@ -718,9 +1001,12 @@ class CodePanel(QWidget):
         self.edit.setFont(mono)
         self.edit.setPlaceholderText("加载世界后自动载入控制器代码…")
         self._hl = PyHighlighter(self.edit.document())
-        # 编辑框聚焦时 Ctrl+S = 保存并运行（优先于全局截图快捷键）
+        # 编辑框聚焦时：Ctrl+S 仅保存，Ctrl+Shift+S 保存并运行（优先于
+        # 全局的"保存世界"/"保存世界并运行"快捷键）
         sc = QShortcut(QKeySequence.StandardKey.Save, self.edit)
-        sc.activated.connect(self._on_save)
+        sc.activated.connect(self._on_save_only)
+        sc2 = QShortcut(QKeySequence("Ctrl+Shift+S"), self.edit)
+        sc2.activated.connect(self._on_save)
         v.addWidget(self.edit, stretch=1)
         self._paths: dict[str, str] = {}       # robot 名 -> 控制器绝对路径
         self._drafts: dict[str, str] = {}      # 文件路径 -> 未保存内容
@@ -731,6 +1017,7 @@ class CodePanel(QWidget):
 
     def _on_modified(self, modified: bool) -> None:
         self.btn_save.setText("保存并运行 *" if modified else "保存并运行")
+        self.btn_save_only.setText("保存 *" if modified else "保存")
 
     def _stash_current(self) -> None:
         """把当前编辑框里未保存的改动收进草稿（切文件/换世界前调用）。"""
@@ -839,6 +1126,13 @@ class CodePanel(QWidget):
         if name not in self._paths:
             return
         self.saveRequested.emit(name, self.edit.toPlainText())
+
+    def _on_save_only(self) -> None:
+        """仅保存：写回文件，不重载世界、不运行。"""
+        name = self.combo.currentText()
+        if name not in self._paths:
+            return
+        self.saveOnlyRequested.emit(name, self.edit.toPlainText())
 
 
 def make_side_panel() -> tuple[QWidget, dict]:
@@ -1051,6 +1345,7 @@ class GearPanel(QWidget):
         # 末端执行器组（左右手各有挂载位）
         self._gripper_box = QGroupBox("末端执行器")
         gripper_lay = QFormLayout(self._gripper_box)
+        gripper_lay.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         # 安装位置：左手/右手/默认挂点（由 manifest 的 mounts 给出）
         self._mount_combo = QComboBox()
         self._mount_combo.currentIndexChanged.connect(self._on_mount_changed)
@@ -1132,6 +1427,7 @@ class GearPanel(QWidget):
         # 新增传感器表单
         self._add_box = QGroupBox("新增传感器")
         add_lay = QFormLayout(self._add_box)
+        add_lay.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self._sensor_type = QComboBox()
         self._sensor_type.addItems(self._sensor_types)
         self._sensor_type.currentIndexChanged.connect(self._on_sensor_type_changed)
@@ -1182,6 +1478,8 @@ class GearPanel(QWidget):
         # 相机参数（视场角 / 深度 / 裁剪面）
         self._cam_box = QGroupBox("相机参数")
         cam_lay = QFormLayout(self._cam_box)
+        # 窄窗口下标签与字段换行，避免表单横向滚动（F14）
+        cam_lay.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self._cam_combo = QComboBox()
         self._cam_combo.currentIndexChanged.connect(self._on_cam_changed)
         cam_lay.addRow("相机：", self._cam_combo)
@@ -1190,6 +1488,20 @@ class GearPanel(QWidget):
         self._cam_fovy.setSingleStep(1.0); self._cam_fovy.setValue(45.0)
         self._cam_fovy.setSuffix(" °")
         cam_lay.addRow("视场角 fovy：", self._cam_fovy)
+        # 已有相机的挂载位姿（相对挂载 body 的局部坐标）
+        self._cam_pos_spins = [QDoubleSpinBox() for _ in range(3)]
+        cam_pos_row = QHBoxLayout()
+        for s in self._cam_pos_spins:
+            s.setRange(-10.0, 10.0); s.setDecimals(3); s.setSingleStep(0.01)
+            cam_pos_row.addWidget(s)
+        cam_lay.addRow("挂载 pos:", cam_pos_row)
+        self._cam_rot_spins = [QDoubleSpinBox() for _ in range(3)]
+        cam_rot_row = QHBoxLayout()
+        for s in self._cam_rot_spins:
+            s.setRange(-180.0, 180.0); s.setDecimals(1); s.setSingleStep(5.0)
+            cam_rot_row.addWidget(s)
+        cam_rot_row.addWidget(QLabel("（roll/pitch/yaw deg）"))
+        cam_lay.addRow("挂载 rot:", cam_rot_row)
         self._cam_depth = QCheckBox("深度相机（实时画面可切伪彩）")
         cam_lay.addRow("", self._cam_depth)
         near_far = QHBoxLayout()
@@ -1204,6 +1516,13 @@ class GearPanel(QWidget):
         near_far.addWidget(QLabel("far:"))
         near_far.addWidget(self._cam_far)
         cam_lay.addRow("深度裁剪：", near_far)
+        # 校验错误就地显示（不再只写按钮 tooltip）
+        self._cam_err = QLabel("")
+        self._cam_err.setWordWrap(True)
+        self._cam_err.setStyleSheet("color:#DC2626; font-size:11px;")
+        cam_lay.addRow("", self._cam_err)
+        self._cam_near.valueChanged.connect(self._validate_camera)
+        self._cam_far.valueChanged.connect(self._validate_camera)
         self._bt_save_cam = QPushButton("保存相机参数")
         self._bt_save_cam.clicked.connect(self._on_save_camera)
         cam_btns = QHBoxLayout()
@@ -1217,10 +1536,38 @@ class GearPanel(QWidget):
     def set_manifest(self, manifest: dict, base_dir: str):
         self._manifest = manifest
         self._base_dir = base_dir
+        # 记住当前选择（机器人 / 安装位置 / 相机 / 传感器），重载后恢复：
+        # 保存参数触发清单刷新时不会跳回第一个机器人或第一个相机
+        old_robot = (self._robot_combo.currentData() or {}).get("name")
+        old_side = (self._mount_combo.currentData() or {}).get("side")
+        old_cam = self._cam_combo.currentData()
+        old_item = self._sensor_list.currentItem()
+        old_sensor = (old_item.data(Qt.ItemDataRole.UserRole)
+                      if old_item is not None else None)
+        self._robot_combo.blockSignals(True)
         self._robot_combo.clear()
         for r in manifest.get("robots", []):
             self._robot_combo.addItem(r["name"], r)
+        idx = self._robot_combo.findText(old_robot) if old_robot else -1
+        if idx >= 0:
+            self._robot_combo.setCurrentIndex(idx)
+        self._robot_combo.blockSignals(False)
         self._on_robot_changed()
+        if old_side is not None or self._mount_combo.count() > 1:
+            for i in range(self._mount_combo.count()):
+                if (self._mount_combo.itemData(i) or {}).get("side") == old_side:
+                    self._mount_combo.setCurrentIndex(i)
+                    break
+        if old_cam:
+            i = self._cam_combo.findData(old_cam)
+            if i >= 0:
+                self._cam_combo.setCurrentIndex(i)
+        if old_sensor:
+            for i in range(self._sensor_list.count()):
+                it = self._sensor_list.item(i)
+                if it.data(Qt.ItemDataRole.UserRole) == old_sensor:
+                    self._sensor_list.setCurrentItem(it)
+                    break
 
     def _clear(self):
         self._robot_combo.clear()
@@ -1267,10 +1614,12 @@ class GearPanel(QWidget):
         for s in r.get("sites", []):
             self._site_combo.addItem(s, s)
         self._refresh_ee_choices()
-        # 传感器列表
+        # 传感器列表：显示 "name (type)"，原始名存 UserRole（含空格也可靠）
         self._sensor_list.clear()
         for s in r.get("sensors", []):
-            self._sensor_list.addItem(f"{s['name']} ({s['type']})")
+            item = QListWidgetItem(f"{s['name']} ({s['type']})")
+            item.setData(Qt.ItemDataRole.UserRole, s["name"])
+            self._sensor_list.addItem(item)
         # 自带末端列表（灵巧手/夹爪）
         self._hand_list.clear()
         for ee in r.get("builtin_end_effectors", []):
@@ -1428,9 +1777,8 @@ class GearPanel(QWidget):
         r = self._current_robot()
         item = self._sensor_list.currentItem()
         if r and item:
-            # 解析出传感器名（"name (type)"）
-            txt = item.text()
-            name = txt.split()[0]
+            # 用 UserRole 里的原始名，不再从显示文本反解析（F08：含空格名）
+            name = item.data(Qt.ItemDataRole.UserRole) or item.text().split()[0]
             self.remove_sensor.emit(r["name"], name)
 
     def _on_hand_toggle(self, stripped: bool):
@@ -1459,9 +1807,10 @@ class GearPanel(QWidget):
         return None
 
     def _on_cam_changed(self):
-        """切相机时回填该相机的 fovy / 深度 / 裁剪面参数。"""
+        """切相机时回填该相机的挂载位姿 / fovy / 深度 / 裁剪面参数。"""
         cam = self._selected_camera()
-        blocked = [self._cam_fovy, self._cam_depth]
+        blocked = [self._cam_fovy, self._cam_depth,
+                   *self._cam_pos_spins, *self._cam_rot_spins]
         for w in blocked:
             w.blockSignals(True)
         try:
@@ -1470,30 +1819,52 @@ class GearPanel(QWidget):
                 self._cam_depth.setChecked(False)
                 self._cam_near.setValue(0.01)
                 self._cam_far.setValue(50.0)
+                for w in self._cam_pos_spins:
+                    w.setValue(0.0)
+                for w in self._cam_rot_spins:
+                    w.setValue(0.0)
             else:
                 fovy = cam.get("fovy")
                 self._cam_fovy.setValue(45.0 if fovy is None else float(fovy))
                 self._cam_depth.setChecked(bool(cam.get("depth")))
                 self._cam_near.setValue(float(cam.get("near") or 0.01))
                 self._cam_far.setValue(float(cam.get("far") or 50.0))
+                pos = cam.get("pos") or (0.0, 0.0, 0.0)
+                for w, v in zip(self._cam_pos_spins, pos):
+                    w.setValue(float(v))
+                quat = cam.get("quat") or (1.0, 0.0, 0.0, 0.0)
+                for w, v in zip(self._cam_rot_spins, quat_to_euler(quat)):
+                    w.setValue(float(v))
         finally:
             for w in blocked:
                 w.blockSignals(False)
         self._bt_save_cam.setEnabled(cam is not None)
+        self._validate_camera()
+
+    def _validate_camera(self, *_):
+        """裁剪面合法性就地提示，不合法时禁用保存（F13）。"""
+        near = round(self._cam_near.value(), 3)
+        far = round(self._cam_far.value(), 1)
+        ok = near > 0 and far > near
+        self._cam_err.setText(
+            "" if ok else
+            f"深度裁剪面需 0 < near < far（当前 near={near:g}, far={far:g}）")
+        self._bt_save_cam.setEnabled(ok and self._selected_camera() is not None)
+        return ok
 
     def _on_save_camera(self):
         r = self._current_robot()
         cam = self._selected_camera()
-        if r is None or cam is None:
-            return
-        near = round(self._cam_near.value(), 3)
-        far = round(self._cam_far.value(), 1)
-        if far <= near:
-            self._bt_save_cam.setToolTip("far 必须大于 near")
+        if r is None or cam is None or not self._validate_camera():
             return
         patch = {"fovy": round(self._cam_fovy.value(), 1),
                  "depth": self._cam_depth.isChecked(),
-                 "near": near, "far": far}
+                 "near": round(self._cam_near.value(), 3),
+                 "far": round(self._cam_far.value(), 1),
+                 "pos": [round(w.value(), 4) for w in self._cam_pos_spins],
+                 "quat": list(euler_to_quat(
+                     *(w.value() for w in self._cam_rot_spins)))}
+        self._cam_err.setText("")
         self.update_sensor.emit(r["name"], cam["name"], patch)
 
 

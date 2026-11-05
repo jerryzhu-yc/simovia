@@ -1358,3 +1358,237 @@ class TestMountImePlugin:
         mount_ime_plugin()
         assert os.environ["QT_PLUGIN_PATH"].endswith(
             ".local/share/simovia/qt-plugins")
+
+
+# ================================================================ 场景编辑历史
+
+class TestEditHistory:
+    """撤销/重做：YAML 全文快照（纯逻辑，无 Qt）。"""
+
+    def test_undo_redo_roundtrip(self):
+        from simovia.gui.state import EditHistory
+        h = EditHistory()
+        h.reset("v0", "打开")
+        h.push("v1", "移动 cube")
+        h.push("v2", "删除 arm")
+        assert h.can_undo() and not h.can_redo()
+        assert h.undo()["text"] == "v1"
+        assert h.undo()["text"] == "v0"
+        assert not h.can_undo()
+        assert h.redo()["text"] == "v1"
+        assert h.current()["label"] == "移动 cube"
+
+    def test_duplicate_snapshot_ignored(self):
+        from simovia.gui.state import EditHistory
+        h = EditHistory()
+        h.reset("v0")
+        assert h.push("v0") is False
+        assert len(h) == 1
+
+    def test_new_edit_truncates_redo_branch(self):
+        from simovia.gui.state import EditHistory
+        h = EditHistory()
+        h.reset("v0")
+        h.push("v1")
+        h.push("v2")
+        h.undo()
+        h.push("v2b", "新编辑")
+        assert not h.can_redo()
+        assert [it["text"] for it in h.entries()] == ["v0", "v1", "v2b"]
+
+    def test_limit_and_jump(self):
+        from simovia.gui.state import EditHistory
+        h = EditHistory(limit=3)
+        h.reset("v0")
+        for i in range(1, 5):
+            h.push(f"v{i}")
+        assert [it["text"] for it in h.entries()] == ["v2", "v3", "v4"]
+        assert h.jump(0)["text"] == "v2"
+        assert h.index == 0 and h.can_redo()
+
+
+def test_text_diff():
+    from simovia.gui.state import text_diff
+    assert text_diff("a\n", "a\n") == ""
+    d = text_diff("name: a\npos: [0, 0, 0]\n", "name: a\npos: [1, 0, 0]\n")
+    assert "-pos: [0, 0, 0]" in d and "+pos: [1, 0, 0]" in d
+
+
+# ================================================================ 观测曲线
+
+def _curve_obs(t, q, u):
+    return {"time": t, "robots": {"arm": {
+        "joints": {"j1": {"q": [q], "type": "hinge", "unit": "rad"}},
+        "actuators": {"a1": {"u": u, "joint": "j1", "mode": "position",
+                             "ctrlrange": [-2.0, 2.0]}}},
+        "objects": {}}}
+
+
+def test_obs_panel_curve_pause_and_export(qapp, tmp_path):
+    """观测曲线：采样去重、暂停冻结、CSV 导出含单位/限位。"""
+    from simovia.gui.panels import ObsPanel
+    p = ObsPanel()
+    try:
+        p.update_obs(_curve_obs(0.0, 0.1, 0.2))
+        p.update_obs(_curve_obs(0.1, 0.2, 0.2))
+        p.update_obs(_curve_obs(0.1, 0.2, 0.2))     # 同一状态不重复采样
+        assert p.curve.sample_count() == 2
+        assert p.combo_curve.currentText() == "arm · j1"
+
+        p.chk_pause.setChecked(True)               # 暂停查看：冻结
+        p.update_obs(_curve_obs(0.2, 0.3, 0.2))
+        assert p.curve.sample_count() == 2
+        p.chk_pause.setChecked(False)
+        p.update_obs(_curve_obs(0.2, 0.3, 0.2))
+        assert p.curve.sample_count() == 3
+
+        out = tmp_path / "curve.csv"
+        assert p.export_csv(str(out)) == 3
+        text = out.read_text(encoding="utf-8")
+        assert "time,q_actual,u_command" in text
+        assert "rad" in text and "j1" in text and "-2.000000" in text
+    finally:
+        p.deleteLater()
+
+
+def test_code_panel_save_and_run_are_separate(qapp, tmp_path):
+    """代码页：保存（仅写盘）与保存并运行是两个独立信号。"""
+    from simovia.gui.panels import CodePanel
+
+    class _R:
+        def __init__(self, name, controller):
+            self.name = name
+            self.controller = controller
+
+    ctrl = tmp_path / "ctrl.py"
+    ctrl.write_text("print('hi')\n", encoding="utf-8")
+    spec = type("S", (), {"robots": [_R("arm", "ctrl.py")]})()
+    p = CodePanel()
+    try:
+        only, both = [], []
+        p.saveOnlyRequested.connect(lambda n, t: only.append((n, t)))
+        p.saveRequested.connect(lambda n, t: both.append((n, t)))
+        p.set_world(spec, tmp_path)
+        p.edit.clear()
+        p.edit.insertPlainText("print('new')\n")
+        assert p.btn_save_only.text() == "保存 *"
+        p._on_save_only()
+        p._on_save()
+        assert only == [("arm", "print('new')\n")]
+        assert both == [("arm", "print('new')\n")]
+    finally:
+        p.deleteLater()
+
+
+def test_layout_presets_cover_all_docks():
+    from simovia.gui.app import DEFAULT_LAYOUT, LAYOUT_PRESETS
+    keys = {"scene", "right", "console", "teleop"}
+    for name, vis in LAYOUT_PRESETS.items():
+        assert set(vis) == keys, name
+        assert vis["right"] is True        # 任何预设都保留属性/观测
+    assert DEFAULT_LAYOUT["teleop"] is False   # 小屏默认收起遥操作
+
+
+def _cam_manifest():
+    """带两台相机的 manifest（世界 YAML 声明了深度开关与裁剪面）。"""
+    m = _gear_manifest()
+    m["robots"][0]["sensors"] += [
+        {"name": "wrist cam", "type": "camera", "dim": 0, "body": "link1",
+         "pos": [0.05, 0.0, 0.1], "quat": None, "fovy": 60.0,
+         "depth": True, "near": 0.05, "far": 5.0},
+        {"name": "side_cam", "type": "camera", "dim": 0, "body": "base",
+         "pos": [0.2, 0.0, 0.5], "quat": [1.0, 0.0, 0.0, 0.0], "fovy": 45.0,
+         "depth": False, "near": 0.02, "far": 20.0},
+    ]
+    m["robots"][0]["cameras"] = ["wrist cam", "side_cam"]
+    return m
+
+
+def test_teleop_panel_preview_and_camera_backfill(qapp):
+    """独立预览不依赖遥操作；切相机按 manifest 回填深度参数（F06/F07）。"""
+    from PySide6.QtCore import Qt
+    from simovia.gui.teleop_panel import TeleopPanel
+    p = TeleopPanel()
+    ev = []
+    p.previewToggled.connect(ev.append)
+    try:
+        p.set_manifest(_cam_manifest())
+        assert p.camera_combo.currentData() == "arm/wrist cam"
+        assert p.depth_chk.isChecked()
+        assert p.near_spin.value() == pytest.approx(0.05)
+        assert p.far_spin.value() == pytest.approx(5.0)
+        # 不需要 IK 遥操作即可开预览
+        p.bt_preview.setChecked(True)
+        assert ev == [True]
+        assert p.bt_preview.text() == "停止预览"
+        # 预览中换相机：回填新配置并按新相机重开流
+        p.camera_combo.setCurrentIndex(
+            p.camera_combo.findData("arm/side_cam"))
+        assert ev == [True, True]
+        assert not p.depth_chk.isChecked()
+        assert p.near_spin.value() == pytest.approx(0.02)
+        assert p.far_spin.value() == pytest.approx(20.0)
+        assert p.stream_args()["camera"] == "arm/side_cam"
+        p.bt_preview.setChecked(False)
+        assert ev[-1] is False
+        assert p.camera_combo.itemData(0) == ""      # 自由机位仍可选
+        # 带空格的相机名以原始名保存（F08）
+        names = [p.camera_combo.itemData(i)
+                 for i in range(p.camera_combo.count())]
+        assert "arm/wrist cam" in names
+        assert p.camera_combo.itemData(1) == "arm/wrist cam"
+        assert Qt.ItemDataRole.UserRole is not None
+    finally:
+        p.deleteLater()
+
+
+def test_gear_camera_backfill_validation_and_selection(qapp):
+    """切相机回填/非法裁剪面就地报错/清单刷新保持选择（F07/F12/F13）。"""
+    from PySide6.QtCore import Qt
+    from simovia.gui.panels import GearPanel
+    p = GearPanel()
+    got = []
+    p.update_sensor.connect(lambda r, n, patch: got.append((n, patch)))
+    try:
+        p.set_manifest(_cam_manifest(), "/tmp")
+        assert p._cam_combo.currentData() == "wrist cam"
+        assert p._cam_depth.isChecked()
+        assert p._cam_near.value() == pytest.approx(0.05)
+        assert p._cam_pos_spins[0].value() == pytest.approx(0.05)
+        # 切 side_cam：fovy/深度/裁剪面/挂载位姿全部回填
+        p._cam_combo.setCurrentIndex(p._cam_combo.findData("side_cam"))
+        assert not p._cam_depth.isChecked()
+        assert p._cam_fovy.value() == pytest.approx(45.0)
+        assert p._cam_far.value() == pytest.approx(20.0)
+        assert p._cam_rot_spins[2].value() == pytest.approx(0.0, abs=1e-6)
+        # 非法裁剪面：就地错误 + 禁用保存 + 不发出更新
+        p._cam_near.setValue(5.0)
+        p._cam_far.setValue(1.0)
+        assert "near" in p._cam_err.text()
+        assert not p._bt_save_cam.isEnabled()
+        p._on_save_camera()
+        assert got == []
+        # 合法后保存：patch 带 pos/quat
+        p._cam_near.setValue(0.02)
+        p._cam_far.setValue(20.0)
+        assert p._bt_save_cam.isEnabled()
+        p._cam_rot_spins[2].setValue(90.0)
+        p._on_save_camera()
+        name, patch = got[-1]
+        assert name == "side_cam"
+        assert patch["near"] == 0.02 and patch["far"] == 20.0
+        assert patch["pos"] == [0.2, 0.0, 0.5]
+        # yaw 90deg -> wxyz ≈ (0.7071, 0, 0, 0.7071)
+        assert patch["quat"][0] == pytest.approx(0.7071, abs=1e-3)
+        assert patch["quat"][3] == pytest.approx(0.7071, abs=1e-3)
+        # 清单刷新（保存后重载）保持相机/传感器选择，不再跳回第一个
+        old = p._sensor_list.item(0)
+        p._sensor_list.setCurrentItem(old)
+        p.set_manifest(_cam_manifest(), "/tmp")
+        assert p._cam_combo.currentData() == "side_cam"
+        cur = p._sensor_list.currentItem()
+        assert cur is not None
+        assert cur.data(Qt.ItemDataRole.UserRole) == "wrist_imu"
+    finally:
+        p.deleteLater()
+

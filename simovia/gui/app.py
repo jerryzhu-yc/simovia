@@ -28,13 +28,15 @@ import numpy as np
 import yaml
 from PySide6.QtCore import (QEvent, Qt, QSettings, QSize, QThread, QTimer,
                             QUrl, Signal)
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox,
+                               QApplication, QCheckBox,
                                QComboBox, QDialog, QDockWidget, QFileDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
                                QMainWindow, QMessageBox, QPlainTextEdit,
-                               QPushButton, QSpinBox, QTabWidget, QVBoxLayout)
+                               QPushButton, QScrollArea, QSpinBox, QTabWidget,
+                               QVBoxLayout)
 
 from simovia.gui import theme
 from simovia.gui.mcp_client import McpClient
@@ -44,10 +46,11 @@ from simovia.gui.panels import (AgentConfigDialog, AgentPanel, CodePanel,
 from simovia.gui.render_view import (DEFAULT_QUALITY, RenderView,
                                       _CAM_PRESETS, _QUALITY_PRESETS)
 from simovia.gui.robot_builder import RobotBuilderDialog
-from simovia.gui.state import UiState
+from simovia.gui.state import EditHistory, UiState, text_diff
 from simovia.gui.teleop_panel import TeleopPanel
 from simovia.world.schema import load_world as parse_world_file
-from simovia.world.schema import parse_world
+from simovia.world.schema import (absolutize_world_paths, parse_world,
+                                  resolve_zoo_models)
 
 # 遥操作键位：键 -> (轴, 方向)。方向按机器人基座坐标系（vx 前 / vy 左 / vz 上）。
 _TELEOP_KEYS = {
@@ -58,6 +61,38 @@ _TELEOP_KEYS = {
     Qt.Key.Key_Q: ("vz", 1.0), Qt.Key.Key_E: ("vz", -1.0),
     Qt.Key.Key_J: ("wz", 1.0), Qt.Key.Key_L: ("wz", -1.0),
 }
+
+# 布局预设：dock key -> 是否可见。默认布局刻意不展开遥操作面板——
+# 小屏幕下四个面板同时摊开会把 3D 视口挤到几乎不可用。
+LAYOUT_PRESETS = {
+    "场景编辑": {"scene": True, "right": True,
+                 "console": False, "teleop": False},
+    "控制调试": {"scene": False, "right": True,
+                 "console": True, "teleop": False},
+    "遥操作": {"scene": False, "right": True,
+               "console": True, "teleop": True},
+}
+DEFAULT_LAYOUT = {"scene": True, "right": True,
+                  "console": True, "teleop": False}
+
+
+def _yaml_kind(p) -> str:
+    """判断 YAML 是「世界」还是「机器人连杆树」（导入入口按类型分派）。
+
+    机器人 YAML 的判别键是顶层 links（robot_spec 文档格式）；
+    带 robots/floor/scene 的按世界处理；其余返回 unknown。
+    """
+    try:
+        doc = yaml.safe_load(pathlib.Path(p).read_text(encoding="utf-8"))
+    except Exception:
+        return "unknown"
+    if not isinstance(doc, dict):
+        return "unknown"
+    if "links" in doc:
+        return "robot"
+    if any(k in doc for k in ("robots", "floor", "scene", "name")):
+        return "world"
+    return "unknown"
 
 
 def _import_spawn_z(p) -> float:
@@ -447,9 +482,16 @@ class MainWindow(QMainWindow):
         self._busy = False              # load_world 在途（防重入提交）
         self._sel_node = None           # 当前选中 (kind, name)（删除按钮用）
         self._run_is_step = False        # 本次 run 是否 N 步进（决定暂停/结束）
+        # ---- 场景编辑历史（YAML 全文快照）+ 未保存改动预览
+        self._history = EditHistory()
+        self._yaml_text = None           # 当前内存世界的 YAML 全文
+        self._saved_text = None          # 最近一次保存/载入的 YAML（diff 基线）
+        self._max_guard = False          # 视口最大化动作的程序化设值保护
+        self._restoring_select = False   # 程序性重选节点（不改标签页）
 
         # ---- 遥操作状态（按键集合 + 最近一次下发指令，只在变化时发 MCP）
         self._teleop_active = False
+        self._preview_on = False        # 独立相机预览（不启动 IK 遥操作）
         self._teleop_keys: set = set()
         self._teleop_last: dict = {}
         self._teleop_grip = 1.0         # 1=张开 / 0=闭合（空格切换）
@@ -480,6 +522,7 @@ class MainWindow(QMainWindow):
         self.console = ConsolePanel()
         self.code = CodePanel()
         self.code.saveRequested.connect(self._on_code_saved)
+        self.code.saveOnlyRequested.connect(self._on_code_saved_only)
         self.agent = AgentPanel()
         self.agent.sendRequested.connect(self._on_agent_send)
         self.agent.stopRequested.connect(self._on_agent_stop)
@@ -493,6 +536,8 @@ class MainWindow(QMainWindow):
         self.teleop = TeleopPanel()
         self.teleop.startRequested.connect(self._on_teleop_start)
         self.teleop.stopRequested.connect(self._on_teleop_stop)
+        self.teleop.previewToggled.connect(self._on_preview_toggled)
+        self.teleop.floatRequested.connect(self._on_teleop_float)
 
         self.tabs = QTabWidget()
 
@@ -503,7 +548,6 @@ class MainWindow(QMainWindow):
             高达 500+px，旧版把右侧 dock 顶到 510 拖不动，仿真视口被挤
             到 480 以下还放大不了（用户拖分隔条"没效果"的根因）。
             """
-            from PySide6.QtWidgets import QScrollArea
             sa = QScrollArea()
             sa.setWidget(panel)
             sa.setWidgetResizable(True)
@@ -530,31 +574,36 @@ class MainWindow(QMainWindow):
         self.agent_worker.start()
 
         self.dock_scene = self._make_dock("场景树", self.scene_tree,
-                                          Qt.DockWidgetArea.LeftDockWidgetArea)
+                                          Qt.DockWidgetArea.LeftDockWidgetArea,
+                                          "dock_scene")
         self.dock_right = self._make_dock("属性 / 观测", self.tabs,
-                                          Qt.DockWidgetArea.RightDockWidgetArea)
+                                          Qt.DockWidgetArea.RightDockWidgetArea,
+                                          "dock_right")
         self.dock_console = self._make_dock("控制台", self.console,
-                                            Qt.DockWidgetArea.BottomDockWidgetArea)
+                                            Qt.DockWidgetArea.BottomDockWidgetArea,
+                                            "dock_console")
         # 遥操作面板同样包滚动区：相机预览 + 表单的 minimumSizeHint 会把
         # dock 顶死（拖分隔条/浮动都没反应），包一层后 dock 可任意拖动缩放
         self.teleop.setMinimumWidth(0)
         self.dock_teleop = self._make_dock(
             "遥操作 / 实时画面", _scrollable(self.teleop),
-            Qt.DockWidgetArea.RightDockWidgetArea)
+            Qt.DockWidgetArea.RightDockWidgetArea, "dock_teleop")
         self.dock_teleop.setMinimumWidth(200)
-        self.splitDockWidget(self.dock_right, self.dock_teleop,
-                             Qt.Orientation.Vertical)
         self.dock_right.setMinimumWidth(240)   # 可拖更窄（内容出滚动条）
-        self.resizeDocks([self.dock_scene, self.dock_right], [280, 340],
-                         Qt.Orientation.Horizontal)
-        self.resizeDocks([self.dock_console], [200], Qt.Orientation.Vertical)
-        self.resizeDocks([self.dock_right, self.dock_teleop], [420, 380],
-                         Qt.Orientation.Vertical)
+        self._dock_areas = {
+            "scene": (self.dock_scene, Qt.DockWidgetArea.LeftDockWidgetArea),
+            "right": (self.dock_right, Qt.DockWidgetArea.RightDockWidgetArea),
+            "console": (self.dock_console,
+                        Qt.DockWidgetArea.BottomDockWidgetArea),
+            "teleop": (self.dock_teleop, Qt.DockWidgetArea.RightDockWidgetArea),
+        }
+        self._apply_default_layout()
 
         self._build_actions()
         self._build_menubar()
         self._build_toolbar()
         self._build_statusbar()
+        self._restore_layout_state()
 
         # ---- 握手即激活
         self.client.call_tool("ping", {}, lambda e, d: None)
@@ -592,12 +641,95 @@ class MainWindow(QMainWindow):
 
     # ============================================================ 界面构建
 
-    def _make_dock(self, title: str, widget, area) -> QDockWidget:
+    def _make_dock(self, title: str, widget, area,
+                   name: str = "") -> QDockWidget:
         dock = QDockWidget(title, self)
+        if name:
+            dock.setObjectName(name)      # saveState/restoreState 按名字识别
         dock.setWidget(widget)
         dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
         self.addDockWidget(area, dock)
         return dock
+
+    # ------------------------------------------------------------ 窗口布局
+
+    def _apply_default_layout(self) -> None:
+        """默认布局：左场景树 + 右属性/观测 + 底部控制台，遥操作收起。"""
+        self.splitDockWidget(self.dock_right, self.dock_teleop,
+                             Qt.Orientation.Vertical)
+        self.resizeDocks([self.dock_scene, self.dock_right], [280, 340],
+                         Qt.Orientation.Horizontal)
+        self.resizeDocks([self.dock_console], [200], Qt.Orientation.Vertical)
+        self.resizeDocks([self.dock_right, self.dock_teleop], [420, 380],
+                         Qt.Orientation.Vertical)
+        self._apply_layout(DEFAULT_LAYOUT)
+
+    def _apply_layout(self, vis: dict) -> None:
+        """按 {dock key: 可见} 应用布局（浮动的先收回停靠区）。"""
+        for key, (dock, area) in self._dock_areas.items():
+            if dock.isFloating():
+                dock.setFloating(False)
+                self.addDockWidget(area, dock)
+            dock.setVisible(bool(vis.get(key, False)))
+
+    def _on_layout_preset(self, name: str) -> None:
+        """布局预设：场景编辑 / 控制调试 / 遥操作。"""
+        vis = LAYOUT_PRESETS.get(name)
+        if vis is None:
+            return
+        self._unmaximize_viewport()
+        self._apply_layout(vis)
+        if name in ("控制调试", "遥操作"):
+            self.tabs.setCurrentIndex(1)          # 观测页
+        elif name == "场景编辑":
+            self.tabs.setCurrentIndex(0)          # 属性页
+        self.statusBar().showMessage(f"已切换到「{name}」布局")
+
+    def _on_restore_default_layout(self) -> None:
+        self._unmaximize_viewport()
+        self._apply_default_layout()
+        self.statusBar().showMessage("已恢复默认布局")
+
+    def _on_viewport_max(self, on: bool) -> None:
+        """视口最大化：收起全部面板；取消勾选恢复最大化前的可见性。"""
+        if self._max_guard:
+            return
+        if on:
+            self._pre_max_vis = {k: d.isVisible()
+                                 for k, (d, _a) in self._dock_areas.items()}
+            for dock, _a in self._dock_areas.values():
+                dock.hide()
+            self.statusBar().showMessage(
+                "视口最大化中（Ctrl+Shift+M 恢复面板）")
+        else:
+            vis = getattr(self, "_pre_max_vis", None) or DEFAULT_LAYOUT
+            self._apply_layout(vis)
+            self.statusBar().showMessage("已恢复面板")
+
+    def _unmaximize_viewport(self) -> None:
+        act = getattr(self, "act_viewport_max", None)
+        if act is not None and act.isChecked():
+            self._max_guard = True
+            act.setChecked(False)
+            self._max_guard = False
+
+    def _restore_layout_state(self) -> None:
+        """恢复上次关闭时的窗口几何 / 面板停靠状态（无记录则保持默认）。"""
+        st = QSettings()
+        try:
+            geo = st.value("gui/window_geometry")
+            if geo:
+                self.restoreGeometry(geo)
+            state = st.value("gui/window_state")
+            if state:
+                self.restoreState(state)
+        except (TypeError, ValueError):
+            pass                     # 旧版本/损坏记录：退回默认布局
+
+    def _save_layout_state(self) -> None:
+        st = QSettings()
+        st.setValue("gui/window_geometry", self.saveGeometry())
+        st.setValue("gui/window_state", self.saveState())
 
     def _build_actions(self) -> None:
         def mk(text, shortcut=None, tip=None, checkable=False):
@@ -618,9 +750,10 @@ class MainWindow(QMainWindow):
             "从零搭建机器人：编辑连杆树（parent / pos / rpy / 几何 / 关节），"
             "实时预览并查看每个连杆的旋转矩阵")
         self.act_import = mk("导入模型…", "Ctrl+I",
-                             "导入本地机器人模型（URDF / MJCF）到当前场景"
-                             "或新世界——SolidWorks 经 sw2urdf 插件导出的 "
-                             "URDF 直接可用")
+                             "导入本地机器人模型（URDF / MJCF / 机器人 YAML）"
+                             "到当前场景，或直接打开世界 YAML"
+                             "——SolidWorks 经 sw2urdf 插件导出的 "
+                             "URDF 直接可用；造机器人保存的 YAML 也能直接导入")
         self.act_import.triggered.connect(self._on_import_model)
         self.act_scene_agent = mk("AI 生成场景…", "Ctrl+G",
                                   "自然语言描述需求，AI 直接生成世界 YAML"
@@ -628,8 +761,26 @@ class MainWindow(QMainWindow):
         self.act_scene_agent.triggered.connect(self._on_scene_agent)
         self.act_save = mk("保存世界", "Ctrl+S",
                            "把当前世界（含拖动/位姿/装备等全部修改）"
-                           "写回 YAML 文件")
+                           "写回 YAML 文件（不运行）")
         self.act_save.triggered.connect(self._on_save_world)
+        self.act_save_run = mk("保存世界并运行", "Ctrl+Shift+S",
+                               "写回 YAML 后立刻运行一轮")
+        self.act_save_run.triggered.connect(
+            lambda: self._on_save_world(run_after=True))
+        # 场景级撤销/重做（YAML 快照）：编辑框聚焦时自动转交文本框撤销
+        self.act_undo = mk("撤销场景编辑", "Ctrl+Z",
+                           "回到上一次场景编辑前的状态")
+        self.act_undo.triggered.connect(self._on_undo)
+        self.act_redo = mk("重做场景编辑", "Ctrl+Y", "重做被撤销的场景编辑")
+        self.act_redo.setShortcuts([QKeySequence("Ctrl+Y"),
+                                    QKeySequence("Ctrl+Shift+Z")])
+        self.act_redo.triggered.connect(self._on_redo)
+        self.act_history = mk("操作历史…", "",
+                              "查看本次世界加载后的全部编辑快照并跳转")
+        self.act_history.triggered.connect(self._on_edit_history)
+        self.act_preview = mk("修改预览…", "Ctrl+Shift+D",
+                              "对比最近保存/载入的 YAML 与当前内存世界")
+        self.act_preview.triggered.connect(self._on_preview_changes)
         self.act_quit = mk("退出", "Ctrl+Q")
         self.act_quit.triggered.connect(self.close)
 
@@ -661,6 +812,13 @@ class MainWindow(QMainWindow):
         self.act_vis_wire = mk("线框", checkable=True)
         self.act_vis_wire.setToolTip("以线框模式渲染")
         self.act_cam_reset = mk("重置机位", "Ctrl+0")
+        self.act_viewport_max = mk("视口最大化", "Ctrl+Shift+M",
+                                   "收起全部面板，只留 3D 视口", checkable=True)
+        self.act_viewport_max.toggled.connect(self._on_viewport_max)
+        self.act_layout_default = mk("恢复默认布局", "",
+                                     "面板复位：场景树 / 属性观测 / 控制台")
+        self.act_layout_default.triggered.connect(
+            self._on_restore_default_layout)
         self.act_origin_axes = mk("原点坐标轴", checkable=True,
                                   tip="在视口原点叠加 XYZ 轴（参考 Isaac Sim / "
                                       "Blender 的舞台坐标指示）")
@@ -723,6 +881,7 @@ class MainWindow(QMainWindow):
         m_file.addAction(self.act_scene_agent)
         m_file.addSeparator()
         m_file.addAction(self.act_save)
+        m_file.addAction(self.act_save_run)
         m_file.addSeparator()
         m_file.addAction(self.act_screenshot)
         m_file.addSeparator()
@@ -732,8 +891,14 @@ class MainWindow(QMainWindow):
         self._rebuild_recent_menu()
 
         m_edit = mb.addMenu("场景(&C)")
+        m_edit.addAction(self.act_undo)
+        m_edit.addAction(self.act_redo)
+        m_edit.addAction(self.act_history)
+        m_edit.addSeparator()
         m_edit.addAction(self.act_add_object)
         m_edit.addAction(self.act_delete)
+        m_edit.addSeparator()
+        m_edit.addAction(self.act_preview)
 
         m_sim = mb.addMenu("仿真(&S)")
         m_sim.addAction(self.act_reset)
@@ -762,7 +927,16 @@ class MainWindow(QMainWindow):
         m_view.addAction(self.act_vis_frames)
         m_view.addAction(self.act_vis_wire)
         m_view.addSeparator()
-        for dock in (self.dock_scene, self.dock_right, self.dock_console):
+        m_layout = m_view.addMenu("布局预设")
+        for name in LAYOUT_PRESETS:
+            a = m_layout.addAction(name)
+            a.triggered.connect(lambda _=False, n=name: self._on_layout_preset(n))
+        m_layout.addSeparator()
+        m_layout.addAction(self.act_layout_default)
+        m_view.addAction(self.act_viewport_max)
+        m_view.addSeparator()
+        for dock in (self.dock_scene, self.dock_right, self.dock_console,
+                     self.dock_teleop):
             m_view.addAction(dock.toggleViewAction())
 
         m_help = mb.addMenu("帮助(&H)")
@@ -883,6 +1057,11 @@ class MainWindow(QMainWindow):
         # 场景编辑与保存：IDLE/PAUSED/FINISHED 都可用（拖动/位姿同门槛）
         can_edit = self.state.can("edit") and self._spec is not None
         self.act_save.setEnabled(can_edit)
+        self.act_save_run.setEnabled(can_edit)
+        self.act_undo.setEnabled(can_edit and self._history.can_undo())
+        self.act_redo.setEnabled(can_edit and self._history.can_redo())
+        self.act_history.setEnabled(len(self._history) > 0)
+        self.act_preview.setEnabled(can_edit)
         self.act_add_object.setEnabled(can_edit)
         self.act_delete.setEnabled(can_edit and self._sel_node is not None)
         self.act_reset.setEnabled(self.state.can("reset"))
@@ -900,6 +1079,76 @@ class MainWindow(QMainWindow):
 
     # ============================================================ 动作：文件
 
+    # ------------------------------------------------------------ 未保存保护
+
+    def _scene_dirty(self) -> bool:
+        """场景有未保存修改：内存全文与最近保存/载入基线不同（内存世界算脏）。"""
+        if self._yaml_text is None:
+            return False
+        return self._saved_text is None or self._yaml_text != self._saved_text
+
+    def _save_scene_now(self) -> bool:
+        """同步保存当前内存世界（关闭/新建/打开前的确认流程用）。
+
+        与后端 save_world 同一套规则：相对 model/controller 改绝对路径后落盘。
+        """
+        if self._yaml_text is None:
+            return True
+        path = self._world_path
+        if not path:
+            name = self._spec.name if self._spec is not None else "world"
+            path, _ = QFileDialog.getSaveFileName(
+                self, "世界另存为", f"worlds/{name}.yaml",
+                "World YAML (*.yaml *.yml)")
+            if not path:
+                return False
+            self._world_path = path
+        text = absolutize_world_paths(self._yaml_text, self._base_dir)
+        try:
+            p = pathlib.Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        except OSError as e:
+            self._log(f"保存世界失败: {e}", "error")
+            QMessageBox.critical(self, "保存世界", f"保存失败：{e}")
+            return False
+        self._saved_text = text
+        self._update_title()
+        self._push_recent(path)
+        self._rebuild_recent_menu()
+        self._log(f"世界已保存：{path}", "ok")
+        return True
+
+    def _confirm_discard(self, action: str) -> bool:
+        """关闭/新建/打开前确认未保存内容：True=继续，False=取消。"""
+        dirty_code = self.code.dirty_files() if hasattr(self, "code") else {}
+        dirty_scene = self._scene_dirty()
+        if not dirty_code and not dirty_scene:
+            return True
+        lines = []
+        if dirty_scene:
+            lines.append("场景有未保存的修改")
+        if dirty_code:
+            lines.append("控制器代码有未保存的修改：" +
+                         "、".join(pathlib.Path(p).name for p in dirty_code))
+        r = QMessageBox.question(
+            self, "未保存的修改",
+            "\n".join(lines) + f"\n\n{action}前保存吗？",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save)
+        if r == QMessageBox.StandardButton.Cancel:
+            return False
+        if r == QMessageBox.StandardButton.Discard:
+            return True
+        if dirty_code:
+            errs = self.code.save_dirty_files()
+            if errs:
+                QMessageBox.warning(self, "保存失败", "\n".join(errs))
+                return False
+        return self._save_scene_now() if dirty_scene else True
+
     def _on_load(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "选择世界文件", "worlds", "World YAML (*.yaml *.yml)")
@@ -909,6 +1158,8 @@ class MainWindow(QMainWindow):
 
     def _load_world_path(self, path: str):
         """按路径加载世界（"最近打开"与打开对话框共用）。"""
+        if not self._confirm_discard("打开世界"):
+            return
         try:
             spec = parse_world_file(path)          # 本地解析（渲染模型用）
         except Exception as e:
@@ -958,10 +1209,11 @@ class MainWindow(QMainWindow):
                     QMessageBox.information(self, "最近打开", f"文件不存在：\n{_p}")
             m.addAction(str(pathlib.Path(p).name), open_it)
 
-    def _on_save_world(self):
+    def _on_save_world(self, run_after: bool = False):
         """保存世界：当前内存 YAML（含全部 GUI 修改）写回来源文件。
 
-        无来源文件（内存世界）时让用户选另存位置。
+        无来源文件（内存世界）时让用户选另存位置。run_after=True 为
+        "保存并运行"：落盘成功后立刻跑一轮（与场景里改完就验证的工作流）。
         """
         if self._spec is None:
             QMessageBox.information(self, "保存世界", "还没有加载世界。")
@@ -981,14 +1233,24 @@ class MainWindow(QMainWindow):
                 self._log(f"保存失败: {d}", "error")
                 QMessageBox.critical(self, "保存世界", f"保存失败：{d}")
                 return
+            # 保存成功：当前全文成为 diff 基线（未保存标记清除）
+            if self._yaml_text is not None:
+                self._saved_text = self._yaml_text
+            self._update_title()
             self._log(f"世界已保存：{d['saved']}（{d['bytes']} 字节）", "ok")
             self.statusBar().showMessage(f"世界已保存：{d['saved']}")
             self._push_recent(self._world_path)
             self._rebuild_recent_menu()
+            self._apply_state()
+            if run_after and self.state.can("run"):
+                self._log("保存完成，开始运行…")
+                self._do_run(self._run_args())
 
         self.client.call_tool("save_world", {"path": self._world_path}, saved)
 
     def _on_new_scene(self):
+        if not self._confirm_discard("新建场景"):
+            return
         dlg = NewSceneDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1030,6 +1292,8 @@ class MainWindow(QMainWindow):
         """AI 生成场景：自然语言 -> LLM 世界 YAML -> 本地校验重试 -> 加载。"""
         if self._edit_blocked("AI 生成场景"):
             return
+        if self._scene_dirty() and not self._confirm_discard("AI 生成新场景"):
+            return
         from simovia.agent import load_config, save_config
         cfg = load_config()
         if not cfg.usable:
@@ -1055,7 +1319,8 @@ class MainWindow(QMainWindow):
         note = getattr(self.sender(), "note", "") or ""
         if note:
             self._log(f"AI 场景说明：{note[:300]}", "ok")
-        self._reload_yaml(text, ok_msg="AI 场景已生成并加载（Ctrl+S 保存）")
+        self._reload_yaml(text, ok_msg="AI 场景已生成并加载（Ctrl+S 保存）",
+                          label="AI 生成场景", reset_history=True)
 
     def _on_screenshot(self):
         if self.view._frame is None:
@@ -1107,6 +1372,8 @@ class MainWindow(QMainWindow):
         if self.state.value == UiState.RUNNING or self._busy:
             self._log("运行中不能生成演示（先等 run 结束或 reset）", "warn")
             return
+        if not self._confirm_discard("加载新世界"):
+            return
         self._apply_state(f"模型库：生成 {key} 运动演示中…")
         self._log(f"从模型库生成运动演示：{key}")
         self.client.call_tool("zoo_create", {"key": key, "demo": True},
@@ -1115,6 +1382,8 @@ class MainWindow(QMainWindow):
     def _on_zoo_generate(self):
         """生成完整项目：世界 + 控制器模板（旧 exec 流程改为 accept 信号）。"""
         if self._zoo_dlg is None or not self._zoo_dlg.selected_key:
+            return
+        if not self._confirm_discard("加载新世界"):
             return
         key = self._zoo_dlg.selected_key
         self._apply_state(f"模型库：生成 {key} 中…")
@@ -1191,7 +1460,8 @@ class MainWindow(QMainWindow):
             self._reload_yaml(
                 new_text,
                 ok_msg=f"已添加机器人 {name} 于 "
-                       f"({rd['pos'][0]:+.2f}, {rd['pos'][1]:+.2f}, {z:+.2f})")
+                       f"({rd['pos'][0]:+.2f}, {rd['pos'][1]:+.2f}, {z:+.2f})",
+                label=f"添加机器人 {name}")
             self._log(f"添加机器人 {name}（模型 {key}，未绑定控制器；"
                       f"需要控制律请用 模型库 → 生成并打开）", "ok")
         self.client.call_tool("read_world", {}, got_yaml)
@@ -1199,8 +1469,10 @@ class MainWindow(QMainWindow):
     # ============================================================ 导入模型
 
     def _on_import_model(self):
-        """导入本地机器人模型（.urdf / .xml）：加到当前世界或新建世界。
+        """导入本地机器人模型（.urdf / .xml / 机器人 .yaml）：加到当前世界。
 
+        选到世界 YAML 时按「打开世界」处理，避免把两种 YAML 混淆
+        （造机器人保存的产物可直接导入场景，F10）。
         URDF 适配（mesh 路径重写 / package:// 剥前缀 / 自动补 motor）由
         builder._load_robot_spec 统一吸收，这里先本地校验 + 算贴地高度，
         避免明显坏文件走到后端才报错。
@@ -1209,11 +1481,24 @@ class MainWindow(QMainWindow):
             return
         import pathlib
         path, _ = QFileDialog.getOpenFileName(
-            self, "导入机器人模型（URDF / MJCF）", "",
-            "机器人模型 (*.urdf *.xml);;URDF (*.urdf);;MJCF (*.xml)")
+            self, "导入机器人模型", "",
+            "机器人模型或世界 (*.urdf *.xml *.yaml *.yml);;"
+            "URDF (*.urdf);;MJCF (*.xml);;"
+            "机器人 YAML (*.yaml *.yml);;世界 YAML (*.yaml *.yml)")
         if not path:
             return
         p = pathlib.Path(path)
+        if p.suffix.lower() in (".yaml", ".yml"):
+            kind = _yaml_kind(p)
+            if kind == "world":
+                self._load_world_path(str(p))
+                return
+            if kind != "robot":
+                QMessageBox.critical(
+                    self, "导入模型",
+                    f"无法识别 {p.name}：既不是世界 YAML（robots/scene），"
+                    "也不是机器人 YAML（links）。")
+                return
         stem = p.stem or "robot"
         try:
             z = _import_spawn_z(p)
@@ -1245,7 +1530,8 @@ class MainWindow(QMainWindow):
             text = yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
             self._log(f"导入模型 {p.name}：已生成新世界 {d['name']}", "ok")
             self._reload_yaml(
-                text, ok_msg=f"已导入 {p.name} 为新世界（Ctrl+S 保存）")
+                text, ok_msg=f"已导入 {p.name} 为新世界（Ctrl+S 保存）",
+                label=f"导入 {p.name}", reset_history=True)
 
     # ============================================================ 编辑提交
 
@@ -1289,7 +1575,8 @@ class MainWindow(QMainWindow):
                 return
             self._sel_node = None
             self.view.set_selection("", "")
-            self._reload_yaml(new_text, ok_msg=f"已删除 {kind} '{name}'")
+            self._reload_yaml(new_text, ok_msg=f"已删除 {kind} '{name}'",
+                              label=f"删除 {name}")
             self._log(f"已从世界删除 {kind} '{name}'", "ok")
 
         self.client.call_tool("read_world", {}, got_yaml)
@@ -1332,7 +1619,8 @@ class MainWindow(QMainWindow):
                 return
             self._pending_select = ("object", od["name"])
             self._reload_yaml(
-                new_text, ok_msg=f"已添加物体 {od['name']} 于注视点")
+                new_text, ok_msg=f"已添加物体 {od['name']} 于注视点",
+                label=f"添加物体 {od['name']}")
             self._log(f"添加物体 {od['name']}（{otype}），拖动/属性面板"
                       f"可继续调整位置", "ok")
 
@@ -1392,7 +1680,8 @@ class MainWindow(QMainWindow):
             self._reload_yaml(
                 new_text,
                 ok_msg=f"{name} 移动 ({dx:+.2f}, {dy:+.2f}, {dz:+.2f})"
-                       f" 已写入世界 YAML")
+                       f" 已写入世界 YAML",
+                label=f"移动 {name}")
 
         self.client.call_tool("read_world", {}, got_yaml)
 
@@ -1434,7 +1723,7 @@ class MainWindow(QMainWindow):
             msg = (f"{name} 位姿已写入：pos=({pos[0]:+.3f}, {pos[1]:+.3f}, "
                    f"{pos[2]:+.3f})" + ("" if quat is None else
                                        f" quat=({', '.join(f'{v:.4f}' for v in quat)})"))
-            self._reload_yaml(new_text, ok_msg=msg)
+            self._reload_yaml(new_text, ok_msg=msg, label=f"{name} 位姿")
 
         self.client.call_tool("read_world", {}, got_yaml)
 
@@ -1510,13 +1799,53 @@ class MainWindow(QMainWindow):
                 self._apply_state(f"read_world 失败: {yaml_text}")
                 self._log(f"read_world 失败: {yaml_text}", "error")
                 return
-            self._reload_yaml(yaml_text, ok_msg=f"{path.name} 已保存并重载")
+            self._reload_yaml(yaml_text, ok_msg=f"{path.name} 已保存并重载",
+                              label=f"保存控制器 {path.name}")
 
         self.client.call_tool("read_world", {}, got_yaml)
 
-    def _reload_yaml(self, text: str, ok_msg: str = ""):
-        """把修改后的 YAML 全文投喂 load_world，成功后本地重编译 + 全刷新。"""
+    def _on_code_saved_only(self, robot_name: str, text: str):
+        """代码页"保存"：只写回控制器文件，不重载世界、不自动运行。"""
+        if self._spec is None:
+            return
+        rd = next((r for r in self._spec.robots if r.name == robot_name), None)
+        if rd is None or not rd.controller:
+            self._log(f"机器人 {robot_name} 没有控制器路径，无法保存", "warn")
+            return
+        path = (pathlib.Path(self._spec.base_dir) / rd.controller).resolve()
+        try:
+            path.write_text(text, encoding="utf-8")
+        except OSError as e:
+            self._apply_state(f"写文件失败: {e}")
+            self._log(f"写 {path} 失败: {e}", "error")
+            return
+        self.code.clear_draft(robot_name)
+        msg = f"已保存 {path.name}（未重载/未运行，重新运行后生效）"
+        self.statusBar().showMessage(msg)
+        self._log(msg, "ok")
+
+    def _reload_yaml(self, text: str, ok_msg: str = "",
+                     label: str = "编辑场景", record: bool = True,
+                     reset_history: bool = False):
+        """把修改后的 YAML 全文投喂 load_world，成功后本地重编译 + 全刷新。
+
+        record=True 时把这份全文压入场景编辑历史（撤销/重做/操作历史）；
+        撤销/重做自身重放快照时传 False，避免污染历史。reset_history=True
+        用于"换了一个新世界"（AI 生成/导入）：历史从这份全文重新开始。
+        """
         self._busy = True
+        # 本地先解析一次（含 zoo:// -> 绝对路径）：解析失败就不动后端，
+        # 避免"后端换了世界、GUI 建不出模型"的前后端失配（F01）。
+        try:
+            d = yaml.safe_load(text)
+            resolve_zoo_models(d)
+            spec = parse_world(d)
+        except Exception as e:
+            self._busy = False
+            self._apply_state(f"世界解析失败: {e}")
+            self._log(f"世界解析失败: {e}", "error")
+            return
+        spec.base_dir = self._base_dir
 
         def done(err, data):
             self._busy = False
@@ -1524,14 +1853,15 @@ class MainWindow(QMainWindow):
                 self._apply_state(f"load_world 失败: {data}")
                 self._log(f"load_world 失败: {data}", "error")
                 return
-            try:
-                spec = parse_world(yaml.safe_load(text))
-                spec.base_dir = self._base_dir
-            except Exception as e:
-                self._apply_state(f"世界解析失败: {e}")
-                self._log(f"世界解析失败: {e}", "error")
-                return
+            self._yaml_text = text
+            if reset_history:
+                self._history.reset(text, label)
+                self._saved_text = None      # 内存世界：保存后才算干净
+            elif record:
+                self._history.push(text, label)
             self._on_loaded(None, data, spec)
+            self._update_title()
+            self._apply_state()
             if ok_msg:
                 self._apply_state(ok_msg)
                 self._log(ok_msg, "ok")
@@ -1539,6 +1869,138 @@ class MainWindow(QMainWindow):
         self.client.call_tool(
             "load_world", {"yaml_text": text, "base_dir": str(self._base_dir)},
             done)
+
+    # ============================================================ 编辑历史
+
+    @staticmethod
+    def _focused_text_editor():
+        """焦点在文本类控件时返回它（Ctrl+Z 交给文本自身撤销）。"""
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QPlainTextEdit, QLineEdit)):
+            return fw
+        if isinstance(fw, QAbstractSpinBox):
+            return fw.lineEdit()
+        return None
+
+    def _on_undo(self):
+        """撤销场景编辑；焦点在文本编辑框时转为文本框撤销。"""
+        ed = self._focused_text_editor()
+        if ed is not None:
+            ed.undo()
+            return
+        if self._spec is None or self._edit_blocked("撤销"):
+            return
+        item = self._history.undo()
+        if item is None:
+            self._apply_state("没有可撤销的编辑")
+            return
+        self._replay_history(item, "已撤销到")
+
+    def _on_redo(self):
+        ed = self._focused_text_editor()
+        if ed is not None:
+            ed.redo()
+            return
+        if self._spec is None or self._edit_blocked("重做"):
+            return
+        item = self._history.redo()
+        if item is None:
+            self._apply_state("没有可重做的编辑")
+            return
+        self._replay_history(item, "已重做到")
+
+    def _replay_history(self, item: dict, verb: str) -> None:
+        msg = f"{verb}：{item['label']}"
+        self._log(msg, "ok")
+        self._reload_yaml(item["text"], ok_msg=msg, record=False)
+
+    def _on_edit_history(self):
+        """操作历史：列出全部 YAML 快照，可跳到任意一次编辑后的状态。"""
+        entries = self._history.entries()
+        if not entries:
+            QMessageBox.information(self, "操作历史", "还没有可回退的编辑。")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("操作历史（场景编辑）")
+        dlg.resize(460, 380)
+        v = QVBoxLayout(dlg)
+        tip = QLabel("选中一次编辑后点「回到此状态」；跳转会重载世界"
+                     "（控制器进程重启，仿真回到初态）。")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        lst = QListWidget(dlg)
+        for i, it in enumerate(entries):
+            label = f"{i + 1}. {it['label']}"
+            if i == self._history.index:
+                label += "    ← 当前"
+            lst.addItem(QListWidgetItem(label))
+        lst.setCurrentRow(max(0, self._history.index))
+        v.addWidget(lst, stretch=1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_ok = QPushButton("回到此状态")
+        btn_ok.setDefault(True)
+
+        def jump():
+            idx = lst.currentRow()
+            if idx < 0 or idx == self._history.index:
+                dlg.reject()
+                return
+            dlg.accept()
+            item = self._history.jump(idx)
+            if item is not None:
+                self._replay_history(item, "已回到")
+
+        btn_ok.clicked.connect(jump)
+        lst.itemDoubleClicked.connect(lambda _it: jump())
+        row.addWidget(btn_cancel)
+        row.addWidget(btn_ok)
+        v.addLayout(row)
+        dlg.exec()
+
+    def _on_preview_changes(self):
+        """修改预览：最近保存/载入的 YAML 与当前内存世界的 diff。"""
+        if self._yaml_text is None:
+            QMessageBox.information(self, "修改预览", "还没有加载世界。")
+            return
+        base = self._saved_text if self._saved_text is not None \
+            else self._yaml_text
+        diff = text_diff(base, self._yaml_text)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("修改预览")
+        dlg.resize(760, 520)
+        v = QVBoxLayout(dlg)
+        head = QLabel("有未保存的场景改动（Ctrl+S 保存 / Ctrl+Shift+S 保存并运行）"
+                      if diff else "当前场景与最近保存/载入的内容一致。")
+        head.setWordWrap(True)
+        v.addWidget(head)
+        ed = QPlainTextEdit(dlg)
+        ed.setReadOnly(True)
+        mono = QFont()
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        ed.setFont(mono)
+        ed.setPlainText(diff or "（无改动）")
+        v.addWidget(ed, stretch=1)
+        btn = QPushButton("关闭")
+        btn.clicked.connect(dlg.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(btn)
+        v.addLayout(row)
+        dlg.exec()
+
+    def _update_title(self) -> None:
+        """标题栏显示未保存标记（* = 与最近保存/载入的 YAML 不同）。"""
+        if self._spec is None:
+            return
+        dirty = (self._yaml_text is not None
+                 and (self._saved_text is None
+                      or self._yaml_text != self._saved_text))
+        self.setWindowTitle(f"Simovia — {self._spec.name}"
+                            + (" *" if dirty else "")
+                            + " · 机器人仿真平台")
 
     def _on_zoo_created(self, err, data):
         if err:
@@ -1582,6 +2044,15 @@ class MainWindow(QMainWindow):
             self._world_path = path
             self._push_recent(path)
             self._rebuild_recent_menu()
+            # 新世界：编辑历史从磁盘全文重新开始（撤销基线 = 文件内容）
+            try:
+                text = pathlib.Path(path).read_text(encoding="utf-8")
+            except OSError:
+                text = None
+            if text is not None:
+                self._yaml_text = text
+                self._saved_text = text
+                self._history.reset(text, f"打开 {pathlib.Path(path).name}")
         self.view.set_world(spec)
         self.view.set_hud_state("就绪")
         self._last_obs_key = None                 # 新世界：去重键作废
@@ -1603,7 +2074,7 @@ class MainWindow(QMainWindow):
                                  f"物体 {len(spec.scene.objects)}")
         self.lbl_time.setText("仿真 0.00s")
         self.lbl_tick.setText("tick 0")
-        self.setWindowTitle(f"Simovia — {spec.name} · 机器人仿真平台")
+        self._update_title()
         self.state.to(UiState.IDLE)
         self._apply_state(f"已加载 {spec.name}。F5 运行到终态，F7 步进。")
         self._log(f"世界已加载：{spec.name}"
@@ -1614,8 +2085,12 @@ class MainWindow(QMainWindow):
         pend = getattr(self, "_pending_select", None)
         if pend:
             self._pending_select = None
-            if not self.scene_tree.select_node(*pend):
-                self.props.clear_selection()
+            self._restoring_select = True     # 保持当前标签页/滚动位置
+            try:
+                if not self.scene_tree.select_node(*pend):
+                    self.props.clear_selection()
+            finally:
+                self._restoring_select = False
         # 代码页"保存并运行" -> 重载后自动 Run（控制器进程已吃新代码）
         if getattr(self, "_pending_run", False):
             self._pending_run = False
@@ -1631,8 +2106,21 @@ class MainWindow(QMainWindow):
     def _on_manifest(self, err, data):
         if not err and data:
             self._manifest = data
+            # 重载后刷新清单：保留各页滚动位置（装备页连续编辑不跳回顶部）
+            scrolls = []
+            for i in range(self.tabs.count()):
+                sa = self.tabs.widget(i)
+                if isinstance(sa, QScrollArea):
+                    scrolls.append((sa, sa.verticalScrollBar().value(),
+                                    sa.horizontalScrollBar().value()))
             self.gear.set_manifest(data, str(self._base_dir))
             self.teleop.set_manifest(data)
+            for sa, v, h in scrolls:
+                sa.verticalScrollBar().setValue(v)
+                sa.horizontalScrollBar().setValue(h)
+            if self._preview_on:
+                # 世界重载后相机配置可能变化：按新 manifest 重开预览流
+                self._on_preview_toggled(True)
 
     # ============================================================ 装备面板
 
@@ -1974,12 +2462,61 @@ class MainWindow(QMainWindow):
 
     # ============================================================ 遥操作
 
+    def _on_preview_toggled(self, on: bool):
+        """独立相机预览：只开实时画面，不启动 IK 遥操作。"""
+        if on and self._teleop_active:
+            return
+        if not on:
+            self._close_preview()
+            return
+        restart = self._preview_on          # 预览中换相机/分辨率：重开流
+        self._preview_on = True
+        self._cam_pending = False
+        self.client.call_tool(
+            "camera_stream", self.teleop.stream_args(),
+            self._on_preview_stream_started)
+        self._cam_timer.start()
+        self.teleop.set_status("相机预览中（只读，不影响仿真）")
+        if not restart:
+            self._log("相机预览已开启：只出实时画面，不启动 IK 遥操作")
+
+    def _on_preview_stream_started(self, err, data):
+        if err:
+            self._preview_on = False
+            self._cam_timer.stop()
+            self.teleop.set_preview_checked(False)
+            msg = data.get("error") if isinstance(data, dict) else data
+            self.teleop.set_status(f"预览失败：{msg}", "error")
+            self._log(f"相机预览失败: {msg}", "error")
+            return
+        if data.get("error"):
+            self.teleop.set_status(f"画面不可用：{data['error']}", "warn")
+
+    def _close_preview(self):
+        """关流并复位预览状态（不重复发关闭请求时由调用方保证）。"""
+        was_on = self._preview_on
+        self._preview_on = False
+        self._cam_pending = False
+        self._cam_timer.stop()
+        self.teleop.set_preview_checked(False)
+        self.teleop.clear_frame()
+        if was_on:
+            self.client.call_tool("camera_stream", {"camera": None},
+                                  lambda e, d: None)
+            self.teleop.set_status("预览已关闭")
+
+    def _on_teleop_float(self):
+        """相机面板浮动成独立窗口（小屏放大看画面用）。"""
+        self.dock_teleop.setFloating(True)
+        self.dock_teleop.resize(520, 480)
+
     def _on_teleop_start(self, args: dict):
         if self._busy:
             return
         if not self.state.can("run"):
             self._log("当前状态不能开始遥操作（先停止运行中的 run）", "warn")
             return
+        self._close_preview()          # 遥操作用自己的相机流
         self._teleop_active = True
         self._teleop_keys.clear()
         self._teleop_last = {}
@@ -2068,20 +2605,24 @@ class MainWindow(QMainWindow):
         self.client.call_tool("teleop_cmd", cmd, lambda e, d: None)
 
     def _fetch_camera_frame(self):
-        if not self._teleop_active or self._cam_pending:
+        if not (self._teleop_active or self._preview_on) or self._cam_pending:
             return
         self._cam_pending = True
 
         def done(err, data):
             self._cam_pending = False
-            if not self._teleop_active or err or not isinstance(data, dict):
+            if not (self._teleop_active or self._preview_on) \
+                    or err or not isinstance(data, dict):
                 return
             img = data.get("image")
             if img:
                 if self.teleop.show_frame(img):
-                    self.teleop.set_status(
-                        "遥操作中：WASD 移动 · QE 升降 · JL 偏航 · "
-                        "Shift 加速 · 空格开合", "ok")
+                    if self._teleop_active:
+                        self.teleop.set_status(
+                            "遥操作中：WASD 移动 · QE 升降 · JL 偏航 · "
+                            "Shift 加速 · 空格开合", "ok")
+                    else:
+                        self.teleop.set_status("相机预览中（只读，不影响仿真）")
                 return
             if data.get("error"):
                 self.teleop.set_status(f"画面不可用：{data['error']}", "warn")
@@ -2134,7 +2675,8 @@ class MainWindow(QMainWindow):
         self._sel_node = (kind, name)         # 删除按钮的目标
         self.props.show_node(kind, name, payload)
         self.view.set_selection(kind, name)   # 场景树 -> 3D 高亮（单向）
-        if self.tabs.currentIndex() != 0:
+        # 程序性重选（重载后恢复选中）不改标签页：装备页连续编辑不被打断
+        if not self._restoring_select and self.tabs.currentIndex() != 0:
             self.tabs.setCurrentIndex(0)
 
     # ============================================================ 观测轮询
@@ -2188,6 +2730,11 @@ class MainWindow(QMainWindow):
     def _on_backend_died(self, msg):
         self.state.to(UiState.EMPTY)
         self.view.set_hud_state("后端异常")
+        self._preview_on = False           # 后端没了：预览流随之失效
+        self._cam_pending = False
+        self._cam_timer.stop()
+        self.teleop.set_preview_checked(False)
+        self.teleop.clear_frame()
         self._refresh_agent_state(busy=False)     # 后端没了，Agent 不能一直忙碌
         self._apply_state(f"仿真后端异常退出：{msg}")
         self._log(f"仿真后端异常退出：{msg}"
@@ -2195,39 +2742,29 @@ class MainWindow(QMainWindow):
 
     def _on_restart_backend(self):
         """重启后端进程；有来源世界文件时自动重新加载。"""
+        if not self._confirm_discard("重启后端"):
+            return
         path = self._world_path
         self._log("重启仿真后端…")
+        self._cam_timer.stop()             # 旧后端要退出：先停预览轮询
+        self._cam_pending = False
         self.client.restart()
         self.state.to(UiState.EMPTY)
         self._apply_state("后端已重启")
         if path and pathlib.Path(path).exists():
-            self._load_world_path(path)
+            self._load_world_path(path)    # 重新加载后按新 manifest 恢复预览
         else:
+            self._close_preview()
             self._log("后端已重启；内存世界需要重新打开/编辑", "warn")
 
     def closeEvent(self, e):
-        # 未保存的控制器代码：保存 / 放弃 / 取消
-        dirty = self.code.dirty_files() if hasattr(self, "code") else {}
-        if dirty:
-            names = "、".join(pathlib.Path(p).name for p in dirty)
-            r = QMessageBox.question(
-                self, "未保存的修改",
-                f"控制器代码有未保存的修改：{names}\n\n关闭前保存吗？",
-                QMessageBox.StandardButton.Save
-                | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save)
-            if r == QMessageBox.StandardButton.Cancel:
-                e.ignore()
-                return
-            if r == QMessageBox.StandardButton.Save:
-                errs = self.code.save_dirty_files()
-                if errs:
-                    QMessageBox.warning(self, "保存失败", "\n".join(errs))
-                    e.ignore()
-                    return
+        # 场景 / 控制器代码未保存：保存 / 放弃 / 取消
+        if not self._confirm_discard("关闭"):
+            e.ignore()
+            return
         self.timer.stop()
         self._cam_timer.stop()
+        self._save_layout_state()          # 记住窗口几何 + 面板布局
         try:
             self.agent_worker.shutdown()       # 退出线程（不是只取消本轮）
             self.agent_worker.wait(2000)

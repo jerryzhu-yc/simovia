@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import difflib
+
 
 class UiState:
     EMPTY = "empty"
@@ -46,3 +48,90 @@ class UiState:
 
     def to(self, state: str) -> None:
         self._s = state
+
+
+class EditHistory:
+    """场景编辑历史：YAML 全文快照（撤销/重做/操作历史共用，纯逻辑）。
+
+    文本级快照简单可靠：所有场景编辑最终都以 load_world(yaml_text)
+    提交，撤销只需把上一份全文再投喂一次。不记录与当前文本相同的快照，
+    避免拖动无位移等空操作把历史挤爆。
+    """
+
+    def __init__(self, limit: int = 50):
+        self._limit = max(2, int(limit))
+        self._items: list[dict] = []
+        self._idx = -1
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    @property
+    def index(self) -> int:
+        return self._idx
+
+    def reset(self, text: str, label: str = "初始状态") -> None:
+        """新世界载入：历史从这份全文重新开始。"""
+        self._items = [{"label": label, "text": text}]
+        self._idx = 0
+
+    def push(self, text: str, label: str = "编辑场景") -> bool:
+        """记录一次编辑。与当前快照相同返回 False（不入栈）。"""
+        cur = self.current()
+        if cur is not None and cur["text"] == text:
+            return False
+        if self._idx < len(self._items) - 1:
+            del self._items[self._idx + 1:]      # 新编辑截断重做分支
+        self._items.append({"label": label, "text": text})
+        if len(self._items) > self._limit:
+            del self._items[:len(self._items) - self._limit]
+        self._idx = len(self._items) - 1
+        return True
+
+    def current(self) -> dict | None:
+        if 0 <= self._idx < len(self._items):
+            return self._items[self._idx]
+        return None
+
+    def can_undo(self) -> bool:
+        return self._idx > 0
+
+    def can_redo(self) -> bool:
+        return 0 <= self._idx < len(self._items) - 1
+
+    def undo(self) -> dict | None:
+        if not self.can_undo():
+            return None
+        self._idx -= 1
+        return self.current()
+
+    def redo(self) -> dict | None:
+        if not self.can_redo():
+            return None
+        self._idx += 1
+        return self.current()
+
+    def jump(self, index: int) -> dict | None:
+        if not (0 <= index < len(self._items)):
+            return None
+        self._idx = index
+        return self.current()
+
+    def entries(self) -> list[dict]:
+        """[(label, text)] 只读视图（操作历史对话框用）。"""
+        return [dict(it) for it in self._items]
+
+
+def text_diff(old: str, new: str, context: int = 3,
+              max_lines: int = 400) -> str:
+    """两段 YAML 全文的 unified diff（空串 = 无改动）。"""
+    if old == new:
+        return ""
+    lines = list(difflib.unified_diff(
+        old.splitlines(), new.splitlines(),
+        fromfile="已保存", tofile="当前（未保存）",
+        lineterm="", n=context))
+    if len(lines) > max_lines:
+        rest = len(lines) - max_lines
+        lines = lines[:max_lines] + [f"…（还有 {rest} 行差异未显示）"]
+    return "\n".join(lines)

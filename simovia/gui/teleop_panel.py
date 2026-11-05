@@ -3,6 +3,7 @@
 信号：
     startRequested(dict)  开始遥操作（参数直接投给 MCP teleop_start）
     stopRequested()       请求停止（走 stop 工具）
+    previewToggled(bool)  只开关相机实时画面（不启动 IK 遥操作）
 
 画面由 app 层定时轮询 camera_frame 后调用 CameraView.show_png 刷新。
 """
@@ -72,10 +73,15 @@ class TeleopPanel(QWidget):
 
     startRequested = Signal(dict)
     stopRequested = Signal()
+    previewToggled = Signal(bool)
+    floatRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._manifest = None
+        self._cam_cfg: dict[str, dict] = {}   # "robot/camera" -> manifest 相机配置
+        self._loading = False
+        self._teleop_running = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -94,6 +100,22 @@ class TeleopPanel(QWidget):
         form.addRow("相机：", self.camera_combo)
         form.addRow("画面：", self.res_combo)
         lay.addLayout(form)
+
+        # 独立相机预览：只出实时画面，不启动 IK 遥操作
+        # （任意机器人/暂停/普通运行时都可用；不与运行状态互斥）
+        self.bt_preview = QPushButton("相机预览")
+        self.bt_preview.setCheckable(True)
+        self.bt_preview.setToolTip(
+            "只开启实时画面（只读，不影响仿真，也不需要 IK 遥操作）。\n"
+            "2/3 自由度、移动底盘、无控制器的机器人都能看。")
+        self.bt_preview.toggled.connect(self._on_preview_toggled)
+        bt_float = QPushButton("独立窗口")
+        bt_float.setToolTip("把相机面板变为浮动窗口，可放大观察画面")
+        bt_float.clicked.connect(self.floatRequested.emit)
+        preview_row = QHBoxLayout()
+        preview_row.addWidget(self.bt_preview, 1)
+        preview_row.addWidget(bt_float)
+        lay.addLayout(preview_row)
 
         # 深度画面（近红远蓝伪彩）+ 裁剪面，可随时切换
         depth_row = QHBoxLayout()
@@ -115,6 +137,19 @@ class TeleopPanel(QWidget):
         self.far_spin.setValue(50.0)
         depth_row.addWidget(self.far_spin)
         lay.addLayout(depth_row)
+
+        # 持久配置 vs 临时覆盖：切换相机时回填世界 YAML 里的相机配置，
+        # 面板上的改动只影响本次预览/遥操作，不回写世界文件
+        self.lbl_cam_hint = QLabel("深度参数取自相机配置；此处改动仅临时生效")
+        self.lbl_cam_hint.setWordWrap(True)
+        self.lbl_cam_hint.setStyleSheet(
+            f"color:{theme.C_TEXT_DIM}; font-size:11px;")
+        lay.addWidget(self.lbl_cam_hint)
+
+        self.depth_chk.toggled.connect(self._on_camera_params_changed)
+        self.near_spin.valueChanged.connect(self._on_camera_params_changed)
+        self.far_spin.valueChanged.connect(self._on_camera_params_changed)
+        self.camera_combo.currentIndexChanged.connect(self._on_camera_changed)
 
         self.rec_chk = QCheckBox("同时录制 episode")
         self.rec_chk.setChecked(True)
@@ -158,33 +193,58 @@ class TeleopPanel(QWidget):
     def set_manifest(self, manifest: dict) -> None:
         """按 get_robot_manifest 填充机器人/相机下拉（保持当前选择）。"""
         self._manifest = manifest
-        old_robot = self.robot_combo.currentData()
-        old_cam = self.camera_combo.currentData()
-        self.robot_combo.clear()
-        self.camera_combo.clear()
-        self.camera_combo.addItem(_FREE_CAMERA, "")
-        for r in manifest.get("robots") or []:
-            name = r.get("name")
-            if not name:
-                continue
-            self.robot_combo.addItem(name, name)
-            for cam in r.get("cameras") or []:
-                self.camera_combo.addItem(f"{name}/{cam}", f"{name}/{cam}")
-        for combo, old in ((self.robot_combo, old_robot),
-                           (self.camera_combo, old_cam)):
-            idx = combo.findData(old) if old is not None else -1
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-        if self.camera_combo.count() > 1 and self.camera_combo.currentIndex() == 0:
-            self.camera_combo.setCurrentIndex(1)   # 有挂载相机优先用它
+        self._loading = True
+        try:
+            old_robot = self.robot_combo.currentData()
+            old_cam = self.camera_combo.currentData()
+            self.robot_combo.clear()
+            self.camera_combo.clear()
+            self._cam_cfg = {}
+            self.camera_combo.addItem(_FREE_CAMERA, "")
+            for r in manifest.get("robots") or []:
+                name = r.get("name")
+                if not name:
+                    continue
+                self.robot_combo.addItem(name, name)
+                for s in r.get("sensors") or []:
+                    if s.get("type") != "camera":
+                        continue
+                    cam = s.get("name")
+                    if not cam:
+                        continue
+                    self.camera_combo.addItem(f"{name}/{cam}", f"{name}/{cam}")
+                    # 回填用：世界 YAML 声明的深度开关与裁剪面（米）
+                    self._cam_cfg[f"{name}/{cam}"] = {
+                        "depth": bool(s.get("depth", False)),
+                        "near": s.get("near"),
+                        "far": s.get("far"),
+                    }
+                # 模型 XML 自带、但 YAML 未声明的相机：也要能预览
+                listed = {f"{name}/{cam}" for cam in r.get("cameras") or []}
+                for key in sorted(listed - set(self._cam_cfg)):
+                    self.camera_combo.addItem(key, key)
+            for combo, old in ((self.robot_combo, old_robot),
+                               (self.camera_combo, old_cam)):
+                idx = combo.findData(old) if old is not None else -1
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            if self.camera_combo.count() > 1 and \
+                    self.camera_combo.currentIndex() == 0:
+                self.camera_combo.setCurrentIndex(1)   # 有挂载相机优先用它
+        finally:
+            self._loading = False
+        self._apply_camera_cfg()
 
     def set_running(self, running: bool) -> None:
+        self._teleop_running = running
         self.bt_start.setEnabled(not running)
         self.bt_stop.setEnabled(running)
         # 深度开关/裁剪面保持可用：运行中也能实时切伪彩看距离
         for w in (self.robot_combo, self.camera_combo, self.res_combo,
                   self.rec_chk, self.rec_dir):
             w.setEnabled(not running)
+        if running:
+            self.set_preview_checked(False)
 
     def set_status(self, text: str, level: str = "info") -> None:
         color = {"ok": theme.C_OK, "warn": theme.C_WARN,
@@ -197,6 +257,15 @@ class TeleopPanel(QWidget):
 
     def clear_frame(self) -> None:
         self.camera.clear()
+
+    def set_preview_checked(self, on: bool) -> None:
+        """程序性开关预览（不触发 previewToggled，调用方自己负责关流）。"""
+        self._loading = True
+        try:
+            self.bt_preview.setChecked(on)
+        finally:
+            self._loading = False
+        self.bt_preview.setText("停止预览" if on else "相机预览")
 
     # ------------------------------------------------------------ 内部
 
@@ -213,6 +282,69 @@ class TeleopPanel(QWidget):
             args["near"] = round(self.near_spin.value(), 3)
             args["far"] = round(self.far_spin.value(), 1)
         return args
+
+    def stream_args(self) -> dict:
+        """camera_stream 的开流参数（独立预览用；不含遥操作字段）。"""
+        w, h = self.res_combo.currentData()
+        args = {"width": w, "height": h, "fps": 15}
+        args.update(self.camera_args())
+        cam = self.camera_combo.currentData()
+        args["camera"] = cam if cam is not None else ""
+        return args
+
+    def _apply_camera_cfg(self) -> None:
+        """把当前相机的 manifest 配置回填到深度开关/裁剪面。"""
+        cfg = self._cam_cfg.get(self.camera_combo.currentData() or "")
+        self._loading = True
+        try:
+            if cfg is None:
+                # 自由机位/无 YAML 配置：退回缺省裁剪面
+                self.depth_chk.setChecked(False)
+                self.near_spin.setValue(0.01)
+                self.far_spin.setValue(50.0)
+                free = not (self.camera_combo.currentData() or "")
+                self.lbl_cam_hint.setText(
+                    "自由机位：深度参数为临时值（近 0.01 / 远 50 米）" if free
+                    else "该相机没有深度配置：深度参数为临时值，"
+                         "如需持久化请在装备页填写")
+            else:
+                self.depth_chk.setChecked(cfg["depth"])
+                if cfg.get("near") is not None:
+                    self.near_spin.setValue(float(cfg["near"]))
+                if cfg.get("far") is not None:
+                    self.far_spin.setValue(float(cfg["far"]))
+                self.lbl_cam_hint.setText(
+                    f"参数来自相机配置（near {self.near_spin.value():g} / "
+                    f"far {self.far_spin.value():g} 米）；此处改动仅临时生效")
+        finally:
+            self._loading = False
+
+    def _on_camera_changed(self, _index: int = 0) -> None:
+        if self._loading:
+            return
+        self._apply_camera_cfg()
+        if self.bt_preview.isChecked():
+            # 预览中换相机：按新相机/分辨率重开流
+            self.previewToggled.emit(True)
+
+    def _on_camera_params_changed(self, _value=None) -> None:
+        if self._loading:
+            return
+        if self._cam_cfg:
+            self.lbl_cam_hint.setText(
+                f"当前为临时覆盖（near {self.near_spin.value():g} / "
+                f"far {self.far_spin.value():g} 米）；世界文件里的相机配置不变")
+
+    def _on_preview_toggled(self, on: bool) -> None:
+        if self._loading:
+            return
+        if on and self._teleop_running:
+            # 遥操作自己会开流，避免两条流互相覆盖
+            self.set_preview_checked(False)
+            self.status.setText("遥操作进行中，已由遥操作接管相机画面")
+            return
+        self.bt_preview.setText("停止预览" if on else "相机预览")
+        self.previewToggled.emit(on)
 
     def _on_start(self) -> None:
         w, h = self.res_combo.currentData()
