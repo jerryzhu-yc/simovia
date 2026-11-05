@@ -46,7 +46,7 @@ class LightSpec:
 @dataclass
 class ObjectSpec:
     name: str
-    type: str                       # box | sphere | cylinder
+    type: str                       # box | sphere | cylinder | model
     size: tuple[float, ...]         # MJCF 半尺寸
     pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
     quat: tuple[float, float, float, float] | None = None
@@ -54,6 +54,7 @@ class ObjectSpec:
     color: str = "#9CA3AF"
     static: bool = False            # true = 无 freejoint 的固定场景体（台/墙）
     friction: float = 1.0           # 滑动摩擦（MuJoCo 语义，接触对取 max）
+    model: str | None = None        # Optional passive MJCF compound asset (type=model)
 
 
 @dataclass
@@ -292,9 +293,10 @@ def _parse_scene(d, path: str) -> SceneSpec:
         p = f"{path}.objects[{i}]"
         name = _str(_req(od, "name", p), f"{p}.name")
         gtype = _str(_req(od, "type", p), f"{p}.type")
-        if gtype not in _GEOM_ARITY:
+        if gtype not in _GEOM_ARITY and gtype != 'model':
             raise _err(f"{p}.type", f"未知几何类型 '{gtype}'，支持: {sorted(_GEOM_ARITY)}")
-        size = _vec(_req(od, "size", p), _GEOM_ARITY[gtype], f"{p}.size")
+        model = _str(_req(od, 'model', p), f'{p}.model') if gtype == 'model' else None
+        size = () if gtype == 'model' else _vec(_req(od, "size", p), _GEOM_ARITY[gtype], f"{p}.size")
         if any(s <= 0 for s in size):
             raise _err(f"{p}.size", f"半尺寸必须为正，实际是: {size}")
         pos = _vec(od.get("pos", [0, 0, 0]), 3, f"{p}.pos")
@@ -315,7 +317,7 @@ def _parse_scene(d, path: str) -> SceneSpec:
             raise _err(f"{p}.friction", f"摩擦系数必须为正，实际是: {friction}")
         objects.append(ObjectSpec(name=name, type=gtype, size=size, pos=pos,
                                   quat=quat, mass=mass, color=color, static=static,
-                                  friction=friction))
+                                  friction=friction, model=model))
     return SceneSpec(floor=floor, lights=lights, objects=objects)
 
 
@@ -671,6 +673,11 @@ def absolutize_world_paths(text: str, base_dir) -> str:
             if q.is_absolute():
                 continue
             r[key] = (base / q).resolve().as_posix()
+            changed = True
+    for obj in (d.get("scene") or {}).get("objects") or []:
+        value = obj.get("model")
+        if obj.get("type") == "model" and value and not pathlib.Path(value).is_absolute():
+            obj["model"] = (base / value).resolve().as_posix()
             changed = True
     if not changed:
         return text

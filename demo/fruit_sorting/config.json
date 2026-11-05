@@ -1,0 +1,43 @@
+{
+  "bins": {
+    "banana": [
+      0.3,
+      -0.29
+    ],
+    "apple": [
+      0.3,
+      0
+    ],
+    "grape": [
+      0.3,
+      0.29
+    ]
+  },
+  "fruits": [
+    {
+      "name": "fruit_01",
+      "kind": "banana"
+    },
+    {
+      "name": "fruit_02",
+      "kind": "apple"
+    },
+    {
+      "name": "fruit_03",
+      "kind": "grape"
+    },
+    {
+      "name": "fruit_04",
+      "kind": "banana"
+    },
+    {
+      "name": "fruit_05",
+      "kind": "apple"
+    },
+    {
+      "name": "fruit_06",
+      "kind": "grape"
+    }
+  ],
+  "table_z": 0.68
+}

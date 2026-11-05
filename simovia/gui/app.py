@@ -751,6 +751,8 @@ class MainWindow(QMainWindow):
             "造机器人…", "Ctrl+B",
             "从零搭建机器人：编辑连杆树（parent / pos / rpy / 几何 / 关节），"
             "实时预览并查看每个连杆的旋转矩阵")
+        self.act_fruit_sorting = mk("水果视觉分拣 Demo…", tip="Panda + 腕部相机：手眼标定、HSV识别、三类水果分拣")
+        self.act_fruit_sorting.triggered.connect(self._on_fruit_sorting)
         self.act_import = mk("导入模型…", "Ctrl+I",
                              "导入本地机器人模型（URDF / MJCF / 机器人 YAML）"
                              "到当前场景，或直接打开世界 YAML"
@@ -879,6 +881,7 @@ class MainWindow(QMainWindow):
         m_file.addAction(self.act_new_scene)
         m_file.addAction(self.act_zoo)
         m_file.addAction(self.act_robot_builder)
+        m_file.addAction(self.act_fruit_sorting)
         m_file.addAction(self.act_import)
         m_file.addAction(self.act_scene_agent)
         m_file.addSeparator()
@@ -1349,6 +1352,20 @@ class MainWindow(QMainWindow):
             "Ctrl+左键拖动 调高度</p>")
 
     # ============================================================ 模型库
+
+    def _on_fruit_sorting(self):
+        """Launch the isolated demo window without replacing the user's current world."""
+        import importlib.util
+        import sys
+        from PySide6.QtCore import QProcess
+        root = pathlib.Path(__file__).resolve().parents[2]
+        demo = root / "demo" / "fruit_sorting"
+        if importlib.util.find_spec("cv2") is None and not (demo / ".deps" / "cv2").exists():
+            QMessageBox.information(self, "水果分拣 Demo", "缺少 OpenCV，请在项目根目录运行：\npython -m pip install -r demo/fruit_sorting/requirements.txt")
+            return
+        ok, _pid = QProcess.startDetached(sys.executable, ["-m", "demo.fruit_sorting"], str(root))
+        if not ok:
+            QMessageBox.critical(self, "水果分拣 Demo", "无法启动演示窗口，请检查 Python 环境。")
 
     def _on_robot_builder(self):
         """非模态「造机器人」面板：连杆树 + 位姿/几何/关节 + 旋转矩阵预览。"""

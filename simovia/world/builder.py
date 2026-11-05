@@ -192,6 +192,25 @@ def _build_scene(spec: WorldSpec, mj: mujoco.MjSpec):
         mj.worldbody.add_light(name=f"light_{i}", pos=list(light.pos), dir=[0, 0, -1])
     # 物体：独立 body + freejoint（可被抓取/瞬移）；static 物体无 freejoint
     for od in sc.objects:
+        if od.type == "model":
+            path = _resolve_path(spec.base_dir, od.model, "场景模型")
+            child = mujoco.MjSpec.from_file(str(path))
+            roots = [b for b in child.bodies if b.parent is child.worldbody]
+            if len(roots) != 1 or list(child.actuators):
+                raise WorldError(f"场景模型 {od.name} 必须只有一个根 body 且没有执行器")
+            root = roots[0]
+            joints = list(child.joints)
+            if od.static and joints:
+                raise WorldError(f"静态场景模型 {od.name} 不能包含关节")
+            if not od.static and (len(joints) != 1 or joints[0].type != mujoco.mjtJoint.mjJNT_FREE or joints[0].parent is not root):
+                raise WorldError(f"动态场景模型 {od.name} 需要根 body 上的唯一 freejoint")
+            root.name = "root"
+            root.pos[:] = [0, 0, 0]
+            root.quat[:] = [1, 0, 0, 0]
+            frame = mj.worldbody.add_frame(pos=list(od.pos), quat=list(od.quat) if od.quat else [1,0,0,0])
+            mj.attach(child, prefix=od.name + "/", frame=frame)
+            mj.body(od.name + "/root").name = od.name
+            continue
         body = mj.worldbody.add_body(name=od.name, pos=list(od.pos),
                                      quat=list(od.quat) if od.quat else None)
         if not od.static:

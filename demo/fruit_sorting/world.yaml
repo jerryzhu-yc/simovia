@@ -1,0 +1,325 @@
+name: fruit_sorting
+timestep: 0.002
+ctrl_period: 10
+integrator: implicitfast
+impratio: 10
+scene:
+  floor:
+    size:
+    - 2
+    - 2
+    texture: solid
+  lights:
+  - pos:
+    - 0.3
+    - 0
+    - 3
+  objects:
+  - name: table
+    type: box
+    size:
+    - 0.45
+    - 0.48
+    - 0.025
+    pos:
+    - 0.37
+    - 0
+    - 0.655
+    static: true
+    color: '#D3D8DE'
+    friction: 1.2
+  - name: leg_-0.045_-0.44
+    type: box
+    size:
+    - 0.025
+    - 0.025
+    - 0.315
+    pos:
+    - -0.045
+    - -0.44
+    - 0.315
+    static: true
+    color: '#475569'
+  - name: leg_-0.045_0.44
+    type: box
+    size:
+    - 0.025
+    - 0.025
+    - 0.315
+    pos:
+    - -0.045
+    - 0.44
+    - 0.315
+    static: true
+    color: '#475569'
+  - name: leg_0.785_-0.44
+    type: box
+    size:
+    - 0.025
+    - 0.025
+    - 0.315
+    pos:
+    - 0.785
+    - -0.44
+    - 0.315
+    static: true
+    color: '#475569'
+  - name: leg_0.785_0.44
+    type: box
+    size:
+    - 0.025
+    - 0.025
+    - 0.315
+    pos:
+    - 0.785
+    - 0.44
+    - 0.315
+    static: true
+    color: '#475569'
+  - name: banana_bin_floor
+    type: box
+    size:
+    - 0.083
+    - 0.105
+    - 0.006
+    pos:
+    - 0.3
+    - -0.29
+    - 0.686
+    static: true
+    color: '#B3BEC9'
+  - name: banana_bin_wall0
+    type: box
+    size:
+    - 0.004
+    - 0.113
+    - 0.032
+    pos:
+    - 0.213
+    - -0.29
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: banana_bin_wall1
+    type: box
+    size:
+    - 0.004
+    - 0.113
+    - 0.032
+    pos:
+    - 0.387
+    - -0.29
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: banana_bin_wall2
+    type: box
+    size:
+    - 0.083
+    - 0.004
+    - 0.032
+    pos:
+    - 0.3
+    - -0.39899999999999997
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: banana_bin_wall3
+    type: box
+    size:
+    - 0.083
+    - 0.004
+    - 0.032
+    pos:
+    - 0.3
+    - -0.181
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: apple_bin_floor
+    type: box
+    size:
+    - 0.083
+    - 0.105
+    - 0.006
+    pos:
+    - 0.3
+    - 0
+    - 0.686
+    static: true
+    color: '#B3BEC9'
+  - name: apple_bin_wall0
+    type: box
+    size:
+    - 0.004
+    - 0.113
+    - 0.032
+    pos:
+    - 0.213
+    - 0
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: apple_bin_wall1
+    type: box
+    size:
+    - 0.004
+    - 0.113
+    - 0.032
+    pos:
+    - 0.387
+    - 0
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: apple_bin_wall2
+    type: box
+    size:
+    - 0.083
+    - 0.004
+    - 0.032
+    pos:
+    - 0.3
+    - -0.109
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: apple_bin_wall3
+    type: box
+    size:
+    - 0.083
+    - 0.004
+    - 0.032
+    pos:
+    - 0.3
+    - 0.109
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: grape_bin_floor
+    type: box
+    size:
+    - 0.083
+    - 0.105
+    - 0.006
+    pos:
+    - 0.3
+    - 0.29
+    - 0.686
+    static: true
+    color: '#B3BEC9'
+  - name: grape_bin_wall0
+    type: box
+    size:
+    - 0.004
+    - 0.113
+    - 0.032
+    pos:
+    - 0.213
+    - 0.29
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: grape_bin_wall1
+    type: box
+    size:
+    - 0.004
+    - 0.113
+    - 0.032
+    pos:
+    - 0.387
+    - 0.29
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: grape_bin_wall2
+    type: box
+    size:
+    - 0.083
+    - 0.004
+    - 0.032
+    pos:
+    - 0.3
+    - 0.181
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: grape_bin_wall3
+    type: box
+    size:
+    - 0.083
+    - 0.004
+    - 0.032
+    pos:
+    - 0.3
+    - 0.39899999999999997
+    - 0.718
+    static: true
+    color: '#607587'
+  - name: fruit_01
+    type: model
+    model: assets/banana.xml
+    pos:
+    - 0.5
+    - -0.15
+    - 0.7070000000000001
+  - name: fruit_02
+    type: model
+    model: assets/apple.xml
+    pos:
+    - 0.62
+    - -0.14
+    - 0.7090000000000001
+  - name: fruit_03
+    type: model
+    model: assets/grape.xml
+    pos:
+    - 0.5
+    - 0
+    - 0.7090000000000001
+  - name: fruit_04
+    type: model
+    model: assets/banana.xml
+    pos:
+    - 0.62
+    - 0.01
+    - 0.7070000000000001
+  - name: fruit_05
+    type: model
+    model: assets/apple.xml
+    pos:
+    - 0.5
+    - 0.16
+    - 0.7090000000000001
+  - name: fruit_06
+    type: model
+    model: assets/grape.xml
+    pos:
+    - 0.62
+    - 0.16
+    - 0.7090000000000001
+robots:
+- name: arm
+  model: zoo://franka_emika_panda
+  pos:
+  - 0
+  - 0
+  - 0.68
+  end_effectors:
+  - model: onrobot_2fg7
+  sensors:
+  - name: wrist_rgb
+    type: camera
+    body: gripper/gripper_base
+    pos:
+    - 0.075
+    - 0.01
+    - 0
+    quat:
+    - 0.7071067811865476
+    - -0.7071067811865476
+    - 0
+    - 0
+    fovy: 65
+runtime:
+  realtime: false
