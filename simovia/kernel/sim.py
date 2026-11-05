@@ -110,24 +110,6 @@ class Simulation:
         # 控制器子进程要能 import simovia
         pkg_root = str(pathlib.Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
-        # 诊断探针：用与真实控制器完全相同的 stdio 形态（stdin=DEVNULL、
-        # stdout 与 stderr 合并成一条由内核排空的管道）起一个最简 python
-        # 子进程，验证"孙进程能启动且输出能回传"——只有开追踪时执行。
-        if os.environ.get("SIMOVIA_CTRL_TRACE"):
-            try:
-                p = subprocess.run(
-                    [sys.executable, "-c",
-                     "import sys; print('probe-stdout ok');"
-                     " sys.stderr.write('probe-stderr ok\\n')"],
-                    env=env, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=30)
-                sys.stderr.write(
-                    f"[probe] rc={p.returncode} "
-                    f"out={p.stdout.decode('utf-8', 'replace').strip()}\n")
-            except Exception as e:                 # noqa: BLE001
-                sys.stderr.write(f"[probe] 失败 {type(e).__name__}: {e}\n")
-            sys.stderr.flush()
         for rd in self.spec.robots:
             nu = len(self.index.robots[rd.name].actuators)
             self._st[rd.name] = {
