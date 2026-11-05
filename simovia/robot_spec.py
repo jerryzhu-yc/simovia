@@ -109,8 +109,34 @@ class LinkDoc:
     rpy_deg: tuple[float, float, float] = (0.0, 0.0, 0.0)
     mass: float | None = None
     geom: dict | None = None
+    #: 一个连杆挂多个几何（DH 自动生成的立管/横杆/法兰）；geom 为单几何简写
+    geoms: list[dict] | None = None
     joint: JointDoc = field(default_factory=JointDoc)
     color: str | None = None
+
+
+@dataclass
+class DHRow:
+    """标准 Denavit-Hartenberg 参数表的一行。
+
+    相邻坐标系变换（教材标准约定）::
+
+        T_i = Rz(theta_i) · Tz(d_i) · Tx(a_i) · Rx(alpha_i)
+
+    - ``revolute``（转动关节）：theta 是关节变量，``theta_deg`` 只是零位偏置；
+    - ``prismatic``（移动关节）：d 是关节变量，``d`` 字段只是中位偏置；
+    - ``fixed``：四个量全为常量，这一行不产生自由度。
+
+    range 语义与 JointDoc 一致：revolute 用度、prismatic 用米。
+    """
+    theta_deg: float = 0.0
+    d: float = 0.0
+    a: float = 0.0
+    alpha_deg: float = 0.0
+    joint_type: str = "revolute"
+    range: tuple[float, float] | None = None
+    kp: float = 50.0
+    kd: float = 1.0
 
 
 @dataclass
@@ -130,6 +156,13 @@ class LinkFrame:
 class RobotDoc:
     name: str
     links: list[LinkDoc] = field(default_factory=list)
+    #: 非空表示文档由 DH 参数表驱动；links 是 dh_to_links 的派生产物
+    dh: list[DHRow] | None = None
+    base_height: float = 0.08         # DH 底座圆柱高度（自动几何用）
+
+    @property
+    def is_dh(self) -> bool:
+        return self.dh is not None
 
     def link(self, name: str) -> LinkDoc:
         for lk in self.links:
@@ -215,14 +248,249 @@ def _parse_joint(raw, where: str) -> JointDoc:
         actuator=act_on)
 
 
+def _parse_geom_dict(geom, where: str) -> dict:
+    """解析单个几何字典：type/size 规范化，并接受 rpy 或 quat(wxyz)。"""
+    if not isinstance(geom, dict):
+        raise WorldError(f"[{where}] geom 需要字典，实际是: {geom!r}")
+    gtype = str(geom.get("type", "box")).lower()
+    if gtype not in GEOM_TYPES:
+        raise WorldError(
+            f"[{where}] 未知几何类型 '{gtype}'，支持: {sorted(GEOM_TYPES)}")
+    gsize = _num_list(geom.get("size", [0.05, 0.05, 0.05]), None,
+                      where, "geom.size")
+    out = dict(geom, type=gtype, size=gsize)
+    if geom.get("quat") is not None:
+        q = _num_list(geom["quat"], 4, where, "geom.quat(w,x,y,z)")
+        n = math.sqrt(sum(v * v for v in q))
+        if n < 1e-9:
+            raise WorldError(f"[{where}] geom.quat 不能是零向量")
+        out["quat"] = tuple(v / n for v in q)
+    return out
+
+
+# ---------------------------------------------------------------- DH 参数表
+
+#: DH 骨架几何的默认尺寸（米）
+DH_BASE_R = 0.08          # 底座圆柱半径
+DH_JOINT_R = 0.045        # 关节球半径
+DH_LINK_R = 0.022         # 连杆（立管/横杆）半径
+DH_FLANGE_H = 0.05        # 末端法兰圆柱半长
+
+_DH_JOINT_OK = {"fixed", "revolute", "hinge", "prismatic", "slide"}
+
+
+def _parse_dh(raw, name: str) -> list[DHRow]:
+    if not isinstance(raw, list) or not raw:
+        raise WorldError(
+            f"机器人 '{name}' 的 dh 需要非空列表（每行一个关节）")
+    rows: list[DHRow] = []
+    for i, item in enumerate(raw):
+        where = f"{name}.dh[{i}]"
+        if not isinstance(item, dict):
+            raise WorldError(f"[{where}] 需要字典，实际是: {item!r}")
+        jt = str(item.get("type", "revolute")).lower()
+        if jt not in _DH_JOINT_OK:
+            raise WorldError(
+                f"[{where}] DH 关节类型只支持 {sorted(_DH_JOINT_OK)}，"
+                f"实际是 '{jt}'")
+        rng = item.get("range")
+        if rng is not None:
+            rng = _num_list(rng, 2, where, "range")
+            if rng[0] >= rng[1]:
+                raise WorldError(f"[{where}] range 下限必须小于上限: {rng}")
+        rows.append(DHRow(
+            theta_deg=float(item.get("theta", item.get("theta_deg", 0.0))),
+            d=float(item.get("d", 0.0)),
+            a=float(item.get("a", 0.0)),
+            alpha_deg=float(item.get("alpha", item.get("alpha_deg", 0.0))),
+            joint_type=jt, range=rng,
+            kp=float(item.get("kp", 50.0)),
+            kd=float(item.get("kd", 1.0))))
+    return rows
+
+
+def _dh_row_T(row: DHRow) -> np.ndarray:
+    """一行 DH 在零位（关节变量 q=0）时的完整齐次变换。
+
+    revolute 的关节角是 ``theta_deg + q``、prismatic 的位移是 ``d + q``：
+    MuJoCo 里关节运动发生在 body 原点（Rz(q)/Tz(q)），link 子 body 只承担
+    这个含零位偏置的常量子变换；Rz 与 Tz 同轴可交换，两种关节拼起来都与
+    教材 DH 公式等价。
+    """
+    th = math.radians(row.theta_deg)
+    al = math.radians(row.alpha_deg)
+    ct, st = math.cos(th), math.sin(th)
+    ca, sa = math.cos(al), math.sin(al)
+    return np.array([
+        [ct, -st * ca,  st * sa, row.a * ct],
+        [st,  ct * ca, -ct * sa, row.a * st],
+        [0.0,       sa,       ca, row.d],
+        [0.0,      0.0,      0.0, 1.0],
+    ])
+
+
+def _cap(name: str, p0, p1, radius: float, color: str) -> dict:
+    """沿 p0->p1 的胶囊几何（中点 + 圆柱半长，端点自动补半球）。"""
+    p0 = np.asarray(p0, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    vec = p1 - p0
+    length = float(np.linalg.norm(vec))
+    half = max(0.0, length - 2.0 * radius) / 2.0
+    mid = (p0 + p1) / 2.0
+    quat = (1.0, 0.0, 0.0, 0.0)
+    if length > 1e-9:
+        z = vec / length
+        # MuJoCo 圆柱/胶囊默认沿 z 轴：把 z 轴转到 vec 方向
+        R = np.eye(3)
+        R[:, 2] = z
+        R[:, 0] = np.cross([0.0, 1.0, 0.0], z)
+        if np.linalg.norm(R[:, 0]) < 1e-9:
+            R[:, 0] = np.cross([1.0, 0.0, 0.0], z)
+        R[:, 0] /= np.linalg.norm(R[:, 0])
+        R[:, 1] = np.cross(z, R[:, 0])
+        quat = tuple(float(v) for v in matrix_to_quat(R))
+    return {"name": name, "type": "capsule",
+            "size": (radius, half),
+            "pos": tuple(float(v) for v in mid), "quat": quat,
+            "color": color}
+
+
+def dh_to_links(rows: list[DHRow], name: str = "robot",
+                base_height: float = 0.08) -> list[LinkDoc]:
+    """标准 DH 参数表 -> LinkDoc 链（含极简骨架几何）。
+
+    每行 DH 落两个 body（这是让 MuJoCo 运动学与教材 DH 完全一致的关键）：
+
+    - ``jointN``：关节载体 body，原点在第 N 条关节轴上，绕/沿自身 z 轴
+      运动。零位时它与 frame N-1 重合。
+    - ``linkN``：固定子 body，相对 jointN 做 Tz(d)·Tx(a)·Rx(alpha)，
+      原点即 frame N，也是下一行关节的安装位。
+
+    转动发生在 frame N-1 原点：theta 旋转的是"d-a-alpha 这一整段"，
+    所以杆长 a 的物理连杆随 theta 摆动，与教科书平面臂一致。
+    """
+    # 累加齐次变换，得到每个 frame 在世界中的零位位姿（用于摆骨架几何）
+    T = np.eye(4)
+    row_Ts: list[np.ndarray] = []
+    for row in rows:
+        Az = _dh_row_T(row)
+        row_Ts.append(Az)
+        T = T @ Az
+
+    links: list[LinkDoc] = []
+
+    # ---- 底座（固定）：圆柱把 frame 0 抬到 base_height 高度 -------------
+    links.append(LinkDoc(
+        name="base",
+        pos=(0.0, 0.0, 0.0),
+        joint=JointDoc(type="fixed"),
+        color="#4B5563",
+        geoms=[
+            {"name": "base_pedestal", "type": "cylinder",
+             "size": (DH_BASE_R, base_height / 2.0),
+             "pos": (0.0, 0.0, base_height / 2.0), "color": "#4B5563"},
+        ]))
+
+    prev = "base"
+
+    for i, row in enumerate(rows, start=1):
+        jname = f"joint{i}"
+        lname = f"link{i}"
+        jt = "revolute" if row.joint_type in ("revolute", "hinge") else (
+            "prismatic" if row.joint_type in ("prismatic", "slide")
+            else "fixed")
+        movable = jt in ("revolute", "prismatic")
+
+        # joint body 零位与 frame i-1 重合（上一个 link body 的原点就是
+        # frame i-1，所以相对位姿为零）；第一行安装在底座顶部 base_height
+        jpos = (0.0, 0.0, base_height) if i == 1 else (0.0, 0.0, 0.0)
+        joint = JointDoc(
+            type=jt, axis=(0.0, 0.0, 1.0),
+            range=row.range if movable else None,
+            kp=row.kp, kd=row.kd, actuator=movable)
+        col = _DEFAULT_COLORS[(i - 1) % len(_DEFAULT_COLORS)]
+        # 骨架几何挂在关节载体 body 上（随关节一起运动）：
+        #   关节球在 frame i-1 原点；d 立管沿 z 到 (0,0,d)；
+        #   a 横杆端点经 Rz(theta0) 旋转后正好是 frame i 原点 (a·c,a·s,d)
+        body_geoms = [{
+            "name": f"{jname}_sphere", "type": "sphere",
+            "size": (DH_JOINT_R,), "pos": (0.0, 0.0, 0.0), "color": col}]
+        ct0, st0 = math.cos(math.radians(row.theta_deg)), \
+            math.sin(math.radians(row.theta_deg))
+        end_a = (row.a * ct0, row.a * st0, row.d)
+        if abs(row.d) > 1e-9:
+            body_geoms.append(_cap(
+                f"{lname}_d", (0.0, 0.0, 0.0), (0.0, 0.0, row.d),
+                DH_LINK_R, col))
+        if abs(row.a) > 1e-9:
+            body_geoms.append(_cap(
+                f"{lname}_a", (0.0, 0.0, row.d), end_a,
+                DH_LINK_R, col))
+        links.append(LinkDoc(
+            name=jname, parent=prev,
+            pos=jpos,
+            joint=joint,
+            color=col, geoms=body_geoms))
+
+        # 固定 link body：完成 Tz(d)·Tx(a)·Rx(alpha)，原点 = frame i，
+        # 是下一行关节的安装位（alpha 决定下一轴朝向）；本身不挂几何
+        Az = row_Ts[i - 1]
+        lp = Az[:3, 3]
+        lR = Az[:3, :3]
+        lquat = tuple(float(v) for v in matrix_to_quat(lR))
+        lrpy = matrix_to_euler_deg(lR)
+        links.append(LinkDoc(
+            name=lname, parent=jname,
+            pos=(float(lp[0]), float(lp[1]), float(lp[2])),
+            quat=lquat, rpy_deg=lrpy,
+            joint=JointDoc(type="fixed"),
+            color=col))
+        prev = lname
+
+    # ---- 末端法兰：最后一个 frame 沿自身 z 伸出一小段短圆柱 -------------
+    last = f"link{len(rows)}"
+    links.append(LinkDoc(
+        name="flange", parent=last,
+        pos=(0.0, 0.0, 0.0),
+        joint=JointDoc(type="fixed"),
+        color="#9CA3AF",
+        geoms=[
+            {"name": "flange_cyl", "type": "cylinder",
+             "size": (DH_JOINT_R * 0.7, DH_FLANGE_H),
+             "pos": (0.0, 0.0, DH_FLANGE_H), "color": "#9CA3AF"},
+        ]))
+
+    # 自动骨架只做可视化：相邻关节球/连杆端点位置重叠，统一关闭碰撞
+    for lk in links:
+        for g in (lk.geoms or []):
+            g.setdefault("contype", 0)
+            g.setdefault("conaffinity", 0)
+    return links
+
+
 def parse_robot(doc: dict, base_dir: pathlib.Path | None = None) -> RobotDoc:
-    """校验并解析机器人连杆树（结构错误一律报清楚是哪个连杆哪个字段）。"""
+    """校验并解析机器人描述：支持 ``dh:`` 参数表或 ``links:`` 连杆树。
+
+    结构错误一律报清楚是哪个连杆/哪一行哪个字段。
+    """
     if not isinstance(doc, dict):
         raise WorldError(f"机器人描述需要字典，实际是: {type(doc).__name__}")
     name = str(doc.get("name") or "robot")
+
+    if isinstance(doc.get("dh"), list):
+        rows = _parse_dh(doc["dh"], name)
+        base_height = float(doc.get("base_height", 0.08))
+        links = dh_to_links(rows, name, base_height=base_height)
+        robot = RobotDoc(name=name, links=links, dh=rows,
+                         base_height=base_height)
+        _validate_tree(robot)
+        return robot
+
     raw_links = doc.get("links")
     if not isinstance(raw_links, list) or not raw_links:
-        raise WorldError(f"机器人 '{name}' 缺少 links 列表（至少要有一个根连杆）")
+        raise WorldError(
+            f"机器人 '{name}' 缺少 dh 参数表或 links 列表"
+            f"（至少要有一个根连杆）")
     links: list[LinkDoc] = []
     seen: set[str] = set()
     for i, raw in enumerate(raw_links):
@@ -247,25 +515,24 @@ def parse_robot(doc: dict, base_dir: pathlib.Path | None = None) -> RobotDoc:
             quat = tuple(matrix_to_quat(euler_to_matrix(rpy)))
         geom = raw.get("geom")
         if geom is not None and geom is not False:
-            if not isinstance(geom, dict):
-                raise WorldError(f"[{where}] geom 需要字典或 false，实际是: {geom!r}")
-            gtype = str(geom.get("type", "box")).lower()
-            if gtype not in GEOM_TYPES:
-                raise WorldError(
-                    f"[{where}] 未知几何类型 '{gtype}'，支持: "
-                    f"{sorted(GEOM_TYPES)}（{GEOM_TYPES})")
-            gsize = _num_list(geom.get("size", [0.05, 0.05, 0.05]), None,
-                              where, "geom.size")
-            geom = dict(geom, type=gtype, size=gsize)
+            geom = _parse_geom_dict(geom, where)
         else:
             geom = None
+        geoms = None
+        raw_geoms = raw.get("geoms")
+        if raw_geoms is not None:
+            if not isinstance(raw_geoms, list) or not raw_geoms:
+                raise WorldError(
+                    f"[{where}] geoms 需要非空列表，实际是: {raw_geoms!r}")
+            geoms = [_parse_geom_dict(gx, f"{where}.geoms[{gi}]")
+                     for gi, gx in enumerate(raw_geoms)]
         links.append(LinkDoc(
             name=lname,
             parent=(str(raw["parent"]) if raw.get("parent") else None),
             pos=_num_list(raw.get("pos", [0, 0, 0]), 3, where, "pos"),
             quat=quat, rpy_deg=rpy,
             mass=(float(raw["mass"]) if raw.get("mass") is not None else None),
-            geom=geom,
+            geom=geom, geoms=geoms,
             joint=_parse_joint(raw.get("joint"), where),
             color=raw.get("color")))
     doc_obj = RobotDoc(name=name, links=links)
@@ -322,6 +589,23 @@ def load_robot(path: str | pathlib.Path) -> RobotDoc:
 
 def dump_robot(robot: RobotDoc) -> dict:
     """把 RobotDoc 还原成可写盘的 YAML 字典（GUI 保存用）。"""
+    if robot.is_dh:
+        rows = []
+        for r in robot.dh:
+            item = {"theta": round(float(r.theta_deg), 4),
+                    "d": round(float(r.d), 6),
+                    "a": round(float(r.a), 6),
+                    "alpha": round(float(r.alpha_deg), 4),
+                    "type": r.joint_type,
+                    "kp": r.kp, "kd": r.kd}
+            if r.range is not None:
+                item["range"] = [round(float(v), 4) for v in r.range]
+            rows.append(item)
+        out = {"name": robot.name, "dh": rows}
+        if abs(robot.base_height - 0.08) > 1e-9:
+            out["base_height"] = round(float(robot.base_height), 6)
+        return out
+
     links = []
     for lk in robot.links:
         item = {"name": lk.name}
@@ -342,11 +626,23 @@ def dump_robot(robot: RobotDoc) -> dict:
                 joint["actuator"] = False
         if lk.joint.type != "fixed":
             item["joint"] = joint
-        if lk.geom is not None:
-            g = dict(lk.geom)
-            g.update(type=lk.geom["type"],
-                     size=[round(v, 6) for v in lk.geom["size"]])
-            item["geom"] = g
+
+        def _dump_geom(g: dict) -> dict:
+            out = dict(g)
+            out.update(type=g["type"],
+                       size=[round(v, 6) for v in g["size"]])
+            if "pos" in out:
+                out["pos"] = [round(float(v), 6) for v in out["pos"]]
+            if "quat" in out:
+                out["quat"] = [round(float(v), 6) for v in out["quat"]]
+            if "rpy" in out:
+                out["rpy"] = [round(float(v), 4) for v in out["rpy"]]
+            return out
+
+        if lk.geoms:
+            item["geoms"] = [_dump_geom(g) for g in lk.geoms]
+        elif lk.geom is not None:
+            item["geom"] = _dump_geom(lk.geom)
         if lk.color:
             item["color"] = lk.color
         links.append(item)
@@ -446,19 +742,30 @@ def build_robot_spec(robot: RobotDoc) -> mujoco.MjSpec:
             if lk.joint.actuator and JOINT_TYPES[jt][1]:
                 act_targets.append((jname, lk))
 
-        if lk.geom is not None:
-            g = lk.geom
+        geom_list = list(lk.geoms) if lk.geoms else (
+            [lk.geom] if lk.geom is not None else [])
+        for gi, g in enumerate(geom_list):
             gtype = GEOM_TYPES[g["type"]][0]
             rgba = hex_to_rgba(g.get("color") or lk.color
                                or _DEFAULT_COLORS[i % len(_DEFAULT_COLORS)])
-            gkw = dict(name=f"{lk.name}_geom", type=gtype,
+            gname = g.get("name") or (
+                f"{lk.name}_geom" if gi == 0 else f"{lk.name}_geom{gi}")
+            gkw = dict(name=gname, type=gtype,
                        size=list(g["size"]), rgba=rgba)
             if g.get("pos") is not None:
                 gkw["pos"] = list(_num_list(g["pos"], 3, lk.name, "geom.pos"))
-            if g.get("rpy") is not None:
+            if g.get("quat") is not None:
+                gkw["quat"] = [float(v) for v in g["quat"]]
+            elif g.get("rpy") is not None:
                 rpy = _num_list(g["rpy"], 3, lk.name, "geom.rpy（度）")
                 gkw["quat"] = list(matrix_to_quat(euler_to_matrix(rpy)))
-            if lk.mass is not None:
+            # DH 自动骨架几何标 contype=0：只可视化不参与碰撞
+            if g.get("contype") is not None:
+                gkw["contype"] = int(g["contype"])
+            if g.get("conaffinity") is not None:
+                gkw["conaffinity"] = int(g["conaffinity"])
+            # 手动质量只在显式指定时给第一个几何，其余几何用默认密度
+            if lk.mass is not None and gi == 0:
                 gkw["mass"] = lk.mass
             body.add_geom(**gkw)
 

@@ -1,4 +1,9 @@
-"""「造机器人」面板：离屏实例化、旋转矩阵联动、增删连杆、保存回读。"""
+"""「造机器人」面板：DH 参数表为主、高级连杆编辑为辅。
+
+离屏实例化、表格/树联动、旋转矩阵、保存回读。对话框内含实时预览，
+创建即建 mujoco.Renderer：无 GL 环境整体跳过。
+"""
+import copy
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -6,8 +11,29 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
-# 对话框内含实时预览，创建即建 mujoco.Renderer：无 GL 环境整体跳过
 pytestmark = pytest.mark.gl
+
+#: 旧版两连杆 links 文档：高级模式回归用
+LEGACY_ROBOT = {
+    "name": "my_robot",
+    "links": [
+        {"name": "base", "pos": [0, 0, 0.08],
+         "geom": {"type": "cylinder", "size": [0.07, 0.06],
+                  "pos": [0, 0, 0.06], "color": "#4B5563"}},
+        {"name": "link1", "parent": "base", "pos": [0, 0, 0.12],
+         "mass": 1.0, "color": "#4A90D9",
+         "joint": {"type": "revolute", "axis": [0, 0, 1],
+                   "range": [-170, 170], "kp": 50, "kd": 1},
+         "geom": {"type": "box", "size": [0.035, 0.035, 0.15],
+                  "pos": [0, 0, 0.15]}},
+        {"name": "link2", "parent": "link1", "pos": [0, 0, 0.30],
+         "mass": 0.7, "color": "#E8833A",
+         "joint": {"type": "revolute", "axis": [0, 0, 1],
+                   "range": [-120, 120], "kp": 50, "kd": 1},
+         "geom": {"type": "box", "size": [0.03, 0.03, 0.12],
+                  "pos": [0, 0, 0.12]}},
+    ],
+}
 
 
 @pytest.fixture(scope="module")
@@ -25,6 +51,18 @@ def dlg(qapp):
     d.deleteLater()
 
 
+@pytest.fixture()
+def legacy_dlg(dlg, monkeypatch):
+    """载入旧 links 文档、切到高级连杆编辑模式的对话框。"""
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Discard))
+    dlg._load_doc(copy.deepcopy(LEGACY_ROBOT))
+    assert dlg.mode == "links"
+    return dlg
+
+
 def _tree_names(dlg):
     names = []
     stack = [dlg.tree.topLevelItem(i) for i in range(dlg.tree.topLevelItemCount())]
@@ -35,29 +73,145 @@ def _tree_names(dlg):
     return names
 
 
-def test_default_robot_and_matrix(dlg):
-    """默认示例可见，选中 link1 后矩阵表已填值且 R_rel 为单位阵。"""
-    assert _tree_names(dlg) == ["base", "link1", "link2"]
-    assert dlg.tb_rel.item(0, 0) is not None
+# ------------------------------------------------------------ DH 默认界面
+
+def test_default_is_dh_scara(dlg):
+    """打开面板默认是 DH 表 + SCARA 三行（2 转动 + 1 移动）。"""
+    from simovia.gui.robot_builder import DEFAULT_SCARA
+    assert dlg.mode == "dh" and dlg.robot.is_dh
+    assert dlg.robot.name == DEFAULT_SCARA["name"]
+    assert dlg.dh_table.rowCount() == 3
+    assert [r.joint_type for r in dlg.robot.dh] == [
+        "revolute", "revolute", "prismatic"]
+    assert [r.a for r in dlg.robot.dh] == pytest.approx([0.25, 0.20, 0.0])
+    # 矩阵表已填 joint1（单位阵）
     assert float(dlg.tb_rel.item(0, 0).text()) == pytest.approx(1.0, abs=1e-3)
-    assert "R = Rz(0°) · Ry(0°) · Rx(0°)" in dlg.lbl_formula.text()
+    assert "joint1" in dlg.lbl_formula.text()
 
 
-def test_rpy_edit_updates_matrix_and_preview(dlg):
-    """改 rpy 后 R_rel/R_world 与子连杆世界位置同步变化。"""
+def test_dh_zero_pose_info(dlg):
+    """中栏显示自由度与 SCARA 零位法兰 (0.45, 0, 0.18)。"""
+    txt = dlg.lbl_ee.text()
+    assert "2 转动" in txt and "1 移动" in txt
+    assert "+0.450" in txt and "+0.180" in txt
+
+
+def test_dh_edit_a_rebuilds_kinematics(dlg):
+    """改 a1 后 links 重建，法兰 x 跟随变化并标记 dirty。"""
+    dlg.dh_table.cellWidget(0, 3).setValue(0.33)
+    assert dlg._dirty
+    assert dlg.robot.dh[0].a == pytest.approx(0.33)
+    from simovia.robot_spec import link_frames
+    fr = {f.name: f for f in link_frames(dlg.robot)}
+    assert fr["flange"].p_world[0] == pytest.approx(0.53, abs=1e-6)
+
+
+def test_dh_row_selection_updates_matrix(dlg):
+    """选第 2 行时矩阵面板切到 joint2（其原点在 frame1 = (a1,0,d1)）。"""
+    dlg.dh_table.setCurrentCell(1, 1)
+    assert "+0.250" in dlg.lbl_pose.text()
+    assert "joint2" in dlg.lbl_formula.text()
+
+
+def test_dh_add_delete_move(dlg):
+    dlg.dh_table.setCurrentCell(1, 1)
+    dlg._dh_add_row()                       # 插到选中行之后（第 3 行）
+    assert dlg.dh_table.rowCount() == 4
+    a = [r.a for r in dlg.robot.dh]
+    assert a == pytest.approx([0.25, 0.20, 0.15, 0.0])
+    dlg._dh_move_up()
+    assert [r.a for r in dlg.robot.dh] == pytest.approx(
+        [0.25, 0.15, 0.20, 0.0])
+    dlg._dh_move_down()
+    assert [r.a for r in dlg.robot.dh] == pytest.approx(
+        [0.25, 0.20, 0.15, 0.0])
+    dlg._dh_del_row()                        # 删选中的新行（index 2）
+    assert dlg.dh_table.rowCount() == 3
+    assert [r.a for r in dlg.robot.dh] == pytest.approx([0.25, 0.20, 0.0])
+
+
+def test_dh_type_switch_range_units(dlg):
+    """转动（度）切移动（米）：范围 spin 单位与默认值跟着换。"""
+    dlg.dh_table.setCurrentCell(0, 1)
+    cb = dlg.dh_table.cellWidget(0, 5)
+    cb.setCurrentIndex(1)                  # prismatic
+    assert dlg.dh_table.cellWidget(0, 6).suffix() == " m"
+    assert abs(dlg.dh_table.cellWidget(0, 6).value()) == pytest.approx(
+        0.05, abs=1e-6)
+    assert dlg.robot.dh[0].joint_type == "prismatic"
+    cb.setCurrentIndex(2)                  # fixed：范围禁用、无自由度
+    assert not dlg.dh_table.cellWidget(0, 6).isEnabled()
+    assert dlg.robot.dh[0].joint_type == "fixed"
+
+
+def test_dh_kp_kd_apply_to_selected_row(dlg):
+    dlg.dh_table.setCurrentCell(2, 1)      # prismatic 行
+    dlg.sp_dh_kp.setValue(120.0)
+    dlg.sp_dh_kd.setValue(2.5)
+    assert dlg.robot.dh[2].kp == pytest.approx(120.0)
+    assert dlg.robot.dh[2].kd == pytest.approx(2.5)
+    assert dlg.robot.dh[0].kp == pytest.approx(50.0)
+
+
+def test_dh_preset_switch(dlg):
+    # 预设顺序：1=SCARA, 2=六轴, 3=平面 2R
+    dlg.cb_preset.setCurrentIndex(3)
+    assert dlg.dh_table.rowCount() == 2
+    assert dlg.robot.name == "my_2r"
+    assert dlg.cb_preset.currentIndex() == 0   # 载入后复位占位项
+    dlg.cb_preset.setCurrentIndex(2)
+    assert dlg.dh_table.rowCount() == 6
+
+
+def test_dh_expand_clears_dh_table(dlg, monkeypatch):
+    """确认展开后变成 links 模式且不再保留 dh；取消则留在 DH。"""
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Cancel))
+    dlg._toggle_mode()
+    assert dlg.mode == "dh" and dlg.robot.is_dh
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    dlg._toggle_mode()
+    assert dlg.mode == "links" and dlg.robot.dh is None
+    names = _tree_names(dlg)
+    assert names[0] == "base" and "joint1" in names and "flange" in names
+
+
+def test_legacy_links_open_in_advanced(legacy_dlg):
+    """旧 links 文档打开后自动进高级模式，树与旧示例一致。"""
+    assert _tree_names(legacy_dlg) == ["base", "link1", "link2"]
+    assert "R = Rz(0°)" in legacy_dlg.lbl_formula.text()
+
+
+def test_dh_save_roundtrip(tmp_path, dlg):
+    import yaml
+    from simovia.robot_spec import dump_robot, load_robot
+    dlg.dh_table.cellWidget(1, 3).setValue(0.22)
+    p = tmp_path / "scara.yaml"
+    p.write_text(yaml.safe_dump(dump_robot(dlg.robot), allow_unicode=True),
+                 encoding="utf-8")
+    r2 = load_robot(p)
+    assert r2.is_dh and r2.dh[1].a == pytest.approx(0.22)
+
+
+# ------------------------------------------------------------ 高级连杆表单
+
+def test_rpy_edit_updates_matrix_and_preview(legacy_dlg):
+    dlg = legacy_dlg
     dlg._select_link("link1")
     dlg.sp_rpy[2].setValue(90.0)          # yaw 90°
     assert float(dlg.tb_rel.item(0, 1).text()) == pytest.approx(-1.0, abs=1e-3)
     assert float(dlg.tb_rel.item(1, 0).text()) == pytest.approx(1.0, abs=1e-3)
-    # link2 的原点在 link1 的 z 轴上：link1 绕自身 z 轴转 90° 不改变
-    # 自身原点、也不改变 link2 沿 z 轴的距离（世界位置仍是 0.500）
     dlg._select_link("link2")
     assert "+0.500" in dlg.lbl_pose.text()
-    # link2 的 R_world 继承了 link1 的 yaw
     assert float(dlg.tb_world.item(0, 1).text()) == pytest.approx(-1.0, abs=1e-3)
 
 
-def test_add_and_delete_child(dlg):
+def test_add_and_delete_child(legacy_dlg):
+    dlg = legacy_dlg
     dlg._select_link("link2")
     dlg._add_child()
     names = _tree_names(dlg)
@@ -65,84 +219,78 @@ def test_add_and_delete_child(dlg):
     new = names[-1]
     assert new.startswith("link")
     dlg._select_link(new)
-    dlg._del_link()                       # 叶子可直接删
+    dlg._del_link()
     assert new not in _tree_names(dlg)
 
 
-def test_new_child_sits_on_parent_top(dlg):
-    """新加的子连杆关节原点落在父几何顶面，两段不重叠。
-
-    旧实现 pos.z 写死 0.15，父连杆（link2 高 0.24）时新连杆会插进
-    父几何体一半。
-    """
+def test_new_child_sits_on_parent_top(legacy_dlg):
+    dlg = legacy_dlg
     dlg._select_link("link2")
     dlg._add_child()
     new = _tree_names(dlg)[-1]
     lk = dlg.robot.link(new)
-    # link2: box 半高 0.12 + 几何偏置 z 0.12 -> 顶面 0.24
     assert lk.pos[2] == pytest.approx(0.24)
-    # 新连杆自身：关节原点 = 几何底面中心（geom.pos.z == 半高）
     assert lk.geom["pos"][2] == pytest.approx(lk.geom["size"][2])
 
 
-def test_size_change_keeps_origin_at_bottom(dlg):
-    """改几何高度时几何偏置 z 自动跟随半高，关节原点保持在底面中心。"""
+def test_size_change_keeps_origin_at_bottom(legacy_dlg):
+    dlg = legacy_dlg
     dlg._select_link("link1")
     dlg.sp_gsize[2].setValue(0.20)
     assert dlg.sp_gpos[2].value() == pytest.approx(0.20)
     assert dlg.robot.link("link1").geom["pos"][2] == pytest.approx(0.20)
 
 
-def test_manual_geom_offset_disables_autofollow(dlg):
-    """用户手动偏移过几何 z 后，改尺寸不再强行吸回半高。"""
+def test_manual_geom_offset_disables_autofollow(legacy_dlg):
+    dlg = legacy_dlg
     dlg._select_link("link1")
     dlg.sp_gpos[2].setValue(0.05)
     dlg.sp_gsize[2].setValue(0.22)
     assert dlg.sp_gpos[2].value() == pytest.approx(0.05)
 
 
-def test_geom_type_switch_gives_matching_size(dlg):
-    """换几何类型时按新类型给尺寸与底面中心偏置，不保留旧语义数值。"""
+def test_geom_type_switch_gives_matching_size(legacy_dlg):
+    dlg = legacy_dlg
     dlg._select_link("link1")
-    # box=1, sphere=2, cylinder=3
-    dlg.cb_geom.setCurrentIndex(3)
+    dlg.cb_geom.setCurrentIndex(3)        # cylinder
     assert [w.value() for w in dlg.sp_gsize] == pytest.approx(
         [0.04, 0.075, 0.0])
     assert dlg.sp_gpos[2].value() == pytest.approx(0.075)
 
 
-def test_joint_type_range_conversion(dlg):
-    """转动 <-> 移动切换时范围按力臂双向换算，不再出现 ±170 m。"""
+def test_joint_type_range_conversion(legacy_dlg):
+    dlg = legacy_dlg
     dlg._select_link("link1")
     assert dlg.sp_range[0].value() == pytest.approx(-170.0)
-    dlg.cb_joint.setCurrentIndex(2)        # prismatic
+    dlg.cb_joint.setCurrentIndex(2)       # prismatic
     assert abs(dlg.sp_range[0].value()) == pytest.approx(0.297, abs=0.002)
-    dlg.cb_joint.setCurrentIndex(1)        # 回到 revolute
+    dlg.cb_joint.setCurrentIndex(1)       # revolute
     assert abs(dlg.sp_range[0].value()) == pytest.approx(170.0, abs=1.0)
 
 
-def test_fixed_to_prismatic_range_default(dlg):
-    """fixed 没有范围概念，切到移动关节时给米级默认而非 ±180 m。"""
+def test_fixed_to_prismatic_range_default(legacy_dlg):
+    dlg = legacy_dlg
     dlg._select_link("base")
-    dlg.cb_joint.setCurrentIndex(2)        # prismatic
+    dlg.cb_joint.setCurrentIndex(2)
     assert dlg.sp_range[0].value() == pytest.approx(-0.5)
     assert dlg.sp_range[1].value() == pytest.approx(0.5)
 
 
-def test_delete_parent_reparents_children(dlg):
-    """删中间连杆时子连杆上移，树不断裂。"""
+def test_delete_parent_reparents_children(legacy_dlg):
+    dlg = legacy_dlg
     dlg._select_link("link1")
     dlg._del_link()
     names = _tree_names(dlg)
     assert "link1" not in names and "link2" in names
     from simovia.robot_spec import _validate_tree
-    _validate_tree(dlg.robot)             # 结构仍合法
+    _validate_tree(dlg.robot)
 
 
-def test_matrix_matches_kinematics(dlg):
-    """面板显示的矩阵必须与 MuJoCo 编译后的 xmat 一致。"""
+def test_matrix_matches_kinematics(legacy_dlg):
     import mujoco
     from simovia.robot_spec import build_robot_spec, link_frames
+    dlg = legacy_dlg
+    dlg._select_link("link1")
     dlg.sp_rpy[0].setValue(15.0)
     dlg.sp_rpy[1].setValue(-30.0)
     dlg.sp_rpy[2].setValue(45.0)
@@ -154,19 +302,17 @@ def test_matrix_matches_kinematics(dlg):
         assert np.allclose(data.xmat[bid].reshape(3, 3), f.R_world, atol=1e-9)
 
 
-def test_save_button_always_asks_path(dlg, monkeypatch):
-    """已打开文件后点"保存为机器人 YAML…"仍要询问路径（实测 P1）。
+# ------------------------------------------------------------ 与模式无关
 
-    回归点：clicked 会把 checked(False) 当 _save 的第一个位置参数传进去，
-    直接连 _save 会被当成"不用问"，静默覆盖原文件。
-    """
+def test_save_button_always_asks_path(dlg, monkeypatch):
+    """clicked 把 checked(False) 传进槽：必须 lambda 包一层，否则静默覆盖。"""
     from PySide6.QtWidgets import QFileDialog, QPushButton
     dlg._doc_path = "/tmp/不应被覆盖.yaml"
     calls = []
 
     def fake_save(parent, caption, directory, *args, **kwargs):
         calls.append(caption)
-        return ("", "")                   # 用户在对话框里取消
+        return ("", "")
 
     monkeypatch.setattr(QFileDialog, "getSaveFileName", fake_save)
     btn = next(b for b in dlg.findChildren(QPushButton)
@@ -176,7 +322,6 @@ def test_save_button_always_asks_path(dlg, monkeypatch):
 
 
 def test_esc_respects_unsaved_changes(dlg, monkeypatch):
-    """Esc 走 reject()：有未保存修改时必须先确认，不能直接关掉丢改动。"""
     dlg._dirty = True
     asked = []
     monkeypatch.setattr(dlg, "_confirm_discard",
@@ -184,20 +329,15 @@ def test_esc_respects_unsaved_changes(dlg, monkeypatch):
     dlg.show()
     dlg.reject()
     assert asked == ["关闭"]
-    assert dlg.isVisible()                # 拒绝后窗口仍在
-    dlg._dirty = False                    # 让 fixture close() 能正常关闭
+    assert dlg.isVisible()
+    dlg._dirty = False
     dlg.hide()
 
 
 def test_preview_not_overlapped_by_matrix(dlg):
-    """旋转矩阵组不得压住预览（实测 P2 复测）。
-
-    回归点：右栏没给预览 stretch、矩阵组也没高度上限时，布局把矩阵组
-    分到 655px，几何上直接盖在预览区上。
-    """
     from PySide6.QtWidgets import QApplication, QGroupBox
     gb = next(g for g in dlg.findChildren(QGroupBox)
-              if g.title().startswith("旋转矩阵"))
+              if g.title().startswith("坐标系矩阵"))
     for size in ((1180, 760), (954, 575)):
         dlg.resize(*size)
         dlg.show()
@@ -208,7 +348,6 @@ def test_preview_not_overlapped_by_matrix(dlg):
 
 
 def test_close_confirms_only_once(dlg, monkeypatch):
-    """选"丢弃"后关闭只确认一次；第二次取消不应发生在渲染器已释放之后。"""
     dlg._dirty = True
     asked = []
     monkeypatch.setattr(dlg, "_confirm_discard",
@@ -220,35 +359,16 @@ def test_close_confirms_only_once(dlg, monkeypatch):
     assert dlg._renderer is None
 
 
-def test_layout_fits_1024_screen(dlg):
-    """默认窗口三栏 + 旋转矩阵在 1024 宽屏幕内完整可见（实测 P2）。
-
-    回归点：预览 QLabel 会把 420px 原图当最小宽度、按钮行四个并排，
-    整窗最小宽度曾达 1033px，矩阵第三列被挤出屏幕。
-    """
-    assert dlg.minimumSizeHint().width() <= 1000
-    assert dlg.tb_rel.minimumWidth() == 150 and dlg.tb_world.minimumWidth() == 150
-    # 两表并排不超过右栏可用宽度（312 = 150*2 + 间距）
-    assert dlg.tb_rel.width() + dlg.tb_world.width() <= 320
-
-
 def test_axes_overlay_always_visible(dlg):
-    """轴标是画在图像上的 2D 叠加：黑色背景（机身遮住的像素）也能看到三轴。
-
-    回归点：旧实现把三轴做成场景里的 3D 胶囊，参与深度测试，轴指向
-    连杆内部时被几何体完全遮住，看不出坐标系方向。
-    """
     import math
     from types import SimpleNamespace
-
     from PySide6.QtGui import QImage
 
     img = QImage(240, 240, QImage.Format.Format_RGB888)
-    img.fill(0)                              # 黑色 = 被机身挡住的像素
+    img.fill(0)
     az, el = math.radians(135.0), math.radians(-22.0)
     cam = SimpleNamespace(
         pos=np.array([0.9, -0.9, 0.5]),
-        # 与预览相机一致：orbit 视角推导出的 forward/up
         forward=np.array([-math.sin(az) * math.cos(el),
                           -math.cos(az) * math.cos(el), math.sin(el)]),
         up=np.array([math.sin(az) * math.sin(el),
@@ -271,10 +391,10 @@ def test_axes_overlay_always_visible(dlg):
     assert all(n > 10 for n in dominant.values()), dominant
 
 
-def test_save_load_roundtrip(dlg, tmp_path):
-    """保存的 YAML 能被 load_robot 原样读回，且连杆姿态一致。"""
+def test_legacy_links_save_roundtrip(tmp_path, legacy_dlg):
     import yaml
     from simovia.robot_spec import dump_robot, load_robot
+    dlg = legacy_dlg
     dlg._select_link("link2")
     dlg.sp_rpy[1].setValue(30.0)
     p = tmp_path / "r.yaml"

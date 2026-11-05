@@ -1,11 +1,15 @@
-"""「造机器人」面板：连杆树编辑 + 实时预览 + 旋转矩阵教学显示。
+"""「造机器人」面板：DH 参数表驱动 + 实时预览 + 高级连杆编辑。
 
-左侧连杆树（父子关系），中间编辑选中连杆的位姿/几何/关节，右侧预览，
-并在下方显示该连杆相对父系与世界系的 3×3 旋转矩阵——初学者可以直接看到
-改一个 rpy 角度时矩阵怎么变、子连杆怎么跟着走。
+主模式是 Denavit-Hartenberg 参数表：每一行一个关节，填 θ₀/d/a/α 与
+关节类型，几何体（关节球 + d 立管 + a 横杆 + 底座 + 法兰）按运动学
+自动生成，杆长显式可控、不会互相插穿，编译后每个转动/移动关节自动带
+位置执行器，保证能运动。
 
-数据格式见 simovia/robot_spec.py。保存产物是机器人 YAML，可直接写进
-世界文件的 robots[].model。
+「高级连杆编辑」把 DH 展开成普通连杆树（单向：展开后不再保留 DH 表），
+旧的逐连杆位姿/几何/关节表单仍可用于打开历史 links 格式机器人。
+
+数据格式见 simovia/robot_spec.py。保存产物是机器人 YAML（dh 或 links），
+可直接写进世界文件的 robots[].model。
 """
 from __future__ import annotations
 
@@ -20,44 +24,71 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTableWidget,
-    QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
+    QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from simovia.errors import WorldError
 from simovia.robot_spec import (
-    GEOM_TYPES, JOINT_TYPES, RobotDoc, build_robot_spec, dump_robot,
+    DHRow, GEOM_TYPES, RobotDoc, build_robot_spec, dh_to_links, dump_robot,
     euler_to_matrix, link_frames, load_robot, matrix_to_quat, parse_robot,
 )
 
-#: 打开面板时的默认示例：两连杆平面臂（初学者从这里改最直观）
-DEFAULT_ROBOT = {
-    "name": "my_robot",
-    "links": [
-        {"name": "base", "pos": [0, 0, 0.08],
-         "geom": {"type": "cylinder", "size": [0.07, 0.06],
-                  "pos": [0, 0, 0.06], "color": "#4B5563"}},
-        {"name": "link1", "parent": "base", "pos": [0, 0, 0.12],
-         "mass": 1.0, "color": "#4A90D9",
-         "joint": {"type": "revolute", "axis": [0, 0, 1],
-                   "range": [-170, 170], "kp": 50, "kd": 1},
-         "geom": {"type": "box", "size": [0.035, 0.035, 0.15],
-                  "pos": [0, 0, 0.15]}},
-        {"name": "link2", "parent": "link1", "pos": [0, 0, 0.30],
-         "mass": 0.7, "color": "#E8833A",
-         "joint": {"type": "revolute", "axis": [0, 0, 1],
-                   "range": [-120, 120], "kp": 50, "kd": 1},
-         "geom": {"type": "box", "size": [0.03, 0.03, 0.12],
-                  "pos": [0, 0, 0.12]}},
+#: 打开面板时的默认示例：SCARA（3 自由度：2 个水平转动 + 1 个竖直移动）
+DEFAULT_SCARA = {
+    "name": "my_scara",
+    "dh": [
+        {"theta": 0, "d": 0.20, "a": 0.25, "alpha": 0,
+         "type": "revolute", "range": [-160, 160]},
+        {"theta": 0, "d": 0.00, "a": 0.20, "alpha": 180,
+         "type": "revolute", "range": [-135, 135]},
+        # SCARA 的第三轴沿 z3（alpha2=180 使 z3 朝下）：d 正向向下
+        {"theta": 0, "d": 0.10, "a": 0.00, "alpha": 0,
+         "type": "prismatic", "range": [-0.05, 0.05]},
     ],
 }
 
+#: DH 表预设（"预设"下拉的选项）
+DH_PRESETS: dict[str, dict] = {
+    "SCARA（2 转动 + 1 移动）": DEFAULT_SCARA,
+    "六轴工业臂": {
+        "name": "my_arm6",
+        "dh": [
+            {"theta": 0, "d": 0.30, "a": 0.00, "alpha": 90,
+             "type": "revolute", "range": [-170, 170]},
+            {"theta": 0, "d": 0.00, "a": 0.25, "alpha": 0,
+             "type": "revolute", "range": [-120, 120]},
+            {"theta": 0, "d": 0.00, "a": 0.05, "alpha": 90,
+             "type": "revolute", "range": [-130, 130]},
+            {"theta": 0, "d": 0.22, "a": 0.00, "alpha": -90,
+             "type": "revolute", "range": [-180, 180]},
+            {"theta": 0, "d": 0.00, "a": 0.00, "alpha": 90,
+             "type": "revolute", "range": [-120, 120]},
+            {"theta": 0, "d": 0.08, "a": 0.00, "alpha": 0,
+             "type": "revolute", "range": [-360, 360]},
+        ],
+    },
+    "平面 2R 两连杆": {
+        "name": "my_2r",
+        "dh": [
+            {"theta": 0, "d": 0.0, "a": 0.30, "alpha": 0,
+             "type": "revolute", "range": [-170, 170]},
+            {"theta": 0, "d": 0.0, "a": 0.22, "alpha": 0,
+             "type": "revolute", "range": [-150, 150]},
+        ],
+    },
+}
 
 #: 关节类型下拉顺序（与 cb_joint.addItems 一一对应）
 _JOINT_LABELS = ["fixed", "revolute", "prismatic", "ball", "free"]
 
+#: DH 表类型列下拉 -> DHRow.joint_type
+_DH_TYPE_LABELS = [("转动 revolute", "revolute"),
+                   ("移动 prismatic", "prismatic"),
+                   ("固定 fixed", "fixed")]
+
 #: 角度范围 <-> 移动范围换算时假定的关节力臂（m）：0.1 m 半径处
-# 180° ≈ 0.314 m，与教学示例连杆的尺度一致
 _RANGE_ARM_M = 0.1
 
 
@@ -69,7 +100,6 @@ def _geom_half_height(gtype: str, size) -> float:
     if gtype == "sphere":
         return float(s[0])
     if gtype == "capsule":
-        # MuJoCo capsule：圆柱半长 + 端部球半径
         return float(s[1]) + float(s[0])
     return float(s[1])                    # cylinder: [半径, 半长]
 
@@ -117,23 +147,25 @@ class RobotBuilderDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("造机器人 —— 连杆树 / 位姿 / 旋转矩阵")
+        self.setWindowTitle("造机器人 —— DH 参数表 / 运动学")
         self.resize(1180, 760)
-        self.robot: RobotDoc = parse_robot(copy.deepcopy(DEFAULT_ROBOT))
+        self.robot: RobotDoc = parse_robot(copy.deepcopy(DEFAULT_SCARA))
+        self.mode = "dh"               # "dh" 或 "links"（高级连杆编辑）
         self._loading = False
-        self._dirty = False          # 文档有未保存修改（新建/打开/关闭前提示）
-        self._doc_path = None        # 最近打开/保存的机器人 YAML
+        self._dirty = False
+        self._doc_path = None
         self._renderer = None
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(120)
         self._preview_timer.timeout.connect(self._refresh_preview)
         self._build_ui()
-        self._refresh_tree()
-        self._select_link("link1")
+        self._refresh_dh_table(select_row=0)
+        self._refresh_tree(select=self.robot.links[0].name)
+        self._set_mode("dh")
+        self._update_ee_info()
+        self._update_matrix()
         self._refresh_preview()
-        # 进程退出前主动释放 GL：否则 Renderer 在解释器收尾时才析构，
-        # EGL 上下文已拆，独立脚本退出时会报错甚至段错误
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._release_preview)
@@ -141,11 +173,105 @@ class RobotBuilderDialog(QDialog):
     # ------------------------------------------------------------ UI 骨架
 
     def _build_ui(self):
-        root = QHBoxLayout(self)
-        root.setContentsMargins(6, 6, 6, 6)   # 1024 宽屏幕也能整窗放下三栏
+        root = QVBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 6)
 
-        # 左：连杆树
-        left = QVBoxLayout()
+        # 顶栏：名称 + 模式切换 + 预设（DH）
+        top = QHBoxLayout()
+        top.addWidget(QLabel("机器人名"))
+        self.ed_name = QLineEdit()
+        self.ed_name.setMaximumWidth(160)
+        self.ed_name.editingFinished.connect(self._on_name_changed)
+        top.addWidget(self.ed_name)
+        top.addSpacing(12)
+        self.lbl_mode = QLabel("")
+        self.lbl_mode.setStyleSheet("color:#2563EB; font-weight:600;")
+        top.addWidget(self.lbl_mode)
+        top.addStretch(1)
+        self.cb_preset = QComboBox()
+        self.cb_preset.addItem("载入 DH 预设…")
+        self.cb_preset.addItems(list(DH_PRESETS))
+        self.cb_preset.currentIndexChanged.connect(self._on_preset)
+        top.addWidget(self.cb_preset)
+        self.btn_mode = QPushButton("高级：逐连杆编辑")
+        self.btn_mode.clicked.connect(self._toggle_mode)
+        top.addWidget(self.btn_mode)
+        root.addLayout(top)
+
+        body = QHBoxLayout()
+
+        # 左栏：DH 表 / 连杆树 堆叠
+        self.stack_left = QStackedWidget()
+        self.stack_left.addWidget(self._build_dh_page())     # 0
+        self.stack_left.addWidget(self._build_tree_page())   # 1
+        self.stack_left.setFixedWidth(486)
+        body.addWidget(self.stack_left)
+
+        # 中栏：DH 说明 / 连杆属性表单 堆叠
+        self.stack_mid = QStackedWidget()
+        self.stack_mid.addWidget(self._build_dh_info_page())  # 0
+        self.stack_mid.addWidget(self._build_form_page())     # 1
+        body.addWidget(self.stack_mid)
+
+        # 右栏：预览 + 矩阵（两模式共用）
+        body.addLayout(self._build_preview_page(), 1)
+        root.addLayout(body, 1)
+
+    # -- 左：DH 参数表 ---------------------------------------------------
+
+    def _build_dh_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 4, 0, 0)
+        lay.addWidget(QLabel(
+            "DH 参数表（标准约定  T = Rz(θ)·Tz(d)·Tx(a)·Rx(α)）"))
+        self.dh_table = QTableWidget(0, 8)
+        self.dh_table.setHorizontalHeaderLabels(
+            ["#", "θ₀°", "d m", "a m", "α°", "关节", "min", "max"])
+        hdr = self.dh_table.horizontalHeader()
+        hdr.setSectionResizeMode(hdr.ResizeMode.Fixed)
+        for col, w in enumerate((26, 58, 62, 62, 54, 96, 58, 58)):
+            self.dh_table.setColumnWidth(col, w)
+        self.dh_table.verticalHeader().setVisible(False)
+        self.dh_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.dh_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection)
+        self.dh_table.currentCellChanged.connect(self._on_dh_row_sel)
+        lay.addWidget(self.dh_table)
+
+        row = QHBoxLayout()
+        for text, slot in (("＋ 添加关节", self._dh_add_row),
+                           ("删除选中", self._dh_del_row),
+                           ("上移", self._dh_move_up),
+                           ("下移", self._dh_move_down)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        lay.addLayout(row)
+
+        tune = QFormLayout()
+        tune.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.sp_base = self._spin(0.0, 1.0, 0.01, suffix=" m")
+        self.sp_base.valueChanged.connect(self._on_dh_edited)
+        tune.addRow("底座高度", self.sp_base)
+        self.sp_dh_kp = self._spin(0, 5000, 5, 1, suffix=" N·m/rad")
+        self.sp_dh_kd = self._spin(0, 200, 0.1, 2, suffix=" N·s/rad")
+        self.sp_dh_kp.valueChanged.connect(self._on_dh_edited)
+        self.sp_dh_kd.valueChanged.connect(self._on_dh_edited)
+        tune.addRow("选中行伺服 kp / 阻尼 kd",
+                    self._row([self.sp_dh_kp, self.sp_dh_kd]))
+        box = QGroupBox("骨架与伺服")
+        box.setLayout(tune)
+        lay.addWidget(box)
+        return page
+
+    # -- 左：连杆树（高级） ----------------------------------------------
+
+    def _build_tree_page(self) -> QWidget:
+        page = QWidget()
+        left = QVBoxLayout(page)
+        left.setContentsMargins(0, 4, 0, 0)
         left.addWidget(QLabel("连杆树（父子关系）"))
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["连杆", "父连杆", "关节"])
@@ -160,28 +286,65 @@ class RobotBuilderDialog(QDialog):
         self.btn_del.clicked.connect(self._del_link)
         row.addWidget(self.btn_del)
         left.addLayout(row)
-        left_w = QWidget()
-        left_w.setLayout(left)
-        # 220：1024×768 屏幕上三栏 + 旋转矩阵仍能完整显示（F11 复测）
-        left_w.setFixedWidth(220)
-        root.addWidget(left_w)
+        return page
 
-        # 中：属性表单（可滚动）
+    # -- 中：DH 说明 -----------------------------------------------------
+
+    def _build_dh_info_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        gb = QGroupBox("这一行参数的含义")
+        form = QFormLayout(gb)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.lbl_dh_hint = QLabel("")
+        self.lbl_dh_hint.setWordWrap(True)
+        self.lbl_dh_hint.setStyleSheet("color:#374151;")
+        form.addRow(self.lbl_dh_hint)
+        lay.addWidget(gb)
+
+        gb2 = QGroupBox("零位运动学")
+        f2 = QVBoxLayout(gb2)
+        self.lbl_ee = QLabel("")
+        self.lbl_ee.setWordWrap(True)
+        self.lbl_ee.setStyleSheet("font-family:monospace;")
+        f2.addWidget(self.lbl_ee)
+        hint = QLabel(
+            "θ₀：转动关节零位偏置（度）；关节变量 q 叠加在 θ₀ 上。\n"
+            "d：沿当前 z 轴的连杆偏置（米）；移动关节的变量也沿此轴。\n"
+            "a：沿（转动后的）x 轴的连杆长度（米）——这就是连杆长度。\n"
+            "α：绕 x 轴的扭转角（度），决定相邻关节轴是否平行/垂直。\n"
+            "几何体自动生成：底座立柱、关节球、d 立管、a 横杆、末端法兰。")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#6B7280; font-size:11px;")
+        f2.addWidget(hint)
+        lay.addWidget(gb2)
+        lay.addStretch(1)
+        sw = QScrollArea()
+        sw.setWidgetResizable(True)
+        sw.setWidget(page)
+        sw.setFixedWidth(370)
+        holder = QWidget()
+        h = QVBoxLayout(holder)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(sw)
+        return holder
+
+    # -- 中：连杆属性表单（高级） ----------------------------------------
+
+    def _build_form_page(self) -> QWidget:
         box = QGroupBox("选中连杆")
         form = QFormLayout(box)
-        # 标签另起一行：三轴 spin 并排时不再被标签挤到需要横向滚动
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-        self.ed_name = QLineEdit()
-        self.ed_name.editingFinished.connect(self._on_name_changed)
-        form.addRow("名称", self.ed_name)
+        self.ed_link_name = QLineEdit()
+        self.ed_link_name.editingFinished.connect(self._on_name_changed)
+        form.addRow("名称", self.ed_link_name)
         self.cb_parent = QComboBox()
         self.cb_parent.currentIndexChanged.connect(self._on_form)
         form.addRow("父连杆", self.cb_parent)
         self.sp_pos = [self._spin(-10, 10, 0.01, suffix=" m")
                        for _ in range(3)]
         form.addRow("平移 pos x/y/z", self._row(self.sp_pos))
-        self.sp_rpy = [self._spin(-360, 360, 1, 1)
-                       for _ in range(3)]
+        self.sp_rpy = [self._spin(-360, 360, 1, 1) for _ in range(3)]
         for s in self.sp_rpy:
             s.setSuffix("°")
         form.addRow("旋转 rpy（度）", self._row(self.sp_rpy))
@@ -198,8 +361,6 @@ class RobotBuilderDialog(QDialog):
                         for _ in range(3)]
         form.addRow("几何偏置", self._row(self.sp_gpos))
         self.cb_joint = QComboBox()
-        # ball 必须在列表里：否则打开含球关节的机器人时下拉回落到 fixed，
-        # 下次任何表单改动都会把关节类型静默改掉（F04）
         self.cb_joint.addItems(["fixed（固定）", "revolute（转动）",
                                 "prismatic（移动）", "ball（球关节）",
                                 "free（浮动基座）"])
@@ -217,11 +378,10 @@ class RobotBuilderDialog(QDialog):
                   self.sp_gsize + self.sp_gpos + self.sp_axis +
                   self.sp_range + [self.sp_kp, self.sp_kd]):
             w.valueChanged.connect(self._on_form)
-        # 几何尺寸改动时单独同步几何偏置 z：维持"关节原点 = 几何底面中心"
         for w in self.sp_gsize:
             w.valueChanged.connect(self._on_geom_size)
-        # 手动改几何偏置 z 则退出自动跟随
         self.sp_gpos[2].valueChanged.connect(self._on_geom_pos)
+
         mid_w = QWidget()
         mid = QVBoxLayout(mid_w)
         mid.addWidget(box)
@@ -229,35 +389,36 @@ class RobotBuilderDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(mid_w)
-        # 370：三轴 spin（3×96 + 间距）放得下，不出现横向滚动条
         scroll.setFixedWidth(370)
-        root.addWidget(scroll)
+        holder = QWidget()
+        h = QVBoxLayout(holder)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(scroll)
+        return holder
 
-        # 右：预览 + 旋转矩阵
+    # -- 右：预览 + 矩阵 -------------------------------------------------
+
+    def _build_preview_page(self) -> QVBoxLayout:
         right = QVBoxLayout()
         self.lbl_img = QLabel("预览")
-        # 最小 240：窄屏时优先保三栏和矩阵，预览随剩余空间缩放
         self.lbl_img.setMinimumSize(240, 240)
-        # Ignored：否则 QLabel 会把 420px 原图当成最小宽度，把整窗撑出屏幕
         self.lbl_img.setSizePolicy(QSizePolicy.Policy.Ignored,
                                    QSizePolicy.Policy.Ignored)
         self._preview_pix: QPixmap | None = None
         self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setStyleSheet(
             "background:#111827; color:#9CA3AF; border-radius:6px;")
-        # 预览吃掉全部剩余高度：矩阵组不设上限时会把它挤扁甚至压上去
         right.addWidget(self.lbl_img, 1)
         self.lbl_err = QLabel("")
         self.lbl_err.setWordWrap(True)
         self.lbl_err.setStyleSheet("color:#DC2626;")
         right.addWidget(self.lbl_err)
-        gb = QGroupBox("旋转矩阵（当前连杆）")
+        gb = QGroupBox("坐标系矩阵（当前选中）")
         gb_lay = QVBoxLayout(gb)
         self.lbl_formula = QLabel("")
-        # 深色背景上用浅灰：原来的 #374151 几乎看不见（F11）
-        self.lbl_formula.setStyleSheet("font-family:monospace; color:#9CA3AF;")
+        self.lbl_formula.setStyleSheet(
+            "font-family:monospace; color:#374151;")
         gb_lay.addWidget(self.lbl_formula)
-        # 3 列各占 50px：两表并排（300px）在 1024 宽屏幕上也能放下第三列
         self.tb_rel = QTableWidget(3, 3)
         self.tb_world = QTableWidget(3, 3)
         for tb in (self.tb_rel, self.tb_world):
@@ -271,7 +432,7 @@ class RobotBuilderDialog(QDialog):
             tb.setFixedWidth(150)
         row2 = QHBoxLayout()
         col1 = QVBoxLayout()
-        col1.addWidget(QLabel("相对父连杆  R_rel"))
+        col1.addWidget(QLabel("相对父系  R_rel"))
         col1.addWidget(self.tb_rel)
         col2 = QVBoxLayout()
         col2.addWidget(QLabel("世界系  R_world"))
@@ -279,29 +440,17 @@ class RobotBuilderDialog(QDialog):
         row2.addLayout(col1)
         row2.addLayout(col2)
         gb_lay.addLayout(row2)
-        hint = QLabel("R 的第 j 列 = 本连杆第 j 根坐标轴在参考系中的方向；"
-                      "对角元 = 该轴与参考轴的夹角余弦")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#6B7280; font-size:11px;")
-        gb_lay.addWidget(hint)
         self.lbl_pose = QLabel("")
         self.lbl_pose.setStyleSheet("font-family:monospace;")
         gb_lay.addWidget(self.lbl_pose)
-        # 上限 300：矩阵组内容实际约 230px，封顶后不会再抢走预览的空间
         gb.setMaximumHeight(300)
         right.addWidget(gb, 0)
 
-        # 底部按钮
         btns = QHBoxLayout()
         b_new = QPushButton("新建")
         b_new.clicked.connect(self._new_robot)
         b_open = QPushButton("打开…")
         b_open.clicked.connect(self._open)
-        b_save = QPushButton("保存为机器人 YAML…")
-        b_save.setObjectName("primary")
-        # 显式传 ask：clicked 会把 checked(False) 当第一个位置参数传进来，
-        # 直接连 _save 会被误判为"不用问路径"，导致静默覆盖已打开的文件
-        b_save.clicked.connect(lambda: self._save(ask=True))
         b_close = QPushButton("关闭")
         b_close.clicked.connect(self.close)
         btns.addWidget(b_new)
@@ -309,13 +458,14 @@ class RobotBuilderDialog(QDialog):
         btns.addStretch(1)
         btns.addWidget(b_close)
         right.addLayout(btns)
-        # "保存为…"独占一行：四个按钮并排会把右栏最小宽度顶到 389px，
-        # 1024 宽屏幕加上窗口边框就整窗超出（矩阵第三列被挤出可见区）
         save_row = QHBoxLayout()
         save_row.addStretch(1)
+        b_save = QPushButton("保存为机器人 YAML…")
+        b_save.setObjectName("primary")
+        b_save.clicked.connect(lambda: self._save(ask=True))
         save_row.addWidget(b_save)
         right.addLayout(save_row)
-        root.addLayout(right, 1)
+        return right
 
     @staticmethod
     def _spin(lo, hi, step, decimals=3, suffix=""):
@@ -323,7 +473,7 @@ class RobotBuilderDialog(QDialog):
         s.setRange(lo, hi)
         s.setSingleStep(step)
         s.setDecimals(decimals)
-        s.setMaximumWidth(96)        # 三轴参数一行放得下，不用横向滚动（F11）
+        s.setMaximumWidth(96)
         if suffix:
             s.setSuffix(suffix)
         return s
@@ -338,7 +488,298 @@ class RobotBuilderDialog(QDialog):
         lay.setContentsMargins(0, 0, 0, 0)
         return holder
 
-    # ------------------------------------------------------------ 树与选中
+    # ------------------------------------------------------------ 模式切换
+
+    def _toggle_mode(self):
+        if self.mode == "dh":
+            # DH -> links 是单向展开：展开后 DH 表不再保留
+            r = QMessageBox.question(
+                self, "切换到逐连杆编辑",
+                "高级模式会把 DH 表展开成普通连杆树，之后本机器人将不再\n"
+                "保留 DH 参数表（几何体已自动生成，可自由增删改）。\n\n"
+                "确定展开吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if r != QMessageBox.StandardButton.Yes:
+                return
+            self.robot.dh = None
+            self._dirty = True
+            self._set_mode("links")
+            self._refresh_tree(select=self.robot.links[0].name)
+            self._schedule_preview()
+        else:
+            # links -> dh 只能新建：旧 links 无法反解成唯一 DH 表
+            if not self._confirm_discard("新建 DH 机器人"):
+                return
+            self._load_doc(copy.deepcopy(DEFAULT_SCARA))
+
+    def _set_mode(self, mode: str):
+        self.mode = mode
+        is_dh = mode == "dh"
+        self.stack_left.setCurrentIndex(0 if is_dh else 1)
+        self.stack_mid.setCurrentIndex(0 if is_dh else 1)
+        self.btn_mode.setText("高级：逐连杆编辑" if is_dh else "回到 DH（新建）")
+        self.lbl_mode.setText("DH 参数表模式" if is_dh
+                              else "高级连杆编辑（links）")
+        self.cb_preset.setVisible(is_dh)
+        self.ed_name.setText(self.robot.name)
+
+    # ------------------------------------------------------------ DH 表格
+
+    def _dh_make_spin(self, kind: str) -> QDoubleSpinBox:
+        if kind == "angle":
+            s = self._spin(-3600, 3600, 5, 1, suffix="°")
+        elif kind == "length":
+            s = self._spin(-10, 10, 0.01, 3, suffix=" m")
+        else:  # range 单位随关节类型切换，初始按角度
+            s = self._spin(-3600, 3600, 5, 1, suffix="°")
+        s.setMaximumWidth(56)
+        s.valueChanged.connect(self._on_dh_edited)
+        return s
+
+    def _refresh_dh_table(self, select_row: int = 0):
+        """按 self.robot.dh 重建表格内容（增删行/预设/加载时调用）。"""
+        self._loading = True
+        try:
+            rows = self.robot.dh or []
+            self.dh_table.setRowCount(len(rows))
+            for i, r in enumerate(rows):
+                num = QTableWidgetItem(str(i + 1))
+                num.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                num.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.dh_table.setItem(i, 0, num)
+
+                sp_th = self._dh_make_spin("angle")
+                sp_d = self._dh_make_spin("length")
+                sp_a = self._dh_make_spin("length")
+                sp_al = self._dh_make_spin("angle")
+                sp_th.setValue(float(r.theta_deg))
+                sp_d.setValue(float(r.d))
+                sp_a.setValue(float(r.a))
+                sp_al.setValue(float(r.alpha_deg))
+
+                cb = QComboBox()
+                for label, _ in _DH_TYPE_LABELS:
+                    cb.addItem(label)
+                idx = next((k for k, (_, v) in enumerate(_DH_TYPE_LABELS)
+                            if v == r.joint_type), 0)
+                cb.setCurrentIndex(idx)
+                cb.currentIndexChanged.connect(self._on_dh_type_changed)
+
+                sp_lo = self._dh_make_spin("range")
+                sp_hi = self._dh_make_spin("range")
+                if r.range is not None:
+                    sp_lo.setValue(float(r.range[0]))
+                    sp_hi.setValue(float(r.range[1]))
+                else:
+                    sp_lo.setValue(-180.0)
+                    sp_hi.setValue(180.0)
+
+                for col, w in ((1, sp_th), (2, sp_d), (3, sp_a),
+                               (4, sp_al), (5, cb), (6, sp_lo), (7, sp_hi)):
+                    self.dh_table.setCellWidget(i, col, w)
+                self._dh_apply_range_units(i)
+            self.sp_base.setValue(float(self.robot.base_height))
+            if rows:
+                self.dh_table.setCurrentCell(
+                    min(max(select_row, 0), len(rows) - 1), 1)
+            self._dh_sync_row_form()
+        finally:
+            self._loading = False
+
+    def _dh_widgets(self, row: int) -> dict | None:
+        if row < 0 or row >= self.dh_table.rowCount():
+            return None
+        get = self.dh_table.cellWidget
+        return {"theta": get(row, 1), "d": get(row, 2), "a": get(row, 3),
+                "alpha": get(row, 4), "type": get(row, 5),
+                "lo": get(row, 6), "hi": get(row, 7)}
+
+    def _dh_current_row(self) -> int:
+        r = self.dh_table.currentRow()
+        return r if r >= 0 else 0
+
+    def _dh_apply_range_units(self, row: int):
+        """范围 spin 的单位/可用性随这一行关节类型变化（度 vs 米）。"""
+        ws = self._dh_widgets(row)
+        if ws is None:
+            return
+        jt = _DH_TYPE_LABELS[ws["type"].currentIndex()][1]
+        for sp in (ws["lo"], ws["hi"]):
+            sp.blockSignals(True)
+            if jt == "prismatic":
+                sp.setSuffix(" m")
+                sp.setDecimals(3)
+                sp.setSingleStep(0.01)
+                # 切到米：若当前是角度量级（±几十上百），给米级默认
+                if abs(sp.value()) > 5.0:
+                    sp.setValue(-0.05 if sp is ws["lo"] else 0.05)
+            else:
+                sp.setSuffix("°")
+                sp.setDecimals(1)
+                sp.setSingleStep(5)
+                if abs(sp.value()) <= 5.0 and jt != "fixed":
+                    sp.setValue(-180.0 if sp is ws["lo"] else 180.0)
+            sp.blockSignals(False)
+            sp.setEnabled(jt != "fixed")
+
+    def _on_dh_type_changed(self, *_):
+        if self._loading:
+            return
+        self._dh_apply_range_units(self._dh_current_row())
+        self._on_dh_edited()
+
+    def _on_dh_row_sel(self, *_):
+        if self._loading:
+            return
+        self._dh_sync_row_form()
+        self._update_matrix()
+        self._schedule_preview()
+
+    def _dh_sync_row_form(self):
+        """选中行的 kp/kd 与含义说明同步到中栏。"""
+        rows = self.robot.dh or []
+        i = self._dh_current_row()
+        if not rows or i >= len(rows):
+            self.lbl_dh_hint.setText("")
+            return
+        r = rows[i]
+        var = "θ（绕 z 转动）" if r.joint_type == "revolute" else (
+            "d（沿 z 移动）" if r.joint_type == "prismatic" else "无（固定）")
+        self.lbl_dh_hint.setText(
+            f"关节 {i + 1}：{var}\n"
+            f"θ₀ = {r.theta_deg:g}°，d = {r.d:g} m，"
+            f"a = {r.a:g} m，α = {r.alpha_deg:g}°\n"
+            f"执行器名：joint{i + 1}（robot.set(\"joint{i + 1}\", …)）"
+            if r.joint_type != "fixed" else
+            f"关节 {i + 1}：固定行，不产生自由度")
+        self._loading = True
+        try:
+            self.sp_dh_kp.setValue(float(r.kp))
+            self.sp_dh_kd.setValue(float(r.kd))
+            jt = r.joint_type
+            self.sp_dh_kp.setSuffix(" N/m" if jt == "prismatic"
+                                    else " N·m/rad")
+            self.sp_dh_kd.setSuffix(" N·s/m" if jt == "prismatic"
+                                    else " N·s/rad")
+            self.sp_dh_kp.setEnabled(jt != "fixed")
+            self.sp_dh_kd.setEnabled(jt != "fixed")
+        finally:
+            self._loading = False
+
+    def _read_dh_table(self) -> list[DHRow]:
+        rows = []
+        for i in range(self.dh_table.rowCount()):
+            ws = self._dh_widgets(i)
+            jt = _DH_TYPE_LABELS[ws["type"].currentIndex()][1]
+            rng = None
+            if jt != "fixed":
+                lo, hi = ws["lo"].value(), ws["hi"].value()
+                if lo < hi:
+                    rng = (float(lo), float(hi))
+            old = self.robot.dh[i] if i < len(self.robot.dh or []) else None
+            rows.append(DHRow(
+                theta_deg=float(ws["theta"].value()),
+                d=float(ws["d"].value()),
+                a=float(ws["a"].value()),
+                alpha_deg=float(ws["alpha"].value()),
+                joint_type=jt, range=rng,
+                kp=float(old.kp if old is not None else 50.0),
+                kd=float(old.kd if old is not None else 1.0)))
+        return rows
+
+    def _on_dh_edited(self, *_):
+        """表格/底座/kp,kd -> 重建 DH 运动学与骨架几何 -> 刷新信息与预览。"""
+        if self._loading or not self.robot.dh:
+            return
+        i = self._dh_current_row()
+        rows = self._read_dh_table()
+        # kp/kd 表单只写当前选中行
+        if 0 <= i < len(rows):
+            rows[i].kp = float(self.sp_dh_kp.value())
+            rows[i].kd = float(self.sp_dh_kd.value())
+        self.robot.name = self.ed_name.text().strip() or self.robot.name
+        self.robot.base_height = float(self.sp_base.value())
+        self.robot.dh = rows
+        self.robot.links = dh_to_links(
+            rows, self.robot.name, base_height=self.robot.base_height)
+        self._dirty = True
+        self._dh_sync_row_form()
+        self._update_ee_info()
+        self._update_matrix()
+        self._schedule_preview()
+
+    def _update_ee_info(self):
+        try:
+            frames = {f.name: f for f in link_frames(self.robot)}
+        except (WorldError, KeyError):
+            self.lbl_ee.setText("")
+            return
+        ee = frames.get("flange")
+        if ee is None:
+            self.lbl_ee.setText("")
+            return
+        self.lbl_ee.setText(
+            f"自由度：{df_count(self.robot)}\n"
+            f"末端法兰零位：\n"
+            f"x = {ee.p_world[0]:+.3f} m\n"
+            f"y = {ee.p_world[1]:+.3f} m\n"
+            f"z = {ee.p_world[2]:+.3f} m")
+
+    def _dh_add_row(self):
+        rows = list(self.robot.dh or [])
+        i = self._dh_current_row() + 1 if rows else 0
+        rows.insert(i, DHRow(a=0.15))
+        self._apply_dh_rows(rows, select_row=i)
+
+    def _dh_del_row(self):
+        rows = list(self.robot.dh or [])
+        if not rows:
+            return
+        i = self._dh_current_row()
+        del rows[i]
+        if not rows:
+            QMessageBox.information(self, "不能删除", "至少保留一个关节")
+            return
+        self._apply_dh_rows(rows, select_row=min(i, len(rows) - 1))
+
+    def _dh_move_up(self):
+        rows = list(self.robot.dh or [])
+        i = self._dh_current_row()
+        if i <= 0:
+            return
+        rows[i - 1], rows[i] = rows[i], rows[i - 1]
+        self._apply_dh_rows(rows, select_row=i - 1)
+
+    def _dh_move_down(self):
+        rows = list(self.robot.dh or [])
+        i = self._dh_current_row()
+        if i >= len(rows) - 1:
+            return
+        rows[i + 1], rows[i] = rows[i], rows[i + 1]
+        self._apply_dh_rows(rows, select_row=i + 1)
+
+    def _apply_dh_rows(self, rows: list[DHRow], select_row: int = 0):
+        self.robot.dh = rows
+        self.robot.links = dh_to_links(
+            rows, self.robot.name, base_height=self.robot.base_height)
+        self._dirty = True
+        self._refresh_dh_table(select_row=select_row)
+        self._update_ee_info()
+        self._update_matrix()
+        self._schedule_preview()
+
+    def _on_preset(self, idx: int):
+        if idx <= 0:
+            return
+        name = self.cb_preset.itemText(idx)
+        doc = copy.deepcopy(DH_PRESETS[name])
+        self._load_doc(doc)
+        self.cb_preset.blockSignals(True)
+        self.cb_preset.setCurrentIndex(0)
+        self.cb_preset.blockSignals(False)
+
+    # ------------------------------------------------------------ 树（高级）
 
     def _current_link_name(self) -> str | None:
         it = self.tree.currentItem()
@@ -379,15 +820,16 @@ class RobotBuilderDialog(QDialog):
         self.tree.blockSignals(False)
         if select:
             self._select_link(select)
-        else:
+        elif self.tree.topLevelItemCount():
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
         self._load_form()
 
     def _on_tree_sel(self, *_):
         self._load_form()
-        self._refresh_preview()
+        self._update_matrix()
+        self._schedule_preview()
 
-    # ------------------------------------------------------------ 表单读写
+    # ------------------------------------------------------------ 属性表单
 
     def _load_form(self):
         name = self._current_link_name()
@@ -395,8 +837,7 @@ class RobotBuilderDialog(QDialog):
             return
         self._loading = True
         lk = self.robot.link(name)
-        self.ed_name.setText(lk.name)
-        # 父连杆下拉：排除自己与全部后代（避免成环）
+        self.ed_link_name.setText(lk.name)
         banned = {lk.name}
         changed = True
         while changed:
@@ -417,7 +858,10 @@ class RobotBuilderDialog(QDialog):
         for w, v in zip(self.sp_rpy, lk.rpy_deg):
             w.setValue(float(v))
         self.sp_mass.setValue(float(lk.mass or 0.0))
-        g = lk.geom
+        # DH 展开的连杆可能带多个几何（geoms）：表单显示/编辑第一个
+        self._form_geom_multi = bool(lk.geoms)
+        g = lk.geom if lk.geom is not None else (
+            lk.geoms[0] if lk.geoms else None)
         self.cb_geom.setCurrentIndex(
             0 if g is None else 1 + list(GEOM_TYPES).index(g["type"]))
         size = list(g["size"]) if g else [0.05, 0.05, 0.05]
@@ -426,9 +870,6 @@ class RobotBuilderDialog(QDialog):
         gpos = list(g.get("pos", [0, 0, 0])) if g else [0, 0, 0]
         for w, v in zip(self.sp_gpos, gpos):
             w.setValue(float(v))
-        # 记录当前连杆是否处于"关节原点 = 几何底面中心"约定：
-        # 是 -> 改尺寸时几何偏置 z 自动跟随半高；
-        # 用户一旦手动改过几何 z 偏置则视为退出约定，不再强行吸回
         if g is not None:
             hh = _geom_half_height(g["type"], size)
             self._origin_at_bottom = abs(float(gpos[2]) - hh) < 1e-6
@@ -463,9 +904,6 @@ class RobotBuilderDialog(QDialog):
     def _on_geom_type(self, *_):
         if self._loading:
             return
-        # 换几何类型时旧尺寸语义不同（box 三个半长 vs cylinder 半径+半长），
-        # 保留旧数值会得到怪异比例；按类型给一套默认尺寸，并把几何偏置 z
-        # 钉在半高上，维持关节原点在底面中心
         if self.cb_geom.currentIndex() > 0:
             gtype = list(GEOM_TYPES)[self.cb_geom.currentIndex() - 1]
             size = {
@@ -484,26 +922,21 @@ class RobotBuilderDialog(QDialog):
                 self.sp_gpos[2].setValue(_geom_half_height(gtype, size))
             finally:
                 self._loading = False
-            # 新类型按底面中心约定摆放
             self._origin_at_bottom = True
         self._apply_enabled()
         self._on_form()
 
     def _on_geom_size(self, *_):
-        """尺寸变化时让几何偏置 z 跟随半高：关节原点始终在几何底面中心。"""
         if self._loading or self.cb_geom.currentIndex() == 0:
             return
         if not getattr(self, "_origin_at_bottom", True):
             return
         gtype = list(GEOM_TYPES)[self.cb_geom.currentIndex() - 1]
-        z = _geom_half_height(
-            gtype, [w.value() for w in self.sp_gsize])
+        z = _geom_half_height(gtype, [w.value() for w in self.sp_gsize])
         if abs(self.sp_gpos[2].value() - z) > 1e-9:
-            # setValue 触发的 _on_form 会完成模型与预览刷新
             self.sp_gpos[2].setValue(z)
 
     def _on_geom_pos(self, *_):
-        """用户手动改几何偏置：z 不再等于半高即视为退出自动跟随约定。"""
         if self._loading or self.cb_geom.currentIndex() == 0:
             return
         gtype = list(GEOM_TYPES)[self.cb_geom.currentIndex() - 1]
@@ -526,13 +959,7 @@ class RobotBuilderDialog(QDialog):
         lk = self.robot.link(name) if name else None
         prev = lk.joint.type if lk is not None else "fixed"
         jt = _JOINT_LABELS[self.cb_joint.currentIndex()]
-        # 范围单位随关节类型变化（转动=度，移动=米）：双向按固定力臂换算，
-        # 从无范围概念的类型切进来时给对应单位的合理默认，避免出现
-        # "±180 m" 或 "±0.5°" 这种量级错配
-        # 先在旧单位下读范围：切换 decimals 会立刻把当前值按新精度
-        # 舍入（0.297 m -> 0.3 m），导致度↔米往返换算漂移
         lo, hi = (self.sp_range[0].value(), self.sp_range[1].value())
-        # 再切换单位/小数位后写换算结果，否则新值会被旧精度提前舍掉
         self._apply_enabled()
         self._apply_joint_units()
         arm = _RANGE_ARM_M
@@ -550,7 +977,6 @@ class RobotBuilderDialog(QDialog):
         self._on_form()
 
     def _apply_joint_units(self):
-        """按关节类型切换范围/刚度单位（转动=度/N·m·rad，移动=米/N/m）。"""
         jt = _JOINT_LABELS[self.cb_joint.currentIndex()]
         if jt == "prismatic":
             for w in self.sp_range:
@@ -568,7 +994,6 @@ class RobotBuilderDialog(QDialog):
             self.sp_kd.setSuffix(" N·s/rad")
 
     def _tree_error(self) -> str:
-        """结构校验（提交前用）：唯一根、parent 存在、free 只能给根连杆。"""
         names = {lk.name for lk in self.robot.links}
         roots = [lk.name for lk in self.robot.links if lk.parent is None]
         if len(roots) != 1:
@@ -581,12 +1006,10 @@ class RobotBuilderDialog(QDialog):
         return ""
 
     def _show_error(self, msg: str):
-        """错误显示在面板里（不只写 tooltip/日志）。"""
         self.lbl_err.setText(msg)
         self.lbl_err.setStyleSheet("color:#DC2626;")
 
     def _on_form(self, *_):
-        """表单 -> 数据模型 -> 树/矩阵/预览（任何失败只提示，不落盘）。"""
         if self._loading:
             return
         name = self._current_link_name()
@@ -620,7 +1043,7 @@ class RobotBuilderDialog(QDialog):
         lk.mass = self.sp_mass.value() or None
         jt = _JOINT_LABELS[self.cb_joint.currentIndex()]
         if jt == "free" and lk.parent is not None:
-            jt = "fixed"          # free 只能给根连杆
+            jt = "fixed"
             self.cb_joint.setCurrentIndex(0)
         lk.joint.type = jt
         lk.joint.axis = tuple(w.value() for w in self.sp_axis)
@@ -629,38 +1052,48 @@ class RobotBuilderDialog(QDialog):
         lk.joint.kd = self.sp_kd.value()
         if self.cb_geom.currentIndex() == 0:
             lk.geom = None
+            if getattr(self, "_form_geom_multi", False):
+                lk.geoms = None           # DH 展开体：选"无几何"清空全部
         else:
             gtype = list(GEOM_TYPES)[self.cb_geom.currentIndex() - 1]
-            # 保留未在表单里暴露的字段（rpy 等）：重建会静默改变模型语义
-            g = dict(lk.geom or {})
+            g = dict(lk.geom or (lk.geoms[0] if lk.geoms else {}) or {})
             g.update(type=gtype,
                      size=tuple(w.value() for w in self.sp_gsize),
                      pos=tuple(w.value() for w in self.sp_gpos))
             g.setdefault("color", lk.color)
-            lk.geom = g
+            if lk.geoms:
+                lk.geoms[0] = g           # 多几何体：编辑作用于第一个
+            else:
+                lk.geom = g
         self._update_matrix()
         self._schedule_preview()
 
     def _on_name_changed(self):
-        if self._loading:
+        new = self.ed_name.text().strip() if self.mode == "dh" \
+            else self.ed_link_name.text().strip()
+        if not new or new == self.robot.name:
+            return
+        if self.mode == "dh":
+            self.robot.name = new
+            self._dirty = True
             return
         old = self._current_link_name()
-        new = self.ed_name.text().strip()
         if not old or not new or new == old:
             return
         if any(lk.name == new for lk in self.robot.links):
             QMessageBox.warning(self, "重名", f"连杆名 '{new}' 已存在")
-            self.ed_name.setText(old)
+            self.ed_link_name.setText(old)
             return
         for lk in self.robot.links:
             if lk.name == old:
                 lk.name = new
             if lk.parent == old:
                 lk.parent = new
+        self.robot.name = new
         self._dirty = True
         self._refresh_tree(select=new)
 
-    # ------------------------------------------------------------ 增删/新建
+    # ------------------------------------------------------------ 增删连杆
 
     def _add_child(self):
         parent = self._current_link_name()
@@ -672,18 +1105,13 @@ class RobotBuilderDialog(QDialog):
             name = f"link{len(self.robot.links)}_{i}"
             i += 1
         from simovia.robot_spec import JointDoc, LinkDoc
-        # 新连杆默认尺寸（box：0.06×0.06 截面、半高 0.075 -> 高 0.15）
         half_h = 0.075
         parent_lk = self.robot.link(parent)
         top = _link_top_z(parent_lk)
         lk = LinkDoc(
             name=name, parent=parent,
-            # 关节原点直接落在父连杆几何顶面，两段不会插在一起；
-            # 顶面为 0（父无几何）时给 0.15 的默认间距
             pos=(0.0, 0.0, top if top > 1e-9 else 0.15),
             joint=JointDoc(type="revolute", range=(-170.0, 170.0)),
-            # geom.pos.z = 半高：关节（body）原点位于几何底面中心，
-            # 新连杆从关节点向上生长，而不是以关节为中心上下对称
             geom={"type": "box", "size": (0.03, 0.03, half_h),
                   "pos": (0.0, 0.0, half_h)})
         self.robot.links.append(lk)
@@ -699,7 +1127,6 @@ class RobotBuilderDialog(QDialog):
                                      if x.parent is None) == 1:
             QMessageBox.information(self, "不能删除", "根连杆必须保留")
             return
-        # 子连杆上移一级，避免断树
         for other in self.robot.links:
             if other.parent == name:
                 other.parent = lk.parent
@@ -709,7 +1136,6 @@ class RobotBuilderDialog(QDialog):
         self._schedule_preview()
 
     def _confirm_discard(self, action: str) -> bool:
-        """新建/打开/关闭前确认未保存的机器人文档（F02）。"""
         if not self._dirty:
             return True
         r = QMessageBox.question(
@@ -723,17 +1149,35 @@ class RobotBuilderDialog(QDialog):
             return False
         if r == QMessageBox.StandardButton.Discard:
             return True
-        # 已有来源文件：直接写回，不再弹出路径选择
         return self._save(ask=not self._doc_path)
+
+    def _load_doc(self, doc: dict | str):
+        """载入新机器人文档（dict 或路径），按 is_dh 自动切模式。"""
+        try:
+            robot = load_robot(doc) if isinstance(doc, str) \
+                else parse_robot(doc)
+        except WorldError as e:
+            QMessageBox.critical(self, "载入失败", str(e))
+            return
+        self.robot = robot
+        self._doc_path = doc if isinstance(doc, str) else None
+        self._dirty = False
+        self._set_mode("dh" if robot.is_dh else "links")
+        self.sp_base.blockSignals(True)
+        self.sp_base.setValue(float(robot.base_height))
+        self.sp_base.blockSignals(False)
+        if robot.is_dh:
+            self._refresh_dh_table(select_row=0)
+            self._update_ee_info()
+        else:
+            self._refresh_tree(select=robot.links[0].name)
+        self._update_matrix()
+        self._refresh_preview()
 
     def _new_robot(self):
         if not self._confirm_discard("新建机器人"):
             return
-        self.robot = parse_robot(copy.deepcopy(DEFAULT_ROBOT))
-        self._doc_path = None
-        self._dirty = False
-        self._refresh_tree(select="link1")
-        self._refresh_preview()
+        self._load_doc(copy.deepcopy(DEFAULT_SCARA))
 
     # ------------------------------------------------------------ 打开/保存
 
@@ -745,22 +1189,10 @@ class RobotBuilderDialog(QDialog):
             "机器人 YAML (*.yaml *.yml)")
         if not p:
             return
-        try:
-            self.robot = load_robot(p)
-        except WorldError as e:
-            QMessageBox.critical(self, "打开失败", str(e))
-            return
-        self._doc_path = p
-        self._dirty = False
-        # 旧选中名在新机器人里不存在：显式选根连杆，表单/矩阵才有内容
-        self._refresh_tree(select=self.robot.links[0].name)
-        self._refresh_preview()
+        self._load_doc(p)
 
     def _save(self, ask: bool = True) -> bool:
-        """Schema + MuJoCo 编译校验通过才落盘；失败保留旧文件（F05）。
-
-        返回是否保存成功（未保存确认流程用）。
-        """
+        """Schema + MuJoCo 编译校验通过才落盘；失败保留旧文件（F05）。"""
         p = self._doc_path
         if ask or not p:
             p, _ = QFileDialog.getSaveFileName(
@@ -772,8 +1204,6 @@ class RobotBuilderDialog(QDialog):
         try:
             doc = dump_robot(self.robot)
             text = yaml.safe_dump(doc, allow_unicode=True, sort_keys=False)
-            # 保存前做与加载/编译同级别的校验：零尺寸、零轴、反向范围等
-            # 不能算"已保存"的有效模型；失败时不覆盖磁盘上的上一个有效版本
             check = parse_robot(doc)
             build_robot_spec(check).compile()
         except (OSError, WorldError, ValueError, TypeError,
@@ -794,14 +1224,21 @@ class RobotBuilderDialog(QDialog):
             self, "已保存",
             f"机器人已保存到:\n{p}\n\n在世界 YAML 里这样引用:\n"
             f"robots:\n  - name: {self.robot.name}\n"
-            # 统一正斜杠：Windows 反斜杠路径跨平台重开易出解析问题
             f"    model: {pathlib.Path(p).as_posix()}")
         return True
 
     # ------------------------------------------------------------ 矩阵显示
 
+    def _selected_frame_name(self) -> str | None:
+        if self.mode == "dh":
+            if not (self.robot.dh or []):
+                return None
+            i = self._dh_current_row()
+            return f"joint{i + 1}"
+        return self._current_link_name()
+
     def _update_matrix(self):
-        name = self._current_link_name()
+        name = self._selected_frame_name()
         try:
             frames = {f.name: f for f in link_frames(self.robot)}
         except (WorldError, KeyError):
@@ -810,6 +1247,10 @@ class RobotBuilderDialog(QDialog):
             return
         f = frames.get(name)
         if f is None:
+            self.tb_rel.clearContents()
+            self.tb_world.clearContents()
+            self.lbl_formula.setText("")
+            self.lbl_pose.setText("")
             return
         for tb, R in ((self.tb_rel, f.R_rel), (self.tb_world, f.R_world)):
             for i in range(3):
@@ -817,9 +1258,19 @@ class RobotBuilderDialog(QDialog):
                     it = QTableWidgetItem(f"{R[i, j]:+.3f}")
                     it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     tb.setItem(i, j, it)
-        r, p, y = [round(v, 1) for v in self.robot.link(name).rpy_deg]
-        self.lbl_formula.setText(
-            f"R = Rz({y:g}°) · Ry({p:g}°) · Rx({r:g}°)")
+        if self.mode == "dh" and self.robot.dh:
+            i = self._dh_current_row()
+            if i < len(self.robot.dh):
+                r = self.robot.dh[i]
+                self.lbl_formula.setText(
+                    f"joint{i + 1}：{r.joint_type}，轴 = 本体 z\n"
+                    f"θ₀={r.theta_deg:g}° d={r.d:g} a={r.a:g} "
+                    f"α={r.alpha_deg:g}°")
+        else:
+            lk = self.robot.link(name)
+            r, p, y = [round(v, 1) for v in lk.rpy_deg]
+            self.lbl_formula.setText(
+                f"R = Rz({y:g}°) · Ry({p:g}°) · Rx({r:g}°)")
         self.lbl_pose.setText(
             f"世界位置 p_world = "
             f"({f.p_world[0]:+.3f}, {f.p_world[1]:+.3f}, "
@@ -831,7 +1282,6 @@ class RobotBuilderDialog(QDialog):
         self._preview_timer.start()
 
     def _preview_spec(self, floor_z: float):
-        """编译预览模型：机器人 + 地面 + 灯（轴标渲染后以 2D 叠加绘制）。"""
         mj = build_robot_spec(self.robot)
         mj.worldbody.add_geom(
             name="preview_floor", type=mujoco.mjtGeom.mjGEOM_PLANE,
@@ -845,8 +1295,22 @@ class RobotBuilderDialog(QDialog):
         mj.visual.quality.offsamples = 8
         return mj
 
+    def _geom_world_points(self, lk, f, pts):
+        """把一个连杆上的全部几何（geom/geoms）外接球端点加入取景点集。"""
+        geom_list = list(lk.geoms) if lk.geoms else (
+            [lk.geom] if lk.geom is not None else [])
+        for g in geom_list:
+            size = [float(v) for v in g["size"]] + [0.0, 0.0]
+            local = [float(v) for v in g.get("pos", (0.0, 0.0, 0.0))]
+            center = (np.asarray(f.p_world, dtype=float)
+                      + np.asarray(f.R_world, dtype=float)
+                      @ np.asarray(local, dtype=float))
+            r = size[0] if g["type"] == "sphere" else max(size[:3])
+            pts.append(center + r)
+            pts.append(center - r)
+
     def _refresh_preview(self):
-        name = self._current_link_name()
+        name = self._selected_frame_name()
         try:
             frames = {f.name: f for f in link_frames(self.robot)}
             zmin = min([0.0] + [float(f.p_world[2]) for f in frames.values()])
@@ -859,30 +1323,15 @@ class RobotBuilderDialog(QDialog):
 
         data = mujoco.MjData(model)
         mujoco.mj_forward(model, data)
-        # Renderer 与 model 绑定，每次重编译都要换一个新的（预览低频，
-        # 每次开关上下文的开销可以接受）
         if self._renderer is not None:
             self._renderer.close()
         self._renderer = mujoco.Renderer(model, 420, 420)
         cam = mujoco.MjvCamera()
         if frames:
-            # 包围盒要含几何尺寸：只按连杆原点取景会把机器人顶部裁掉（F11）
             pts = []
             for f in frames.values():
                 pts.append(np.asarray(f.p_world, dtype=float))
-                lk = self.robot.link(f.name)
-                g = lk.geom
-                if not g:
-                    continue
-                size = [float(v) for v in g["size"]] + [0.0, 0.0]
-                local = [float(v) for v in g.get("pos", (0.0, 0.0, 0.0))]
-                center = (np.asarray(f.p_world, dtype=float)
-                          + np.asarray(f.R_world, dtype=float)
-                          @ np.asarray(local, dtype=float))
-                # 外接球半径：sphere 取半径，其余取半尺寸最大分量
-                r = size[0] if g["type"] == "sphere" else max(size[:3])
-                pts.append(center + r)
-                pts.append(center - r)
+                self._geom_world_points(self.robot.link(f.name), f, pts)
             pts = np.array(pts)
             lo, hi = pts.min(axis=0), pts.max(axis=0)
             cam.lookat[:] = (lo + hi) / 2
@@ -903,16 +1352,11 @@ class RobotBuilderDialog(QDialog):
         self._preview_pix = QPixmap.fromImage(img)
         self._fit_preview()
 
-    #: 轴标颜色：x 红 / y 绿 / z 蓝（与常见三维软件一致）
+    #: 轴标颜色：x 红 / y 绿 / z 蓝
     _AXIS_COLORS = ((1.0, 0.25, 0.25), (0.25, 0.85, 0.35), (0.35, 0.55, 1.0))
 
     def _draw_axes(self, img: QImage, glcam, frame) -> None:
-        """在渲染结果上叠加当前连杆坐标系的三轴。
-
-        原来三轴用 3D 胶囊画进场景，参与深度测试时会被连杆几何挡住
-        （轴指向机体内部时完全看不见），方向无从判断；这里按相机投影
-        改成固定像素长度的 2D 叠加，任何视角都能看到三轴指向。
-        """
+        """渲染结果上叠加当前关节/连杆坐标系三轴（2D，不被几何遮挡）。"""
         w, h = img.width(), img.height()
         origin = np.asarray(frame.p_world, dtype=float)
         ox, oy = _world_to_screen(glcam, origin, w, h) or (None, None)
@@ -924,13 +1368,11 @@ class RobotBuilderDialog(QDialog):
         painter = QPainter(img)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         try:
-            # 原点圆点：标出关节/连杆原点，白描黑边在任何底色上都醒目
             painter.setBrush(QColor(255, 255, 255, 235))
             painter.setPen(QPen(QColor(0, 0, 0, 200), 1.5))
             painter.drawEllipse(QPointF(ox, oy), 4.0, 4.0)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             for i, rgb in enumerate(self._AXIS_COLORS):
-                # 世界方向 = R 的第 i 列；取一段短线段投影只为得到屏幕方向
                 tip = _world_to_screen(glcam, origin + R[:, i] * 0.05, w, h)
                 if tip is None:
                     continue
@@ -940,7 +1382,7 @@ class RobotBuilderDialog(QDialog):
                     continue
                 dx, dy = dx / norm, dy / norm
                 ex, ey = ox + dx * length, oy + dy * length
-                px, py = -dy, dx          # 屏幕内法向：箭头两翼
+                px, py = -dy, dx
                 segs = (
                     ((ox, oy), (ex, ey)),
                     ((ex, ey), (ex - head * dx + head * 0.5 * px,
@@ -948,7 +1390,6 @@ class RobotBuilderDialog(QDialog):
                     ((ex, ey), (ex - head * dx - head * 0.5 * px,
                                 ey - head * dy - head * 0.5 * py)),
                 )
-                # 白色描边 + 彩色线，深浅背景都清楚
                 for pen in (QPen(QColor(255, 255, 255, 210), 4.5,
                                  Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap),
                             QPen(QColor.fromRgbF(*rgb), 2.2,
@@ -960,7 +1401,6 @@ class RobotBuilderDialog(QDialog):
             painter.end()
 
     def _fit_preview(self):
-        """按预览区当前尺寸等比缩放：窗口变窄时图跟着缩，不撑破布局。"""
         if getattr(self, "_preview_pix", None) is None:
             return
         self.lbl_img.setPixmap(self._preview_pix.scaled(
@@ -972,29 +1412,38 @@ class RobotBuilderDialog(QDialog):
         self._fit_preview()
 
     def _release_preview(self):
-        # 先停定时器：关窗后 120ms 到点的刷新会给已关闭的窗口重建 GL 上下文，
-        # 进程退出时再由 Renderer.__del__ 收尾就是段错误/EGL 报错
         self._preview_timer.stop()
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
 
     def closeEvent(self, ev):
-        # 只在用户可见时确认（程序性 close/测试里没有展示过就不弹模态框）
         if self.isVisible() and not self._confirm_discard("关闭"):
             ev.ignore()
             return
         self._release_preview()
-        # 不能再调 super().closeEvent：QDialog 的实现会转调 reject()，
-        # 于是"丢弃并关闭"之后又弹一次确认，取消时渲染器已被释放
         ev.accept()
 
     def reject(self):
-        """Esc / 窗口关闭按钮走 reject()，不经过 closeEvent。
-
-        不复用 closeEvent 的确认逻辑的话，Esc 会绕过未保存提示直接丢改动。
-        """
         if self.isVisible() and not self._confirm_discard("关闭"):
             return
         self._release_preview()
         super().reject()
+
+
+def df_count(robot: RobotDoc) -> str:
+    """自由度描述（转动/移动各几个），供 DH 信息面板显示。"""
+    if not robot.dh:
+        n = sum(1 for lk in robot.links if lk.joint.type in
+                ("revolute", "hinge", "prismatic", "slide"))
+        return str(n)
+    rev = sum(1 for r in robot.dh if r.joint_type in
+              ("revolute", "hinge"))
+    pris = sum(1 for r in robot.dh if r.joint_type in
+               ("prismatic", "slide"))
+    parts = []
+    if rev:
+        parts.append(f"{rev} 转动")
+    if pris:
+        parts.append(f"{pris} 移动")
+    return f"{rev + pris}（{' + '.join(parts)}）" if parts else "0"

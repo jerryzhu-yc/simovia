@@ -65,7 +65,7 @@ def test_parse_ok_and_actuator_names():
     (lambda d: d["links"][1]["geom"].update(type="donut"), "未知几何类型"),
     (lambda d: d["links"][1]["joint"].update(axis=[0, 0, 0]), "零向量"),
     (lambda d: d["links"][1]["joint"].update(range=[1, -1]), "下限必须小于上限"),
-    (lambda d: d.update(links=[]), "缺少 links 列表"),
+    (lambda d: d.update(links=[]), "缺少 dh 参数表或 links 列表"),
 ])
 def test_parse_errors_have_context(mutate, match):
     """结构错误要报清楚（含连杆位置提示），初学者能自己改。"""
@@ -195,3 +195,176 @@ def test_load_robot_gbk_fallback(tmp_path):
     r = load_robot(p)
     assert r.name == "中文臂"
     assert r.links[0].name == "底座"
+
+
+# ---------------------------------------------------------------- DH 参数表
+
+SCARA_DH = {
+    "name": "scara",
+    "dh": [
+        {"theta": 0, "d": 0.20, "a": 0.25, "alpha": 0,
+         "type": "revolute", "range": [-160, 160]},
+        {"theta": 0, "d": 0.00, "a": 0.20, "alpha": 180,
+         "type": "revolute", "range": [-135, 135]},
+        {"theta": 0, "d": 0.10, "a": 0.00, "alpha": 0,
+         "type": "prismatic", "range": [-0.05, 0.05]},
+    ],
+}
+
+TWO_R_DH = {
+    "name": "two_r",
+    "dh": [
+        {"theta": 0, "d": 0.0, "a": 0.30, "alpha": 0,
+         "type": "revolute", "range": [-170, 170]},
+        {"theta": 0, "d": 0.0, "a": 0.22, "alpha": 0,
+         "type": "revolute", "range": [-150, 150]},
+    ],
+}
+
+
+def test_dh_parse_structure():
+    """DH 表展开为 base/jointN/linkN/flange 合法链，且标记 is_dh。"""
+    r = parse_robot(SCARA_DH)
+    assert r.is_dh and len(r.dh) == 3
+    names = [lk.name for lk in r.links]
+    assert names[0] == "base" and names[-1] == "flange"
+    assert {"joint1", "link1", "joint2", "link2", "joint3",
+            "link3"} <= set(names)
+    # 关节载体 jointN 挂在 link(N-1)（首关节挂底座顶），linkN 挂 jointN
+    by = {lk.name: lk for lk in r.links}
+    assert by["joint1"].parent == "base"
+    assert by["link1"].parent == "joint1"
+    assert by["joint2"].parent == "link1"
+    # 关节载体带骨架几何，固定 linkN 不带
+    assert by["joint1"].geoms and len(by["joint1"].geoms) == 3  # 球+d+a
+    assert by["joint2"].geoms and len(by["joint2"].geoms) == 2  # 球+a
+    assert by["link1"].geoms is None and by["link1"].geom is None
+
+
+def test_dh_scara_zero_pose_kinematics():
+    """SCARA 零位法兰 = (a1+a2, 0, base+d1-d3)：α2=180 使 d3 朝下。"""
+    r = parse_robot(SCARA_DH)
+    fr = {f.name: f for f in link_frames(r)}
+    assert np.allclose(fr["flange"].p_world, [0.45, 0.0, 0.18], atol=1e-9)
+    # MuJoCo 编译后一致
+    model = build_robot_spec(r).compile()
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "flange")
+    assert np.allclose(data.xpos[bid], [0.45, 0.0, 0.18], atol=1e-9)
+
+
+def test_dh_two_r_endpoint_matches_analytic():
+    """平面 2R：θ=(30°,60°) 时法兰位置与解析正解一致（关重力收敛）。"""
+    r = parse_robot(TWO_R_DH)
+    model = build_robot_spec(r).compile()
+    model.opt.gravity[:] = 0
+    data = mujoco.MjData(model)
+    data.ctrl[:] = [math.radians(30), math.radians(60)]
+    for _ in range(3000):
+        mujoco.mj_step(model, data)
+    assert np.all(np.isfinite(data.qpos))
+    assert data.qpos == pytest.approx(
+        [math.radians(30), math.radians(60)], abs=1e-3)
+    bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "flange")
+    # x = .30cos30 + .22cos90 = 0.2598；y = .30sin30 + .22sin90 = 0.37
+    assert data.xpos[bid][0] == pytest.approx(0.2598, abs=1e-2)
+    assert data.xpos[bid][1] == pytest.approx(0.37, abs=1e-2)
+
+
+def test_dh_actuators_and_ranges():
+    """每个非固定行一个执行器 jointN；转动范围弧度、移动范围米。"""
+    from simovia.robot_spec import actuator_names
+    r = parse_robot(SCARA_DH)
+    assert actuator_names(r) == ["joint1", "joint2", "joint3"]
+    model = build_robot_spec(r).compile()
+    assert model.nu == 3 and model.nq == 3
+    j1 = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "joint1")
+    j3 = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "joint3")
+    assert model.jnt_range[j1] == pytest.approx(
+        [math.radians(-160), math.radians(160)])
+    assert model.jnt_range[j3] == pytest.approx([-0.05, 0.05])
+
+
+def test_dh_fixed_row_has_no_actuator():
+    d = {"name": "fixed_row", "dh": [
+        {"theta": 0, "d": 0.1, "a": 0.2, "alpha": 0, "type": "revolute"},
+        {"theta": 0, "d": 0.0, "a": 0.1, "alpha": 90, "type": "fixed"},
+    ]}
+    r = parse_robot(d)
+    from simovia.robot_spec import actuator_names
+    assert actuator_names(r) == ["joint1"]
+    model = build_robot_spec(r).compile()
+    assert model.nu == 1 and model.nq == 1
+    assert model.jnt_type[model.njnt - 1] != mujoco.mjtJoint.mjJNT_FREE
+
+
+def test_dh_skeleton_geoms_are_visual_only():
+    """骨架几何关闭碰撞（相邻关节球位置重叠，参与碰撞会自怼）。"""
+    model = build_robot_spec(parse_robot(SCARA_DH)).compile()
+    assert np.all(model.geom_contype == 0)
+    assert np.all(model.geom_conaffinity == 0)
+
+
+def test_dh_dump_roundtrip():
+    r = parse_robot(SCARA_DH)
+    doc = dump_robot(r)
+    assert set(doc) == {"name", "dh"}
+    assert doc["dh"][0] == {"theta": 0.0, "d": 0.20, "a": 0.25,
+                            "alpha": 0.0, "type": "revolute",
+                            "kp": 50.0, "kd": 1.0,
+                            "range": [-160.0, 160.0]}
+    r2 = parse_robot(doc)
+    assert [r.__dict__ for r in r2.dh] == [r.__dict__ for r in r.dh]
+    assert np.allclose(
+        link_frames(r2)[-1].p_world, link_frames(r)[-1].p_world)
+
+
+def test_dh_base_height_roundtrip():
+    d = {"name": "tall", "base_height": 0.25, "dh": [
+        {"theta": 0, "d": 0.1, "a": 0.2, "alpha": 0, "type": "revolute"}]}
+    r = parse_robot(d)
+    assert r.base_height == pytest.approx(0.25)
+    doc = dump_robot(r)
+    assert doc["base_height"] == pytest.approx(0.25)
+    # 默认底座高不写盘
+    assert "base_height" not in dump_robot(parse_robot(
+        {"name": "d", "dh": d["dh"]}))
+
+
+def test_links_dump_preserves_geoms_list():
+    """回归：DH 展开（多几何 geoms）后保存不能丢几何。"""
+    r = parse_robot(SCARA_DH)
+    r.dh = None                            # 模拟高级模式展开
+    doc = dump_robot(r)
+    joint1 = next(x for x in doc["links"] if x["name"] == "joint1")
+    assert "geoms" in joint1 and len(joint1["geoms"]) == 3
+    r2 = parse_robot(doc)
+    model = build_robot_spec(r2).compile()  # 无几何会报 moving body mass 错
+    assert model.ngeom >= 8
+
+
+@pytest.mark.parametrize("mutate, match", [
+    (lambda d: d.update(dh=[]), "dh 需要非空列表"),
+    (lambda d: d["dh"][0].update(type="ball"), "DH 关节类型只支持"),
+    (lambda d: d["dh"][0].update(range=[1, -1]), "下限必须小于上限"),
+])
+def test_dh_parse_errors(mutate, match):
+    import copy
+    d = copy.deepcopy(TWO_R_DH)
+    mutate(d)
+    with pytest.raises(WorldError, match=match):
+        parse_robot(d)
+
+
+def test_dh_theta_offset_rotates_a_direction():
+    """θ₀ 零位偏置让 a 横杆方向旋转：θ₀=90° 时首段沿 +y。"""
+    d = {"name": "offset", "dh": [
+        {"theta": 90, "d": 0.0, "a": 0.30, "alpha": 0,
+         "type": "revolute", "range": [-170, 170]},
+        {"theta": 0, "d": 0.0, "a": 0.20, "alpha": 0,
+         "type": "revolute", "range": [-170, 170]}]}
+    r = parse_robot(d)
+    fr = {f.name: f for f in link_frames(r)}
+    # frame1 原点（关节2 安装位）= Rz(90)·(a1,0,0) = (0, 0.3, 0)
+    assert np.allclose(fr["link1"].p_world[:2], [0.0, 0.30], atol=1e-9)

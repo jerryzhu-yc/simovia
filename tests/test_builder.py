@@ -222,6 +222,50 @@ class TestDiyRobot:
         bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "r/base")
         assert np.allclose(model.body_pos[bid], [0, 0, 0])   # 清零吸收进 pos
 
+    DH = {
+        "name": "diy_dh",
+        "dh": [
+            {"theta": 0, "d": 0.10, "a": 0.20, "alpha": 0,
+             "type": "revolute", "range": [-170, 170]},
+            {"theta": 0, "d": 0.00, "a": 0.15, "alpha": 0,
+             "type": "revolute", "range": [-150, 150]},
+        ],
+    }
+
+    def test_inline_dh_spec_world(self):
+        """内联 DH 参数表直接进世界：展开编译、执行器 jointN 可驱动。"""
+        d = {"name": "w", "robots": [{"name": "r", "spec": self.DH}]}
+        model, index = build_world(parse_world(d))
+        assert set(index.robots["r"].actuators) == {"joint1", "joint2"}
+        assert model.nu == 2
+        # body 带世界命名空间前缀
+        assert mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, "r/flange") >= 0
+        data = mujoco.MjData(model)
+        model.opt.gravity[:] = 0
+        data.ctrl[:] = [0.3, -0.4]
+        for _ in range(1000):
+            mujoco.mj_step(model, data)
+        assert np.all(np.isfinite(data.qpos))
+        assert data.qpos[0] == pytest.approx(0.3, abs=0.02)
+        assert data.qpos[1] == pytest.approx(-0.4, abs=0.02)
+
+    def test_inline_dh_prismatic_spec_world(self):
+        """DH 移动关节进世界后 ctrl/qpos 以米为单位且有限。"""
+        spec_dh = {"name": "lift", "dh": [
+            {"theta": 0, "d": 0.10, "a": 0.0, "alpha": 0,
+             "type": "prismatic", "range": [-0.05, 0.05]}]}
+        model, index = build_world(parse_world(
+            {"name": "w", "robots": [{"name": "r", "spec": spec_dh}]}))
+        assert set(index.robots["r"].actuators) == {"joint1"}
+        data = mujoco.MjData(model)
+        model.opt.gravity[:] = 0
+        data.ctrl[:] = [0.03]
+        for _ in range(3000):
+            mujoco.mj_step(model, data)
+        assert np.all(np.isfinite(data.qpos))
+        assert data.qpos[0] == pytest.approx(0.03, abs=0.004)
+
     def test_yaml_model_file(self, tmp_path):
         """robots[].model 指向 .yaml：按世界文件目录解析并编译。"""
         import yaml
