@@ -69,6 +69,66 @@ def test_add_and_delete_child(dlg):
     assert new not in _tree_names(dlg)
 
 
+def test_new_child_sits_on_parent_top(dlg):
+    """新加的子连杆关节原点落在父几何顶面，两段不重叠。
+
+    旧实现 pos.z 写死 0.15，父连杆（link2 高 0.24）时新连杆会插进
+    父几何体一半。
+    """
+    dlg._select_link("link2")
+    dlg._add_child()
+    new = _tree_names(dlg)[-1]
+    lk = dlg.robot.link(new)
+    # link2: box 半高 0.12 + 几何偏置 z 0.12 -> 顶面 0.24
+    assert lk.pos[2] == pytest.approx(0.24)
+    # 新连杆自身：关节原点 = 几何底面中心（geom.pos.z == 半高）
+    assert lk.geom["pos"][2] == pytest.approx(lk.geom["size"][2])
+
+
+def test_size_change_keeps_origin_at_bottom(dlg):
+    """改几何高度时几何偏置 z 自动跟随半高，关节原点保持在底面中心。"""
+    dlg._select_link("link1")
+    dlg.sp_gsize[2].setValue(0.20)
+    assert dlg.sp_gpos[2].value() == pytest.approx(0.20)
+    assert dlg.robot.link("link1").geom["pos"][2] == pytest.approx(0.20)
+
+
+def test_manual_geom_offset_disables_autofollow(dlg):
+    """用户手动偏移过几何 z 后，改尺寸不再强行吸回半高。"""
+    dlg._select_link("link1")
+    dlg.sp_gpos[2].setValue(0.05)
+    dlg.sp_gsize[2].setValue(0.22)
+    assert dlg.sp_gpos[2].value() == pytest.approx(0.05)
+
+
+def test_geom_type_switch_gives_matching_size(dlg):
+    """换几何类型时按新类型给尺寸与底面中心偏置，不保留旧语义数值。"""
+    dlg._select_link("link1")
+    # box=1, sphere=2, cylinder=3
+    dlg.cb_geom.setCurrentIndex(3)
+    assert [w.value() for w in dlg.sp_gsize] == pytest.approx(
+        [0.04, 0.075, 0.0])
+    assert dlg.sp_gpos[2].value() == pytest.approx(0.075)
+
+
+def test_joint_type_range_conversion(dlg):
+    """转动 <-> 移动切换时范围按力臂双向换算，不再出现 ±170 m。"""
+    dlg._select_link("link1")
+    assert dlg.sp_range[0].value() == pytest.approx(-170.0)
+    dlg.cb_joint.setCurrentIndex(2)        # prismatic
+    assert abs(dlg.sp_range[0].value()) == pytest.approx(0.297, abs=0.002)
+    dlg.cb_joint.setCurrentIndex(1)        # 回到 revolute
+    assert abs(dlg.sp_range[0].value()) == pytest.approx(170.0, abs=1.0)
+
+
+def test_fixed_to_prismatic_range_default(dlg):
+    """fixed 没有范围概念，切到移动关节时给米级默认而非 ±180 m。"""
+    dlg._select_link("base")
+    dlg.cb_joint.setCurrentIndex(2)        # prismatic
+    assert dlg.sp_range[0].value() == pytest.approx(-0.5)
+    assert dlg.sp_range[1].value() == pytest.approx(0.5)
+
+
 def test_delete_parent_reparents_children(dlg):
     """删中间连杆时子连杆上移，树不断裂。"""
     dlg._select_link("link1")

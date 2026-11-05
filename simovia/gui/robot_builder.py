@@ -56,6 +56,32 @@ DEFAULT_ROBOT = {
 #: 关节类型下拉顺序（与 cb_joint.addItems 一一对应）
 _JOINT_LABELS = ["fixed", "revolute", "prismatic", "ball", "free"]
 
+#: 角度范围 <-> 移动范围换算时假定的关节力臂（m）：0.1 m 半径处
+# 180° ≈ 0.314 m，与教学示例连杆的尺度一致
+_RANGE_ARM_M = 0.1
+
+
+def _geom_half_height(gtype: str, size) -> float:
+    """几何体沿自身 z 轴的半高（关节原点在底面中心时的几何偏置 z）。"""
+    s = list(size) + [0.0, 0.0, 0.0]
+    if gtype in ("box", "ellipsoid"):
+        return float(s[2])
+    if gtype == "sphere":
+        return float(s[0])
+    if gtype == "capsule":
+        # MuJoCo capsule：圆柱半长 + 端部球半径
+        return float(s[1]) + float(s[0])
+    return float(s[1])                    # cylinder: [半径, 半长]
+
+
+def _link_top_z(lk) -> float:
+    """连杆几何体在自身坐标系中的最高点 z（几何带 rpy 时不精确）。"""
+    g = lk.geom
+    if not g:
+        return 0.0
+    pz = float(list(g.get("pos", (0.0, 0.0, 0.0)))[2])
+    return pz + _geom_half_height(g["type"], g["size"])
+
 
 def _world_to_screen(glcam, point, w: int, h: int):
     """世界坐标 -> 离屏图像像素坐标；点在相机后方或退化时返回 None。
@@ -191,6 +217,11 @@ class RobotBuilderDialog(QDialog):
                   self.sp_gsize + self.sp_gpos + self.sp_axis +
                   self.sp_range + [self.sp_kp, self.sp_kd]):
             w.valueChanged.connect(self._on_form)
+        # 几何尺寸改动时单独同步几何偏置 z：维持"关节原点 = 几何底面中心"
+        for w in self.sp_gsize:
+            w.valueChanged.connect(self._on_geom_size)
+        # 手动改几何偏置 z 则退出自动跟随
+        self.sp_gpos[2].valueChanged.connect(self._on_geom_pos)
         mid_w = QWidget()
         mid = QVBoxLayout(mid_w)
         mid.addWidget(box)
@@ -395,6 +426,14 @@ class RobotBuilderDialog(QDialog):
         gpos = list(g.get("pos", [0, 0, 0])) if g else [0, 0, 0]
         for w, v in zip(self.sp_gpos, gpos):
             w.setValue(float(v))
+        # 记录当前连杆是否处于"关节原点 = 几何底面中心"约定：
+        # 是 -> 改尺寸时几何偏置 z 自动跟随半高；
+        # 用户一旦手动改过几何 z 偏置则视为退出约定，不再强行吸回
+        if g is not None:
+            hh = _geom_half_height(g["type"], size)
+            self._origin_at_bottom = abs(float(gpos[2]) - hh) < 1e-6
+        else:
+            self._origin_at_bottom = True
         j = lk.joint
         self.cb_joint.setCurrentIndex(_JOINT_LABELS.index(j.type)
                                       if j.type in _JOINT_LABELS else 0)
@@ -424,8 +463,61 @@ class RobotBuilderDialog(QDialog):
     def _on_geom_type(self, *_):
         if self._loading:
             return
+        # 换几何类型时旧尺寸语义不同（box 三个半长 vs cylinder 半径+半长），
+        # 保留旧数值会得到怪异比例；按类型给一套默认尺寸，并把几何偏置 z
+        # 钉在半高上，维持关节原点在底面中心
+        if self.cb_geom.currentIndex() > 0:
+            gtype = list(GEOM_TYPES)[self.cb_geom.currentIndex() - 1]
+            size = {
+                "box": (0.03, 0.03, 0.075),
+                "sphere": (0.05, 0.0, 0.0),
+                "cylinder": (0.04, 0.075, 0.0),
+                "capsule": (0.03, 0.06, 0.0),
+                "ellipsoid": (0.04, 0.04, 0.075),
+            }[gtype]
+            self._loading = True
+            try:
+                for w, v in zip(self.sp_gsize, size):
+                    w.setValue(v)
+                self.sp_gpos[0].setValue(0.0)
+                self.sp_gpos[1].setValue(0.0)
+                self.sp_gpos[2].setValue(_geom_half_height(gtype, size))
+            finally:
+                self._loading = False
+            # 新类型按底面中心约定摆放
+            self._origin_at_bottom = True
         self._apply_enabled()
         self._on_form()
+
+    def _on_geom_size(self, *_):
+        """尺寸变化时让几何偏置 z 跟随半高：关节原点始终在几何底面中心。"""
+        if self._loading or self.cb_geom.currentIndex() == 0:
+            return
+        if not getattr(self, "_origin_at_bottom", True):
+            return
+        gtype = list(GEOM_TYPES)[self.cb_geom.currentIndex() - 1]
+        z = _geom_half_height(
+            gtype, [w.value() for w in self.sp_gsize])
+        if abs(self.sp_gpos[2].value() - z) > 1e-9:
+            # setValue 触发的 _on_form 会完成模型与预览刷新
+            self.sp_gpos[2].setValue(z)
+
+    def _on_geom_pos(self, *_):
+        """用户手动改几何偏置：z 不再等于半高即视为退出自动跟随约定。"""
+        if self._loading or self.cb_geom.currentIndex() == 0:
+            return
+        gtype = list(GEOM_TYPES)[self.cb_geom.currentIndex() - 1]
+        hh = _geom_half_height(gtype, [w.value() for w in self.sp_gsize])
+        if abs(self.sp_gpos[2].value() - hh) > 1e-6:
+            self._origin_at_bottom = False
+
+    def _set_range_silently(self, lo: float, hi: float):
+        self._loading = True
+        try:
+            self.sp_range[0].setValue(lo)
+            self.sp_range[1].setValue(hi)
+        finally:
+            self._loading = False
 
     def _on_joint_type(self, *_):
         if self._loading:
@@ -434,17 +526,27 @@ class RobotBuilderDialog(QDialog):
         lk = self.robot.link(name) if name else None
         prev = lk.joint.type if lk is not None else "fixed"
         jt = _JOINT_LABELS[self.cb_joint.currentIndex()]
-        # 转动 <-> 移动：角度范围换成米，量级明显是角度时给合理默认（F09）
-        if jt == "prismatic" and prev in ("revolute", "hinge") \
-                and max(abs(w.value()) for w in self.sp_range) > 5:
-            self._loading = True
-            try:
-                for w, v in zip(self.sp_range, (-0.5, 0.5)):
-                    w.setValue(v)
-            finally:
-                self._loading = False
+        # 范围单位随关节类型变化（转动=度，移动=米）：双向按固定力臂换算，
+        # 从无范围概念的类型切进来时给对应单位的合理默认，避免出现
+        # "±180 m" 或 "±0.5°" 这种量级错配
+        # 先在旧单位下读范围：切换 decimals 会立刻把当前值按新精度
+        # 舍入（0.297 m -> 0.3 m），导致度↔米往返换算漂移
+        lo, hi = (self.sp_range[0].value(), self.sp_range[1].value())
+        # 再切换单位/小数位后写换算结果，否则新值会被旧精度提前舍掉
         self._apply_enabled()
         self._apply_joint_units()
+        arm = _RANGE_ARM_M
+        if prev in ("revolute", "hinge") and jt == "prismatic":
+            self._set_range_silently(
+                lo * math.radians(1) * arm, hi * math.radians(1) * arm)
+        elif prev == "prismatic" and jt in ("revolute", "hinge"):
+            self._set_range_silently(
+                max(-3600.0, lo / arm * math.degrees(1)),
+                min(3600.0, hi / arm * math.degrees(1)))
+        elif jt == "prismatic" and prev in ("fixed", "ball", "free"):
+            self._set_range_silently(-0.5, 0.5)
+        elif jt in ("revolute", "hinge") and prev in ("fixed", "ball", "free"):
+            self._set_range_silently(-170.0, 170.0)
         self._on_form()
 
     def _apply_joint_units(self):
@@ -567,14 +669,23 @@ class RobotBuilderDialog(QDialog):
         base = f"link{len(self.robot.links)}"
         name, i = base, 1
         while any(lk.name == name for lk in self.robot.links):
-            name = f"{base}_{i}"
+            name = f"link{len(self.robot.links)}_{i}"
             i += 1
         from simovia.robot_spec import JointDoc, LinkDoc
-        lk = LinkDoc(name=name, parent=parent, pos=(0.0, 0.0, 0.15),
-                     joint=JointDoc(type="revolute",
-                                    range=(-170.0, 170.0)),
-                     geom={"type": "box", "size": (0.03, 0.03, 0.10),
-                           "pos": (0.0, 0.0, 0.10)})
+        # 新连杆默认尺寸（box：0.06×0.06 截面、半高 0.075 -> 高 0.15）
+        half_h = 0.075
+        parent_lk = self.robot.link(parent)
+        top = _link_top_z(parent_lk)
+        lk = LinkDoc(
+            name=name, parent=parent,
+            # 关节原点直接落在父连杆几何顶面，两段不会插在一起；
+            # 顶面为 0（父无几何）时给 0.15 的默认间距
+            pos=(0.0, 0.0, top if top > 1e-9 else 0.15),
+            joint=JointDoc(type="revolute", range=(-170.0, 170.0)),
+            # geom.pos.z = 半高：关节（body）原点位于几何底面中心，
+            # 新连杆从关节点向上生长，而不是以关节为中心上下对称
+            geom={"type": "box", "size": (0.03, 0.03, half_h),
+                  "pos": (0.0, 0.0, half_h)})
         self.robot.links.append(lk)
         self._dirty = True
         self._refresh_tree(select=name)
