@@ -1,6 +1,6 @@
 # Simovia 核心运行时依赖（无 GUI / 无 RL 训练也能跑仿真、MCP、控制器）
-# 版本用 ~= 锁定：只接受同 minor 的补丁升级，避免上游破坏性变更
+# 使用兼容版本范围；~=X.Y 允许同 major，~=X.Y.Z 限于同 minor
 mujoco~=3.13        # 物理引擎 + MjSpec 程序化场景组装
-numpy~=2.5          # 数值计算
+numpy~=2.2.6        # 数值计算；兼容视觉 demo 的 OpenCV 4.12（numpy>=2,<2.3）
 PyYAML~=6.0         # 世界文件解析
 pyzmq~=27.2         # 控制器进程 IPC（ZMQ REQ/ROUTER 栅栏同步）

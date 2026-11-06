@@ -36,7 +36,7 @@ Simovia 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿
 - **夹爪装配工作台**：内置 4 款末端执行器（OnRobot 2FG7、Robotiq 2F-85、UMI Gripper 三款平行夹爪 + LEAP Hand 16 自由度灵巧手），GUI"装备"页点选即可给 UR5e / UR10e / xArm7 / Panda 四臂挂爪/拆爪，并可视化挂点、关节、body 清单；灵巧手用 `actuators` + `poses` 描述多关节开合姿态。同一页表单式添加五类传感器（encoder/IMU/触觉/关节力矩/相机），全部改 YAML 自动重载，不手写配置。夹爪安装位姿（mount）按各臂腕部几何逐臂标定，夹爪后法兰与机器人法兰同轴贴合、指尖沿法兰法向伸出；自带"码垛分区"场景模板（UR5e+2FG7，A 区取料→B 区码放）
 - **从零造机器人**：连杆树 YAML（parent / pos / rpy / 几何 / 关节）直接编译成 MJCF 挂进世界；GUI 文件 → 造机器人（Ctrl+B）提供连杆树编辑 + 实时 3D 预览 + 每个连杆的 R_rel / R_world 旋转矩阵与 RGB 坐标轴，按 `R = Rz·Ry·Rx` 直观展示角度怎么变成矩阵，适合机器人学入门
 - **RL 训练接口**：一个 YAML 世界 = 一个确定性 gymnasium.Env——动作空间 = 执行器拼接、观测 = qpos/qvel/传感器、reset 逐位一致（同 YAML 跑两遍轨迹逐 bit 相同，eval 可复现），单进程直驱不起 ZMQ，训练吞吐优先
-- **明亮场景观感**：每个世界自动带白天渐变天空 + 网格地面（2m 主格 / 0.5m 细格，贴图按世界尺寸走，地面多大格子都一样大，`floor.texture: solid` 可退回纯色），场景灯统一归一化成柔和天光、只有一盏投影，机器人模型自带的刺眼聚光灯不会再打斑；机器人网格统一开平滑法线 + 保留高光 + 离屏 8× MSAA，低多边形模型看起来也是干净的塑料壳而不是一片糊；打开世界按实体包围盒自动取景（机械臂/人形/四足整台入画），空场景给大远景铺满网格
+- **明亮场景观感**：每个世界自动带白天渐变天空 + 网格地面（2m 主格 / 0.5m 细格，贴图按世界尺寸走，地面多大格子都一样大，`floor.texture: solid` 可退回纯色），场景灯统一归一化成柔和天光、只有一盏投影，机器人模型自带的刺眼聚光灯不会再打斑；机器人网格统一开平滑法线 + 保留高光 + 离屏抗锯齿（默认 4× MSAA，高画质 8×），低多边形模型看起来也是干净的塑料壳而不是一片糊；打开世界按实体包围盒自动取景（机械臂/人形/四足整台入画），空场景给大远景铺满网格
 - **Supervisor 能力**：save/load 内存快照（物理状态逐位恢复）、teleport、reset——快照包含 `mjSTATE_FULLPHYSICS | mjSTATE_WARMSTART`，保证轨迹级可复现
 - **场景生成器**：6 个确定性模板（tabletop / push / maze / race / pallet / empty），同一命令 + 同一参数 = 逐字节相同的输出
 - **AI 场景生成**：自然语言需求 → LLM 直接生成世界 YAML → 本地 schema+编译双重校验，失败自动回喂重试（Ctrl+G）；机器人经 `zoo://key` 引用模型库，无需知道任何文件路径
@@ -45,45 +45,95 @@ Simovia 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿
 
 ## 安装
 
-要求 Python 3.10+。**Linux / macOS** 照下面三行装；**Windows 用户直接跳 [Windows 部署](#windows-部署)**（含双击启动、快捷方式与 FAQ）：
+统一使用 **64 位 Python 3.12** 作为新环境的推荐安装基线。其他 Python 版本是否可用取决于全部依赖的 wheel 和兼容性；当前没有覆盖所有 Python/操作系统组合的验收矩阵，不将“Python 3.10+”视为全功能兼容承诺。
+
+Linux 安装命令如下；Windows 见 [Windows 部署](#windows-部署)。macOS 的图形后端尚未完成专项验收，见 [平台与渲染要求](#平台与渲染要求)。
 
 ```bash
 git clone https://github.com/jerryzhu-yc/simovia.git
 cd simovia
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip check
+python -m simovia doctor
+python -m simovia gui
 ```
 
-> 仓库自带 34 个机器人模型资产（`models/zoo/`，约 600MB）；换来的是模型库全程离线可用、首次使用零联网。
+> 仓库自带 34 个机器人模型资产（`models/zoo/`，约 600MB）。依赖安装完成且资产齐全后，模型库和本地 demo 可离线运行；AI 功能按所配置的服务连接。
 
-`requirements.txt` 是一键全装（核心 + GUI + RL + pytest）。只要部分能力时可换用拆分文件：
+`requirements.txt` 包含核心、GUI、RL 和 pytest，**不包含视觉 demo 的 OpenCV**。按需安装时，拆分文件是各自能力的依赖清单，需要显式组合：
 
 ```bash
-pip install -r requirements-core.txt    # 只跑仿真 / MCP / 控制器（mujoco numpy pyyaml pyzmq）
-pip install -r requirements-gui.txt     # 核心 + 桌面 GUI（PySide6-Essentials）
-pip install -r requirements-dev.txt     # 核心 + GUI + RL + pytest（CI 用这一份）
-pip install -r requirements-models.txt  # 可选：模型资产缺失时的 menagerie 下载回退
+# 核心：仿真 / MCP / 控制器
+python -m pip install -r requirements-core.txt
+# 核心 + 桌面 GUI
+python -m pip install -r requirements-core.txt -r requirements-gui.txt
+# 核心 + RL 接口
+python -m pip install -r requirements-core.txt -r requirements-rl.txt
+# 完整开发环境 + 水果分拣 / 手眼标定的视觉依赖
+python -m pip install -r requirements.txt -r demo/fruit_sorting/requirements.txt
+# 可选：模型资产缺失时的 menagerie 下载回退
+python -m pip install -r requirements-models.txt
 ```
 
-依赖版本用 `~=` 锁定 minor，避免上游破坏性升级把环境弄坏。
+两个视觉 demo 使用相同的 OpenCV 依赖，装一次即可。2026-11-06 已通过 Python 3.12 的 Linux x86_64 / Windows x64 wheel 依赖解析检查；这不等于两种平台的完整运行验收。本机渲染与 HSV 冒烟检查使用 MuJoCo 3.13.0、NumPy 2.2.6、OpenCV 4.12.0。兼容版本范围可能解析到更新版本，仍需在实际环境验证。新增依赖后执行 `python -m pip check`；全量回归按[测试](#测试)章节运行。
+
+依赖使用兼容版本范围，`~=` 不等于固定到同一 minor：例如 `~=3.13` 表示 `>=3.13,<4`，`~=2.2.6` 表示 `>=2.2.6,<2.3`。核心 NumPy 统一为 2.2.x，以满足视觉依赖 `opencv-python-headless==4.12.0.88` 的 `numpy>=2,<2.3` 要求（[OpenCV 包元数据](https://pypi.org/pypi/opencv-python-headless/4.12.0.88/json)）。请在独立虚拟环境中安装，避免混装多个提供 `cv2` 的 OpenCV 包。
+
+### 配置建议
+
+**目前没有经低配机器实测认证的最低配置。** 下表是单机械臂、小场景和单路 640×480 相机的规划建议，不保证特定帧率或实时仿真速度；多机器人、复杂接触、高面数网格及多路相机会增加负担。
+
+| 项目 | 入门试运行基线（估计） | 日常使用建议（估计） |
+|---|---|---|
+| CPU | 近年的 4 核 64 位处理器 | 单核性能较好的 6 核或更多核心 |
+| 内存 | 8 GB | 16 GB 或更多 |
+| 图形 | 具备完整 OpenGL 驱动、可创建离屏上下文的现代核显 | 较强核显或 4 GB 显存级独显 |
+| 可用磁盘 | 预留 5 GB | 预留 10 GB；录屏和采样图另计 |
+| 主视口 | 较小窗口、低画质 | 1080p 窗口、均衡画质 |
+
+不强制要求 NVIDIA 显卡或 CUDA。仅做物理计算且不创建相机/截图时可不使用图形渲染；水果识别和手眼标定即使无 GUI，仍需渲染 RGB 图像。是否可用应以目标机器的 `doctor`、场景加载和实际运行结果判断。
+
+### 平台与渲染要求
+
+- **Linux**：GUI/MCP 默认使用 EGL；需要可用的显卡驱动和 EGL/OpenGL 运行库。无显示器不等于不需要图形上下文。OSMesa 是可选的软件渲染路径，需要系统库，性能需单独评估。
+- **Windows**：GUI/MCP 默认使用 WGL，需显卡厂商提供的 OpenGL 驱动。部署步骤以 Windows 11、Python 3.12 x64 为建议基线；当前没有完整 Windows 硬件兼容性验收矩阵。
+- **macOS**：当前 GUI/MCP 的非 Windows 分支默认设置 EGL，不能据此宣称 macOS 开箱即用；仍需适配并验证原生图形上下文、Qt 和启动流程。
+
+当前已验证的 MuJoCo 3.13.0 环境使用经典 OpenGL 渲染路径，通过离屏图像显示到 PySide6 GUI。画面效果同时取决于模型网格、材质贴图、灯光、阴影和渲染器；Python 负责组织应用，物理与渲染的主要计算由原生库执行。
+
+| GUI 主视口画质 | MSAA | 阴影 | 渲染宽高倍率 |
+|---|---|---|---|
+| 高 | 8× | 开 | 100% |
+| 均衡（默认） | 4× | 开 | 100% |
+| 低 | 关闭 | 关 | 75% |
+
+切换高画质主要改善边缘锯齿，不会自动增加纹理细节或启用 PBR。MuJoCo 官方另提供 Filament/PBR 渲染路径，但 **Simovia 当前尚未接入**，需要开发集成（[MuJoCo 渲染文档](https://mujoco.readthedocs.io/en/latest/programming/rendering.html)）。
+
+低配机器可先降低主视口画质、缩小窗口，并减少额外相机预览。主视口画质与腕部传感器相机分辨率分别配置：两个视觉 demo 使用 640×480 相机，降低主视口画质不影响其标定；改变传感器相机分辨率、内参或挂载后需要重新标定。
 
 ### Windows 部署
 
-Simovia 全链路 Windows 兼容：内核用 `tcp://127.0.0.1` 随机端口（无 `ipc://`，Windows 不支持）；控制器子进程走 `subprocess.Popen` + `sys.executable`（无 fork）；渲染后端代码已平台自适应——**Linux/macOS 默认 EGL，Windows 默认 wgl**（`mcp_server.py` / `gui/__init__.py` 里的 `setdefault`，用户可用环境变量 `MUJOCO_GL` 覆盖）。零配置，照下面做即可：
+内核使用本机 TCP 通信，控制器通过 `subprocess.Popen` 启动；GUI/MCP 在 Windows 上默认选择 WGL。请按以下步骤安装，并在目标机器验证图形驱动与场景运行。
 
-**1. 装 Python 3.10+**（python.org 安装包勾选 "Add python.exe to PATH"，或 [Miniconda](https://docs.conda.io/en/latest/miniconda.html)）
+**1. 装 64 位 Python 3.12**（python.org 安装包勾选 "Add python.exe to PATH"，或 [Miniconda](https://docs.conda.io/en/latest/miniconda.html)）
 
 **2. 克隆 + 装依赖**（PowerShell 或 CMD）：
 
 ```powershell
 git clone https://github.com/jerryzhu-yc/simovia.git
 cd simovia
-python -m venv .venv
-.venv\Scripts\activate          # PowerShell 若报执行策略错误见下方 FAQ
-pip install -r requirements.txt
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip check
 ```
 
-所有依赖（mujoco / PySide6 / pyzmq / numpy 等）在 Windows 均有官方预编译 wheel，无需编译器。机器人模型资产随仓库自带，无需额外下载。
+以上命令不需要激活环境。后续命令中的 `python` 请使用 `.\.venv\Scripts\python.exe`，或先激活虚拟环境；CMD 使用 `.venv\Scripts\activate.bat`，PowerShell 使用 `.\.venv\Scripts\Activate.ps1`。
+
+建议优先使用依赖的预编译 wheel；若安装尝试源码编译，先检查 Python 版本、架构及包版本。机器人模型资产随仓库自带。视觉 demo 还需按 [demo 安装说明](demo/README.md#快速运行) 安装 OpenCV。
 
 **3. 验证安装**：
 
@@ -111,8 +161,8 @@ start.bat                      # 双击即启动 GUI（快捷方式即指向它�
 |---|---|
 | PowerShell 激活 venv 报 "禁止运行脚本" | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` 后重试，或改用 CMD |
 | 首次运行弹 Windows 防火墙提示 | 点"允许"——内核 ZMQ 只绑 `127.0.0.1` 本机回环，不对外通信 |
-| 远程桌面（RDP）断开后 GUI 崩溃 | RDP 会话的 GPU 上下文随会话注销销毁；用控制台会话（`qwinsta` 抢 session 1）或无 GUI 的 `python -m simovia run` |
-| 渲染报 `wgl` 相关错误（无 GPU 的服务器） | Windows Server 无 OpenGL 驱动，装 [Mesa3D 离屏驱动](https://mesa3d.org/)（或设 `MUJOCO_GL=osmesa`），或改用 Linux 容器跑无头测试 |
+| 远程桌面（RDP）中渲染失败或断开后异常 | 在本机桌面会话验证，并检查远程会话的图形驱动支持；无 GUI 的 `run` 若使用相机仍需可用的离屏渲染上下文 |
+| 渲染报 `wgl` 相关错误 | 安装或更新显卡厂商的 OpenGL 驱动，检查远程会话的图形支持，再运行 `doctor`；不要将 Linux 的 `MUJOCO_GL=osmesa` 设置直接套用到 Windows |
 | `mujoco-menagerie` 模型下载慢/失败 | 正常不需要联网：34 个模型资产已随仓库自带（`models/zoo/`，约 600MB）。仅当该目录被删时才回退 `mujoco-menagerie` 下载——重新 clone 仓库即可恢复，无需任何网络处理 |
 | 中文/空格路径 | 完全支持（pathlib 全程处理），但建议路径不含空格避免个别工具链问题 |
 | sw2urdf 导出的 URDF 导入后 mesh 报错 | mesh 路径按 urdf 所在目录解析（`package://` 前缀自动剥除）；编码兼容 UTF-8 与 GBK（中文 Windows 导出常见），确认 mesh 是 STL/OBJ 且 `<collision>` 里有几何 |
@@ -128,7 +178,8 @@ pip install stable-baselines3   # RL 训练示例（examples/train_ppo_go2.py）
 按上面"安装"章节建好环境后，先验证再上路：
 
 ```bash
-python -m pytest tests/ -q               # 全绿即环境就绪（336 项）
+python -m simovia doctor                # 检查依赖、模型资产和离屏渲染
+python -m pytest tests/ -q               # 开发验收：数量以当前输出为准
 ./start.sh run worlds/pick_cube.yaml     # 跑通一个内置任务（输出见"快速开始"）
 ```
 
@@ -140,7 +191,7 @@ python -m pytest tests/ -q               # 全绿即环境就绪（336 项）
 ./start.sh mcp                            # MCP 服务器（stdio，供 AI Agent 接入）
 ```
 
-首次使用若提示无执行权限：`chmod +x start.sh`。渲染后端 Linux 默认 EGL（无显示器的服务器设 `MUJOCO_GL=osmesa` 或 `egl` 做无头渲染）。
+首次使用若提示无执行权限：`chmod +x start.sh`。Linux 的 GUI/MCP 默认 EGL；无显示器运行仍需驱动和 EGL 系统库。若改用 OSMesa，先安装对应系统库，并在启动 Python 前设置 `MUJOCO_GL=osmesa`。软件渲染速度需在实际场景中验证。
 
 ### Linux 中文输入（fcitx5 GUI 集成）
 
@@ -281,7 +332,7 @@ GUI 本身就是一个 MCP 客户端（与 AI Agent 同构）：左键加载世�
 - **Run / Run N**：跑一整个 episode（结束后可再 Run，自动 reset）
 - **停止**：run 进行中随时可点（F6）——提前收尾当前 run，控制器正常退出、已跑轨迹保留，之后照常 Reset / 继续 Run
 - **实时勾选框**：勾选=按墙钟实时播放动画（1 仿真秒≈1 墙钟秒，MCP `run` 的 `realtime` 参数）；取消=全速推进瞬间出结果（跑批验证）
-- **画质下拉框**：高 = 8× MSAA；均衡（默认）= 4× MSAA；低 = 关 MSAA/阴影 + 75% 分辨率渲染（低配电脑选它，帧率约翻倍）；选择跨会话记忆
+- **画质下拉框**：高 = 8× MSAA；均衡（默认）= 4× MSAA；低 = 关 MSAA/阴影 + 75% 分辨率渲染（可减轻渲染负担，收益取决于场景和硬件）；选择跨会话记忆
 - **原点坐标轴**（视图菜单，默认开）：视口原点叠加 XYZ 轴（X 红 / Y 绿 / Z 蓝），摆场景时一眼看清方位；空场景还会在视口上方给出 Ctrl+M（模型库）/ Ctrl+B（造机器人）/ Ctrl+N（模板场景）三条入口
 - **Reset**：世界回初态；渲染视角支持鼠标拖拽旋转、滚轮缩放、**F 键聚焦选中对象**；属性/观测/装备面板带滚动条，右停靠栏可自由拖窄放大视口
 
@@ -729,7 +780,7 @@ python examples/train_ppo_go2.py
 - 水果分拣：Panda + 2FG7 + 腕部 RGB 相机，香蕉、苹果、葡萄各两个，HSV 识别后分拣到三个框，运行时自动显示识别画面。
 - 独立标定：Panda 与 UR5e 的眼在手上标定场景，采集 ArUco 图像、执行 PARK 手眼求解并保存经过留出验证的结果。
 
-先安装视觉依赖：`python -m pip install -r demo/fruit_sorting/requirements.txt`，然后启动 GUI，从“文件”菜单进入对应 demo。水果场景直接读取预先保存的标定结果；重新标定在独立场景中完成。
+在已激活的虚拟环境中统一安装平台与视觉依赖：`python -m pip install -r requirements.txt -r demo/fruit_sorting/requirements.txt`，然后启动 GUI，从“文件”菜单进入对应 demo。水果场景直接读取预先保存的标定结果；重新标定在独立场景中完成。
 
 详细操作、场景路径和其他机械臂的适配说明见 [demo 使用说明](demo/README.md)。
 
@@ -737,7 +788,7 @@ python examples/train_ppo_go2.py
 
 ```bash
 python -m pytest tests/ -q
-# 336 passed —— 覆盖 schema/builder/内核/多机器人/Supervisor 逐位重现/
+# 测试数量以当前输出为准；覆盖 schema/builder/内核/多机器人/Supervisor 逐位重现/
 #              MCP（含 screenshot/zoo_create/stop/save_world 往返）/
 #              传感器（含 bit 级轨迹守护）/
 #              RL 环境（含逐位一致性守护）/控制器心跳（含跨平台死亡探测）/
@@ -788,7 +839,7 @@ simovia/
 ├── examples/             # PPO 训练示例（train_ppo_go2.py，sb3 可选依赖）
 ├── start.bat / create_desktop_shortcut.bat / simovia.ico
 │                            # Windows 双击启动 + 桌面快捷方式（项目图标）
-└── tests/                 # 336 项测试（含 URDF 导入/AI 场景生成/夹爪/码垛/造机器人）
+└── tests/                 # 自动化回归测试（含 URDF 导入/AI 场景生成/夹爪/码垛/造机器人）
 ```
 
 ## Roadmap
@@ -804,10 +855,10 @@ simovia/
 - [x] M7 URDF/SolidWorks 导入 + AI 场景生成 —— `robots[].model` 直读 URDF（mesh 路径重写 / package:// 剥除 / 逐关节补 motor，SolidWorks sw2urdf 导出即用）+ GUI 导入模型入口（贴地出生自动计算）+ AI 场景生成 Agent（自然语言 → 世界 YAML，本地双重校验失败回喂重试，`zoo://key` 模型引用）+ GUI 分栏自由拖动（面板滚动条化，视口可放大）
 - [x] M8 模型库扩容 + 从零造机器人 —— 模型库 14 → 34 个（新增 9 机械臂 / 2 四足 / 4 人形 / 1 双足 / 2 无人机 / 2 移动操作，全部资产自带离线可用），夹爪库 1 → 4 款（新增 Robotiq 2F-85 / UMI Gripper / LEAP Hand 16 自由度灵巧手，四臂 mount 逐臂标定，灵巧手 `actuators`+`poses` 多执行器开合）；连杆树 YAML + `robots[].spec` 内联定义 + GUI「造机器人」面板（连杆树编辑 / 实时预览 / R_rel + R_world 旋转矩阵 / RGB 轴标 / 保存 YAML）
 
-## 已知取舍（M0）
+## 已知取舍
 
 - ~~内核进程被强杀（kill -9）时控制器可能成为孤儿阻塞~~ **已由 M1 心跳机制补全**（`tests/test_heartbeat.py`：强杀内核后控制器 ≤2s 退出）
-- 无渲染：M0 是无头仿真，可视化留给 M1 GUI
+- 已支持桌面 GUI 和离屏相机；当前使用经典 OpenGL 渲染，尚未接入 Filament/PBR。最低硬件配置及跨平台兼容性仍需扩大实机验收。
 - MCP 实现为协议子集（initialize / ping / tools），覆盖主流客户端所需
 
 ---

@@ -1,8 +1,9 @@
 # Simovia 一键安装（开发/日常使用）：核心 + GUI + RL + 测试
 # 按需精简安装：
 #   pip install -r requirements-core.txt    # 只跑仿真/MCP/控制器
-#   pip install -r requirements-gui.txt     # 核心 + 桌面 GUI
-#   pip install -r requirements-dev.txt     # 核心 + GUI + RL + pytest
+#   pip install -r requirements-core.txt -r requirements-gui.txt  # 核心 + 桌面 GUI
+#   pip install -r requirements.txt        # 核心 + GUI + RL + pytest
+#   pip install -r requirements.txt -r demo/fruit_sorting/requirements.txt  # 加视觉 demo
 #   pip install -r requirements-models.txt  # 可选：menagerie 模型下载回退
 -r requirements-core.txt
 -r requirements-gui.txt

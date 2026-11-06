@@ -10,13 +10,16 @@
 
 ## 快速运行
 
-在仓库根目录安装平台和视觉依赖，然后启动软件：
+先按[主 README 安装说明](../README.md#安装)创建并激活 64 位 Python 3.12 虚拟环境。在仓库根目录统一安装平台和视觉依赖，然后启动软件：
 
 ~~~bash
-python -m pip install -r requirements.txt
-python -m pip install -r demo/fruit_sorting/requirements.txt
+python -m pip install -r requirements.txt -r demo/fruit_sorting/requirements.txt
+python -m pip check
+python -m simovia doctor
 python -m simovia gui
 ~~~
+
+两个 demo 的 OpenCV 依赖相同，安装一次即可；NumPy 统一使用核心依赖中的 2.2.x。硬件建议、平台限制与画质说明以[主 README](../README.md#配置建议)为准，目前没有经低配机器认证的最低配置。两个 demo 即使无 GUI 运行也需要可用的离屏渲染；腕部相机为 640×480，降低 GUI 主视口画质不改变标定数据。
 
 通过上表菜单打开场景，代码页选择 arm，点击“保存并运行”或 F5。也可用“打开世界”加载对应 YAML。运行时自动展开 arm/wrist_rgb 相机预览，点击“独立窗口”可放大，查看 RGB 识别图时关闭“深度图”。
 

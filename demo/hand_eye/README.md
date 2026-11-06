@@ -41,4 +41,13 @@
 
 ## 依赖
 
-在项目根目录执行：python -m pip install -r demo/hand_eye/requirements.txt。标定模块不依赖水果识别或分拣实现。
+使用 64 位 Python 3.12 虚拟环境，在项目根目录执行：
+
+```bash
+python -m pip install -r requirements.txt -r demo/hand_eye/requirements.txt
+python -m pip check
+python -m simovia doctor
+python -m simovia gui
+```
+
+环境创建见[主 README](../../README.md#安装)，硬件与渲染限制见[配置建议](../../README.md#配置建议)。本模块与水果 demo 使用相同的 OpenCV 依赖，安装一次即可；实现不依赖水果识别或分拣。采样需要离屏渲染 RGB 图像，不能用“无 GUI”替代图形后端配置。

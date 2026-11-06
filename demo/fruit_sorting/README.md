@@ -34,10 +34,13 @@ RGB → HSV → 阈值分割 → 轮廓/中心/类别。黄香蕉 H=18–38，�
 
 ## 独立入口
 
-项目根目录安装依赖：python -m pip install -r demo/fruit_sorting/requirements.txt。
+使用 64 位 Python 3.12 虚拟环境，在项目根目录按 [demo 快速运行](../README.md#快速运行)安装平台和视觉依赖。硬件及渲染要求统一见[主 README](../../README.md#配置建议)。
 
-独立窗口：python -m demo.fruit_sorting
+```bash
+# 独立窗口
+python -m demo.fruit_sorting
+# 无 GUI 验证，仍需要离屏渲染 RGB 图像
+python -m demo.fruit_sorting --headless --output demo/fruit_sorting/runs/latest
+```
 
-无界面验证：python -m demo.fruit_sorting --headless --output demo/fruit_sorting/runs/latest
-
-这些入口也直接读取已保存的标定文件。
+这些入口也直接读取已保存的标定文件。腕部相机使用 640×480 分辨率；修改该分辨率、内参或挂载后需重新标定，降低 GUI 主视口画质则不需要。
