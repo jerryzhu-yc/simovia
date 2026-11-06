@@ -721,18 +721,26 @@ def absolutize_world_paths(text: str, base_dir) -> str:
     return yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
 
 
+def read_text_compat(path: str | pathlib.Path) -> str:
+    """跨平台读文本：utf-8 优先、GBK 兜底（中文 Windows 记事本/sw2urdf
+    常把带中文的文件存成本地代码页）。所有读"用户可编辑文件"的路径
+    （世界 YAML、机器人 YAML、URDF、GUI/MCP 的二次读取）都必须走这里，
+    否则 GBK 文件在 `load_world`（有兜底）能过、在紧随其后的裸
+    `read_text(encoding="utf-8")` 处炸出 UnicodeDecodeError。
+    """
+    try:
+        return pathlib.Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return pathlib.Path(path).read_text(encoding="gbk", errors="replace")
+
+
 def load_world(yaml_path: str | pathlib.Path) -> WorldSpec:
     """从 YAML 文件加载世界。路径（model/controller）按世界文件所在目录解析；
     robots[].model 支持 zoo://<key> 模型库引用（资产随仓库自带，离线即用）。"""
     yaml_path = pathlib.Path(yaml_path)
     if not yaml_path.exists():
         raise WorldError(f"世界文件不存在: {yaml_path}")
-    try:
-        text = yaml_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        # 中文 Windows 记事本默认存成本地代码页（GBK/ANSI）：utf-8 优先，
-        # 失败再按 GBK 兜底，避免直接抛裸 UnicodeDecodeError
-        text = yaml_path.read_text(encoding="gbk", errors="replace")
+    text = read_text_compat(yaml_path)
     try:
         d = yaml.safe_load(text)
     except yaml.YAMLError as e:

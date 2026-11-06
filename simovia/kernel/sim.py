@@ -142,9 +142,14 @@ class Simulation:
             # 真相一定可见：输出不依赖继承来的句柄，由内核主动排空。
             cmd = [sys.executable, str(path),
                    "--sock", self._addr, "--robot", rd.name]
-            proc = subprocess.Popen(
-                cmd, env=env, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            popen_kwargs = dict(env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT)
+            if sys.platform == "win32":
+                # pythonw（桌面快捷方式）下 spawn 控制台子进程会闪黑窗；
+                # stdout/stderr 已是管道，CREATE_NO_WINDOW 只影响控制台宿主
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            proc = subprocess.Popen(cmd, **popen_kwargs)
             if os.environ.get("SIMOVIA_CTRL_TRACE"):
                 sys.stderr.write(
                     f"[spawn] {rd.name} pid={proc.pid} addr={self._addr} "

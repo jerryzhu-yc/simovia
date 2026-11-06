@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QVBoxLayout, QWidget)
 
 from simovia.gui import theme
+from simovia.world.schema import read_text_compat
 
 # 场景树 ItemDataRole：存 ("robot"|"object"|"world", 标识名)
 _NODE_KIND = Qt.ItemDataRole.UserRole + 1
@@ -1098,8 +1099,10 @@ class CodePanel(QWidget):
             self._show(draft, path, modified=True)
             return
         try:
-            text = pathlib.Path(path).read_text(encoding="utf-8")
-        except OSError as e:
+            # 与 load_world 同一套编码兜底：GBK 文件裸读 utf-8 会炸
+            # UnicodeDecodeError（不属 OSError），编辑器必须接得住
+            text = read_text_compat(path)
+        except (OSError, UnicodeDecodeError) as e:
             text = f"# 读取 {path} 失败: {e}"
         self._show(text, path)
 

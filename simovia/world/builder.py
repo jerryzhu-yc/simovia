@@ -27,7 +27,7 @@ from simovia.grippers import (END_EFFECTOR_PREFIX, END_EFFECTORS,
                                mount_for)
 from simovia.world.schema import (
     WorldSpec, RobotSpec, SensorSpec, TaskSpec, DistanceReward, ZoneReward,
-    ContactReward, hex_to_rgba,
+    ContactReward, hex_to_rgba, read_text_compat,
 )
 
 _GEOM_TYPE_MAP = {
@@ -1008,10 +1008,7 @@ def _load_robot_spec(model_path: pathlib.Path) -> mujoco.MjSpec:
         return mujoco.MjSpec.from_file(str(model_path))
 
     import re
-    try:
-        text = model_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        text = model_path.read_text(encoding="gbk", errors="replace")
+    text = read_text_compat(model_path)
     base = model_path.parent
     # 显式包搜索路径：与 catkin/ROS 习惯一致，按平台分隔符切分
     # （Windows 上不能用 [;:]——盘符 "C:\..." 会被从冒号处切断）

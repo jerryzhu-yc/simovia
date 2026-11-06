@@ -50,7 +50,7 @@ from simovia.gui.state import EditHistory, UiState, text_diff
 from simovia.gui.teleop_panel import TeleopPanel
 from simovia.world.schema import load_world as parse_world_file
 from simovia.world.schema import (absolutize_world_paths, parse_world,
-                                  resolve_zoo_models)
+                                  read_text_compat, resolve_zoo_models)
 
 # 遥操作键位：键 -> (轴, 方向)。方向按机器人基座坐标系（vx 前 / vy 左 / vz 上）。
 _TELEOP_KEYS = {
@@ -2069,10 +2069,12 @@ class MainWindow(QMainWindow):
             self._world_path = path
             self._push_recent(path)
             self._rebuild_recent_menu()
-            # 新世界：编辑历史从磁盘全文重新开始（撤销基线 = 文件内容）
+            # 新世界：编辑历史从磁盘全文重新开始（撤销基线 = 文件内容）。
+            # 编码兜底同 load_world：GBK 世界文件裸读 utf-8 会炸（中文
+            # Windows），UnicodeDecodeError 不属于 OSError，必须单独接住
             try:
-                text = pathlib.Path(path).read_text(encoding="utf-8")
-            except OSError:
+                text = read_text_compat(path)
+            except (OSError, UnicodeDecodeError):
                 text = None
             if text is not None:
                 self._yaml_text = text

@@ -67,6 +67,21 @@ class TestAgentLoop:
         finally:
             s.close()
 
+    def test_load_world_gbk_file_survives_second_read(self, tmp_path):
+        """GBK 世界文件在工具级也不能炸：load_world 的二次读取
+        （保存/编辑基准）曾用裸 read_text(utf-8) 在 load 成功后
+        抛 UnicodeDecodeError——中文 Windows 常见编码。"""
+        p = tmp_path / "world_gbk.yaml"
+        p.write_bytes("name: 中文世界\n".encode("gbk"))
+        s = SimoviaSession()
+        try:
+            info = s.call_tool("load_world", {"yaml_path": str(p)})
+            assert info["world"] == "中文世界"
+            text = s.call_tool("read_world", {})
+            assert "中文世界" in text
+        finally:
+            s.close()
+
     def test_observation_exposes_named_joint_actuator_maps(self):
         """观测带名字驱动的 joints/actuators 映射（GUI 不再按下标配对）。
 

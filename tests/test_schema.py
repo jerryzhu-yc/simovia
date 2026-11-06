@@ -32,6 +32,23 @@ def test_load_world_gbk_crlf_fallback(tmp_path):
     assert spec.name == "测试世界"
 
 
+def test_read_text_compat_utf8_first_gbk_fallback(tmp_path):
+    """统一读文本入口：utf-8 原样返回，GBK 文件自动兜底，不抛解码错误。
+    MCP load_world 的二次读取与 GUI 打开世界/编辑器都依赖这一行为。"""
+    from simovia.world.schema import read_text_compat
+    a = tmp_path / "a_utf8.yaml"
+    a.write_text("name: 中文世界", encoding="utf-8")
+    assert read_text_compat(a) == "name: 中文世界"
+    b = tmp_path / "b_gbk.yaml"
+    b.write_bytes("name: 中文世界\r\n".encode("gbk"))
+    # read_text 走 universal newlines：CRLF 统一读成 \n（两条路径一致）
+    assert read_text_compat(b) == "name: 中文世界\n"
+    # 纯 ASCII（任意编码可解）永远走 utf-8 路径
+    c = tmp_path / "c_ascii.txt"
+    c.write_bytes(b"hello")
+    assert read_text_compat(c) == "hello"
+
+
 class TestValidWorld:
     def test_pick_cube_loads(self):
         spec = load_world(WORLD)

@@ -55,7 +55,7 @@ import mujoco
 import numpy as np
 
 from simovia.errors import WorldError
-from simovia.world.schema import hex_to_rgba
+from simovia.world.schema import hex_to_rgba, read_text_compat
 
 #: 支持的几何类型 -> (MuJoCo 枚举, size 说明)
 GEOM_TYPES = {
@@ -576,10 +576,7 @@ def load_robot(path: str | pathlib.Path) -> RobotDoc:
     p = pathlib.Path(path)
     if not p.exists():
         raise WorldError(f"机器人描述文件不存在: {p}")
-    try:
-        text = p.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        text = p.read_text(encoding="gbk", errors="replace")
+    text = read_text_compat(p)
     try:
         doc = yaml.safe_load(text)
     except yaml.YAMLError as e:

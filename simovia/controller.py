@@ -242,6 +242,16 @@ class Robot:
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
             STILL_ACTIVE = 259
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            # Win64 下句柄是指针宽度，ctypes 默认 restype=c_int 会把句柄
+            # 截断成 32 位（高位非零时误判"进程不存在"），必须显式声明
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int,
+                                             ctypes.c_uint32)
+            kernel32.GetExitCodeProcess.restype = ctypes.c_int
+            kernel32.GetExitCodeProcess.argtypes = (ctypes.c_void_p,
+                                                    ctypes.c_void_p)
+            kernel32.CloseHandle.restype = ctypes.c_int
+            kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
             handle = kernel32.OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION, False, self._parent_pid)
             if not handle:

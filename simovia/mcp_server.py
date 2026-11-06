@@ -40,6 +40,7 @@ from simovia.kernel.sim import Simulation
 from simovia.render import depth_to_rgb, encode_png, render_offscreen
 from simovia.teleop import ArmTeleop
 from simovia.world.schema import load_world as _load_world_file
+from simovia.world.schema import read_text_compat
 from simovia.world.schema import (absolutize_world_paths, parse_world,
                                   resolve_zoo_models)
 
@@ -414,7 +415,9 @@ class SimoviaSession:
             raise WorldError("load_world 需要 yaml_path 或 yaml_text 恰好一个")
         if path is not None:
             spec = _load_world_file(path)          # base_dir = 文件所在目录
-            yaml_text = pathlib.Path(path).read_text(encoding="utf-8")
+            # 与 load_world 同一套编码兜底：GBK 世界文件在上一行能过，
+            # 这里若裸读 utf-8 会炸 UnicodeDecodeError（中文 Windows）
+            yaml_text = read_text_compat(path)
             new_path = str(pathlib.Path(path).resolve())
         else:
             try:
