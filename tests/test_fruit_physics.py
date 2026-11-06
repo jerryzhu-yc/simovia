@@ -33,6 +33,7 @@ def test_initial_pose_rejects_invalid_joint_values():
         s=scene();s.robots[0].initial_qpos={name:value}
         with pytest.raises(WorldError):Simulation(s,autostart_controllers=False)
 
+@pytest.mark.gl   # camera 设备要建离屏渲染上下文，无 GL 环境（如 Windows CI）跳过
 def test_native_camera_and_overlay_are_current_and_bounded():
     with Simulation(scene(),autostart_controllers=False) as sim:
         sim._ident[b'test']='arm';replies=[];sim._send=lambda identity,msg:replies.append(msg)
