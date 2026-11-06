@@ -612,6 +612,10 @@ class SimoviaSession:
         with self._cam_lock:
             frame = self._cam_frame
             err = self._cam_error
+        if cfg is not None and not cfg.get("depth") and self.sim is not None:
+            annotated=self.sim.controller_frames.get(cfg.get("camera"))
+            if annotated is not None and self.sim.tick-annotated[0]<=25:
+                frame=annotated
         if frame is None:
             return {"pending": True, "error": err,
                     "note": "还没有帧：先 camera_stream 开启相机，"

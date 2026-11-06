@@ -82,6 +82,7 @@ class Robot:
         self.actuators: list[str] = init["actuators"]
         self.ranges: list[list[float]] = init["ranges"]
         self.args: dict = init["args"]
+        self.world_spec: dict | None = init.get("world_spec")
         self.ctrl_period: int = init["ctrl_period"]
         self.timestep: float = init["timestep"]
         # 传感器设备清单 [{name,type,dim}]（hello 握手下发；无传感器为 []）
@@ -129,6 +130,40 @@ class Robot:
         self._ctrl = [float(c) for c in reply["ctrl"]]
         return reply
 
+    def report_result(self,success,detail=""):
+        """Report a controller's own task check (separate from a YAML task predicate)."""
+        reply=self._rpc({"op":"result","success":bool(success),"detail":str(detail)})
+        if reply.get("op")=="error":raise RuntimeError(reply["msg"])
+
+    def observe(self):
+        """Read encoders without advancing simulation."""
+        reply=self._rpc({"op":"observe"})
+        if reply.get("op")=="error":raise RuntimeError(reply["msg"])
+        self.obs=reply;self.tick=reply["tick"];self.time=reply["time"]
+        self._ctrl=list(reply["ctrl"])
+        return reply
+
+    def camera(self,name,width=640,height=480):
+        """Current RGB uint8 image from this robot's declared camera."""
+        import base64,zlib,numpy as np
+        reply=self._rpc({"op":"camera","name":name,"width":width,"height":height})
+        if reply.get("op")=="error":raise RuntimeError(reply["msg"])
+        return np.frombuffer(zlib.decompress(base64.b64decode(reply["rgb_zlib"])),dtype=np.uint8).reshape(reply["height"],reply["width"],3).copy()
+
+    def contact_forces(self):
+        """Normal contact force per robot body, excluding robot self-contact (N)."""
+        reply=self._rpc({"op":"contacts"})
+        if reply.get("op")=="error":raise RuntimeError(reply["msg"])
+        return reply["forces_N"]
+
+    def publish_camera(self,name,rgb):
+        """Publish an annotated RGB frame to the software's camera preview."""
+        import base64,numpy as np
+        rgb=np.ascontiguousarray(rgb,dtype=np.uint8)
+        if rgb.ndim!=3 or rgb.shape[2]!=3:raise ValueError("Expected HxWx3 RGB")
+        reply=self._rpc({"op":"camera_overlay","name":name,"width":rgb.shape[1],"height":rgb.shape[0],"rgb":base64.b64encode(rgb.tobytes()).decode('ascii')})
+        if reply.get("op")=="error":raise RuntimeError(reply["msg"])
+
     def joint_state(self) -> dict:
         """便捷读取：{关节名: 位置}。
 
@@ -148,7 +183,7 @@ class Robot:
     def sensor(self, name: str) -> float | list[float]:
         """读传感器最近读数（dim=1 标量；imu 等多维返回列表），从最近一次观测取。
 
-        相机没有读数（只是 viewpoint 声明，截图走 MCP screenshot 工具）。
+        相机 RGB 图像使用 camera(name)，数值传感器使用本方法。
         """
         vals = (self.obs.get("sensors") or {}).get(name)
         if vals is None:

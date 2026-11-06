@@ -28,7 +28,7 @@ from simovia.errors import WorldError
 from simovia.kernel.task import (obs_layout, robot_obs, root_freejoint_qadr,
                                   sensors_obs, task_reward, task_success)
 from simovia.world.builder import build_world, resolve_task
-from simovia.world.schema import WorldSpec
+from simovia.world.schema import WorldSpec, world_to_dict
 
 # 控制器握手超时（秒）。spawn 后进程活着但迟迟不发 hello——典型如
 # Windows 上控制器 import/模型加载卡死——超过此时长放弃等待并报错，
@@ -80,6 +80,8 @@ class Simulation:
         self.model, self.index = build_world(spec)
         self.task = resolve_task(spec.task, self.index)
         self.data = mujoco.MjData(self.model)
+        from simovia.world.initial import apply_initial_state
+        apply_initial_state(spec, self.model, self.data, self.index)
 
         self._ctx = zmq.Context()
         self._router = self._ctx.socket(zmq.ROUTER)
@@ -89,6 +91,9 @@ class Simulation:
         self._poller = zmq.Poller()
         self._poller.register(self._router, zmq.POLLIN)
 
+        self.controller_frames = {}
+        self.controller_results = {}
+        self._vision_renderers = {}
         self.tick = 0
         self._ran = False               # 是否已跑过一轮 run（暂停续跑判断用）
         # robot name -> 运行时状态
@@ -196,10 +201,61 @@ class Simulation:
                 self._st[rname]["active"] = False
             # REQ/REP 必须回复，否则控制器 close() 里的 recv 会挂死
             self._send(ident, {"op": "bye_ack"})
+        elif op in ("observe", "camera", "contacts", "camera_overlay", "result"):
+            self._device_request(ident, msg)
         elif op == "supervise":
             self._supervise(ident, msg)
         else:
             self._send(ident, {"op": "error", "msg": f"未知 op: {op!r}"})
+
+    def _device_request(self, ident, msg):
+        """On-demand devices run on the same thread as physics, never on stale copies."""
+        import base64
+        import zlib
+        from simovia.render import render_offscreen, encode_png
+        name=self._ident.get(ident)
+        try:
+            if name is None:raise WorldError("设备读取需要先握手")
+            op=msg["op"]
+            if op=="result":
+                if not isinstance(msg.get("success"),bool):raise WorldError("success 必须是 bool")
+                self.controller_results[name]={"success":msg["success"],"detail":str(msg.get("detail",""))[:1000]}
+                self._send(ident,{"op":"ok"});return
+            if op=="observe":
+                self._send(ident,self._obs_msg(name));return
+            if op=="contacts":
+                own=set(self.index.robots[name].bodies.values());values={}
+                for i,c in enumerate(self.data.contact):
+                    b1=int(self.model.geom_bodyid[c.geom1]);b2=int(self.model.geom_bodyid[c.geom2])
+                    for body,other in ((b1,b2),(b2,b1)):
+                        if body in own and other not in own:
+                            f=np.zeros(6);mujoco.mj_contactForce(self.model,self.data,i,f)
+                            key=self.model.body(body).name[len(name)+1:]
+                            values[key]=values.get(key,0.)+float(abs(f[0]))
+                self._send(ident,{"op":"contacts","forces_N":values});return
+            sensor=msg.get("name")
+            cid=self.index.robots[name].cameras.get(sensor)
+            if cid is None:raise WorldError(f"相机不存在: {sensor}")
+            camera=name+"/"+sensor
+            width,height=int(msg.get("width",640)),int(msg.get("height",480))
+            if not (64<=width<=1280 and 48<=height<=960):raise WorldError("相机分辨率超出范围")
+            if op=="camera_overlay":
+                raw=base64.b64decode(msg['rgb'],validate=True)
+                if len(raw)!=width*height*3:raise WorldError("RGB 长度与分辨率不一致")
+                rgb=np.frombuffer(raw,dtype=np.uint8).reshape(height,width,3)
+                self.controller_frames[camera]=(self.tick,encode_png(rgb))
+                self._send(ident,{"op":"ok"});return
+            key=(width,height)
+            if key not in self._vision_renderers:self._vision_renderers[key]=mujoco.Renderer(self.model,height,width)
+            rgb=render_offscreen(self.model,self.data,width,height,camera,renderer=self._vision_renderers[key])
+            self._send(ident,{"op":"camera","width":width,"height":height,"tick":self.tick,
+                              "rgb_zlib":base64.b64encode(zlib.compress(rgb.tobytes(),1)).decode('ascii')})
+        except Exception as error:
+            self._send(ident,{"op":"error","msg":str(error)})
+
+    def close_device_renderers(self):
+        for renderer in self._vision_renderers.values():renderer.close()
+        self._vision_renderers.clear()
 
     # ---------------------------------------------------------------- supervisor
 
@@ -300,6 +356,7 @@ class Simulation:
             "args": rd.args, "ctrl_period": self.spec.ctrl_period,
             "timestep": self.spec.timestep,
             "sensors": sensors_manifest,
+            "world_spec": world_to_dict(self.spec),
             "joint_widths": {n: w for n, (_, _, w) in layout.items()},
         })
         self._st[rname]["active"] = True
@@ -415,6 +472,7 @@ class Simulation:
                 "mode": _actuator_mode(self.model, aid),
                 "ctrlrange": ([float(lo), float(hi)] if limited else None),
             }
+        msg["actuator_forces"] = {n:float(self.data.actuator_force[a]) for n,a in ridx.actuators.items()}
         msg["joints"] = jmap
         msg["actuators"] = amap
         # 浮动基座躯干位姿（四足/人形）。匿名 free joint 不在 joints/qpos 里，
@@ -520,6 +578,7 @@ class Simulation:
                 if on_tick is not None:
                     on_tick()
                 _pace()
+            self.close_device_renderers()
             return self._stats(t_start, sim_start)
 
         # 等所有控制器完成握手（进程死光则放弃等待）。
@@ -537,6 +596,7 @@ class Simulation:
                 # 无法用 stop 消息优雅收尾，直接终止进程（标记 done，
                 # 不计 crashed——这是用户主动停止，不是故障）
                 self._abort_controllers()
+                self.close_device_renderers()
                 return self._stats(t_start, sim_start)
             if time.perf_counter() > hs_deadline:
                 diag = "、".join(
@@ -591,6 +651,7 @@ class Simulation:
 
         self._notify_stop()
         self._drain_controllers()
+        self.close_device_renderers()
         return self._stats(t_start, sim_start)
 
     def _drain_controllers(self, grace_ms: int = 500) -> None:
@@ -648,8 +709,13 @@ class Simulation:
         return True
 
     def _task_success(self) -> bool | None:
-        """终态任务判定（语义实现见 kernel/task.py，与 RL env 共用）。"""
-        return task_success(self.task, self.data)
+        """Scene task takes precedence; optional explicit controller reports otherwise."""
+        result=task_success(self.task,self.data)
+        if result is not None:return result
+        names=[r.name for r in self.spec.robots if r.controller]
+        if names and any(n in self.controller_results for n in names):
+            return all(self.controller_results.get(n,{}).get('success',False) and not self._st[n]['crashed'] for n in names)
+        return None
 
     def _task_reward(self) -> float:
         """终态奖励值（语义实现见 kernel/task.py，与 RL env 共用）。"""
@@ -665,12 +731,14 @@ class Simulation:
             "crashed": [n for n, st in self._st.items() if st["crashed"]],
             "nan": bool(not np.all(np.isfinite(self.data.qpos))),
             "success": self._task_success(),
+            "controller_results": dict(self.controller_results),
             "reward": round(self._task_reward(), 4),
         }
 
     # ---------------------------------------------------------------- 收尾
 
     def close(self):
+        self.close_device_renderers()
         for proc in self._procs.values():
             if proc.poll() is None:
                 proc.terminate()

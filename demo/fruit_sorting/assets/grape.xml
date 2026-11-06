@@ -1,1 +1,22 @@
-<mujoco><worldbody><body name="fruit"><freejoint name="free"/><geom type="sphere" size=".015" pos="-0.014 -0.016 0" mass=".00001" contype="0" conaffinity="0" rgba=".44 .06 .66 1" friction="2 .02 .002"/><geom type="sphere" size=".015" pos="0.014 -0.016 0" mass=".00001" contype="0" conaffinity="0" rgba=".44 .06 .66 1" friction="2 .02 .002"/><geom type="sphere" size=".015" pos="-0.014 0.011 0" mass=".00001" contype="0" conaffinity="0" rgba=".44 .06 .66 1" friction="2 .02 .002"/><geom type="sphere" size=".015" pos="0.014 0.011 0" mass=".00001" contype="0" conaffinity="0" rgba=".44 .06 .66 1" friction="2 .02 .002"/><geom type="sphere" size=".015" pos="-0.01 -0.006 0.02" mass=".00001" contype="0" conaffinity="0" rgba=".44 .06 .66 1" friction="2 .02 .002"/><geom type="sphere" size=".015" pos="0.01 -0.006 0.02" mass=".00001" contype="0" conaffinity="0" rgba=".44 .06 .66 1" friction="2 .02 .002"/><geom type="sphere" size=".015" pos="0 0.031 -0.012" mass=".00001" contype="0" conaffinity="0" rgba=".44 .06 .66 1" friction="2 .02 .002"/><geom type="ellipsoid" size=".028 .038 .027" rgba="0 0 0 0" mass=".055" friction="2 .02 .002"/><geom type="capsule" size=".002" fromto="0 -.027 .018 0 -.040 .035" rgba=".20 .27 .04 1" contype="0" conaffinity="0" mass=".0001"/></body></worldbody></mujoco>
+<mujoco>
+  <default>
+    <geom friction="0.25 .0005 .0001" condim="6" solref=".012 1" solimp=".85 .95 .002" />
+  </default>
+  <asset>
+    <mesh name="cluster_hull" file="grape_hull.obj" />
+  </asset>
+  <worldbody>
+    <body name="fruit">
+      <freejoint name="free" />
+      <geom name="berry_0" type="sphere" size=".015" pos="-0.014 -0.016 0" mass="0" contype="0" conaffinity="0" rgba=".44 .06 .66 1" />
+      <geom name="berry_1" type="sphere" size=".015" pos="0.014 -0.016 0" mass="0" contype="0" conaffinity="0" rgba=".44 .06 .66 1" />
+      <geom name="berry_2" type="sphere" size=".015" pos="-0.014 0.011 0" mass="0" contype="0" conaffinity="0" rgba=".44 .06 .66 1" />
+      <geom name="berry_3" type="sphere" size=".015" pos="0.014 0.011 0" mass="0" contype="0" conaffinity="0" rgba=".44 .06 .66 1" />
+      <geom name="berry_4" type="sphere" size=".015" pos="-0.01 -0.006 0.02" mass="0" contype="0" conaffinity="0" rgba=".44 .06 .66 1" />
+      <geom name="berry_5" type="sphere" size=".015" pos="0.01 -0.006 0.02" mass="0" contype="0" conaffinity="0" rgba=".44 .06 .66 1" />
+      <geom name="berry_6" type="sphere" size=".015" pos="0 0.031 -0.012" mass="0" contype="0" conaffinity="0" rgba=".44 .06 .66 1" />
+      <geom name="cluster_contact" type="mesh" mesh="cluster_hull" mass="0.1" rgba="0 0 0 0" />
+      <geom type="capsule" size=".002" fromto="0 -.027 .018 0 -.040 .035" rgba=".20 .27 .04 1" contype="0" conaffinity="0" mass="0" />
+    </body>
+  </worldbody>
+</mujoco>

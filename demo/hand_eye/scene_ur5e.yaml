@@ -1,4 +1,4 @@
-name: fruit_hand_eye_calibration
+name: hand_eye_ur5e
 timestep: 0.002
 ctrl_period: 10
 integrator: implicitfast
@@ -27,7 +27,7 @@ scene:
     - 0.655
     static: true
     color: '#D3D8DE'
-    friction: 1.2
+    friction: 0.2
   - name: leg_-0.045_-0.44
     type: box
     size:
@@ -86,13 +86,22 @@ scene:
     static: true
 robots:
 - name: arm
-  model: zoo://franka_emika_panda
+  model: zoo://universal_robots_ur5e
   pos:
   - 0
   - 0
   - 0.68
   end_effectors:
-  - model: onrobot_2fg7
+  - model: assets/gripper.xml
+    pos:
+    - 0
+    - 0
+    - 0.1092
+    quat:
+    - 0.7071067811865476
+    - -0.7071067811865476
+    - 0
+    - 0
   sensors:
   - name: wrist_rgb
     type: camera
@@ -107,5 +116,22 @@ robots:
     - 0
     - 0
     fovy: 65
+  controller: controller.py
+  initial_qpos:
+    shoulder_pan_joint: -0.316905447761405
+    shoulder_lift_joint: -1.7341747992529015
+    elbow_joint: 1.4633791525893796
+    wrist_1_joint: -1.3000011128006734
+    wrist_2_joint: -1.5707965699328577
+    wrist_3_joint: -1.8877015053557087
+    gripper/left_slide: 0.019
+    gripper/right_slide: 0.019
+  args:
+    calibration_profile: profiles/ur5e.json
+    preview_camera: wrist_rgb
 runtime:
   realtime: false
+  controller_timeout: 5000
+  timeout_policy: pause
+task:
+  max_ticks: 6000

@@ -751,8 +751,12 @@ class MainWindow(QMainWindow):
             "造机器人…", "Ctrl+B",
             "从零搭建机器人：编辑连杆树（parent / pos / rpy / 几何 / 关节），"
             "实时预览并查看每个连杆的旋转矩阵")
-        self.act_fruit_sorting = mk("水果视觉分拣 Demo…", tip="Panda + 腕部相机：手眼标定、HSV识别、三类水果分拣")
+        self.act_fruit_sorting = mk("水果视觉分拣 Demo…", tip="Panda + 腕部相机：加载标定结果、HSV识别、三类水果分拣")
         self.act_fruit_sorting.triggered.connect(self._on_fruit_sorting)
+        self.act_hand_eye_panda = mk("Panda 手眼标定…", tip="独立标定场景，保存可复用的腕部相机外参")
+        self.act_hand_eye_ur5e = mk("UR5e 手眼标定…", tip="六轴机械臂的可配置标定示例")
+        self.act_hand_eye_panda.triggered.connect(lambda: self._on_hand_eye("panda"))
+        self.act_hand_eye_ur5e.triggered.connect(lambda: self._on_hand_eye("ur5e"))
         self.act_import = mk("导入模型…", "Ctrl+I",
                              "导入本地机器人模型（URDF / MJCF / 机器人 YAML）"
                              "到当前场景，或直接打开世界 YAML"
@@ -882,6 +886,9 @@ class MainWindow(QMainWindow):
         m_file.addAction(self.act_zoo)
         m_file.addAction(self.act_robot_builder)
         m_file.addAction(self.act_fruit_sorting)
+        m_calibration = m_file.addMenu("手眼标定 Demo")
+        m_calibration.addAction(self.act_hand_eye_panda)
+        m_calibration.addAction(self.act_hand_eye_ur5e)
         m_file.addAction(self.act_import)
         m_file.addAction(self.act_scene_agent)
         m_file.addSeparator()
@@ -1354,18 +1361,15 @@ class MainWindow(QMainWindow):
     # ============================================================ 模型库
 
     def _on_fruit_sorting(self):
-        """Launch the isolated demo window without replacing the user's current world."""
-        import importlib.util
-        import sys
-        from PySide6.QtCore import QProcess
-        root = pathlib.Path(__file__).resolve().parents[2]
-        demo = root / "demo" / "fruit_sorting"
-        if importlib.util.find_spec("cv2") is None and not (demo / ".deps" / "cv2").exists():
-            QMessageBox.information(self, "水果分拣 Demo", "缺少 OpenCV，请在项目根目录运行：\npython -m pip install -r demo/fruit_sorting/requirements.txt")
-            return
-        ok, _pid = QProcess.startDetached(sys.executable, ["-m", "demo.fruit_sorting"], str(root))
-        if not ok:
-            QMessageBox.critical(self, "水果分拣 Demo", "无法启动演示窗口，请检查 Python 环境。")
+        """Load the actual scene and controller in the main application."""
+        path=pathlib.Path(__file__).resolve().parents[2]/"demo"/"fruit_sorting"/"scene.yaml"
+        self._pending_select=("robot","arm")
+        self._load_world_path(str(path))
+
+    def _on_hand_eye(self, profile):
+        path = pathlib.Path(__file__).resolve().parents[2]/"demo"/"hand_eye"/f"scene_{profile}.yaml"
+        self._pending_select = ("robot", "arm")
+        self._load_world_path(str(path))
 
     def _on_robot_builder(self):
         """非模态「造机器人」面板：连杆树 + 位姿/几何/关节 + 旋转矩阵预览。"""
@@ -2429,6 +2433,7 @@ class MainWindow(QMainWindow):
                else "运行中（控制器已接管）…")
         self._apply_state(msg)
         self._log(msg)
+        self._show_configured_camera()
         self.client.call_tool("run", args, self._on_run_done,
                               timeout_ms=None)   # run 延迟应答，可能很久
 
@@ -2488,6 +2493,25 @@ class MainWindow(QMainWindow):
         self._fetch_obs()
 
     # ============================================================ 遥操作
+
+    def _show_configured_camera(self):
+        """Scenes may opt in to visible RGB preview when their controller starts."""
+        if self._spec is None or self._teleop_active:
+            return
+        for robot in self._spec.robots:
+            camera = robot.args.get("preview_camera")
+            if not camera:
+                continue
+            idx = self.teleop.camera_combo.findData(robot.name+"/"+str(camera))
+            if idx < 0:
+                continue
+            self.teleop.camera_combo.setCurrentIndex(idx)
+            self.teleop.depth_chk.setChecked(False)
+            self.dock_teleop.show()
+            self.dock_teleop.raise_()
+            self.teleop.set_preview_checked(True)
+            self._on_preview_toggled(True)
+            break
 
     def _on_preview_toggled(self, on: bool):
         """独立相机预览：只开实时画面，不启动 IK 遥操作。"""

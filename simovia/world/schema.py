@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import pathlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import yaml
 
@@ -132,6 +132,8 @@ class RobotSpec:
     #: 或列出自带末端 key（如 ["left_hand"]）。删除后 builder 在腕部
     #: 自动生成挂点 site，可再挂末端执行器库里的末端。
     strip_hands: bool | list[str] = False
+
+    initial_qpos: dict[str, float] = field(default_factory=dict)
 
     @property
     def gripper(self) -> EndEffectorSpec | None:
@@ -416,13 +418,17 @@ def _parse_robots(d, path: str, seen: dict) -> list[RobotSpec]:
         args = rd.get("args", {})
         if not isinstance(args, dict):
             raise _err(f"{p}.args", f"需要字典，实际是: {args!r}")
+        initial = rd.get("initial_qpos", {})
+        if not isinstance(initial, dict):
+            raise _err(f"{p}.initial_qpos", "需要关节名到弧度/米的字典")
+        initial = {_str(k, f"{p}.initial_qpos"): _num(v, f"{p}.initial_qpos.{k}") for k, v in initial.items()}
         sensors = _parse_sensors(rd, p)
         end_effectors = _parse_end_effectors(rd, p)
         strip_hands = _parse_strip_hands(rd.get("strip_hands"), f"{p}.strip_hands")
         robots.append(RobotSpec(name=name, model=model, spec=inline, pos=pos,
                                 quat=quat, controller=controller, args=args,
                                 sensors=sensors, end_effectors=end_effectors,
-                                strip_hands=strip_hands))
+                                strip_hands=strip_hands, initial_qpos=initial))
     return robots
 
 
@@ -551,6 +557,24 @@ def _parse_runtime(d, path: str) -> RuntimeSpec:
 
 # ---------------------------------------------------------------- 入口
 
+def world_to_dict(spec: WorldSpec) -> dict:
+    """Serialize a loaded world in parser-compatible form for controller handshakes."""
+    d = asdict(spec)
+    d['base_dir'] = str(spec.base_dir)
+    d['integrator'] = next(name for name, value in _INTEGRATORS.items()
+                           if value == spec.integrator)
+    for robot in d['robots']:
+        # Optional sensor fields must be absent, rather than explicit nulls.
+        robot['sensors'] = [{k: v for k, v in sensor.items() if v is not None}
+                            for sensor in robot['sensors']]
+    if spec.task.success is None:
+        d['task'].pop('success')
+    kinds = {DistanceReward: 'distance', ZoneReward: 'zone', ContactReward: 'contact'}
+    d['task']['reward'] = [{kinds[type(reward)]: asdict(reward)}
+                           for reward in spec.task.reward]
+    return d
+
+
 def parse_world(d: dict, path: str = "world") -> WorldSpec:
     """从已解析的 YAML 字典构建 WorldSpec（校验全部在此完成）。"""
     if not isinstance(d, dict):
@@ -674,6 +698,19 @@ def absolutize_world_paths(text: str, base_dir) -> str:
                 continue
             r[key] = (base / q).resolve().as_posix()
             changed = True
+        for key in ("calibration_file", "calibration_profile"):
+            value = (r.get("args") or {}).get(key)
+            if isinstance(value, str) and value and not pathlib.Path(value).is_absolute():
+                r["args"][key] = (base / value).resolve().as_posix()
+                changed = True
+        from simovia.grippers import END_EFFECTORS
+        ees = list(r.get("end_effectors") or [])
+        if isinstance(r.get("gripper"), dict): ees.append(r["gripper"])
+        for ee in ees:
+            value = ee.get("model")
+            if value and value not in END_EFFECTORS and not pathlib.Path(value).is_absolute():
+                ee["model"] = (base / value).resolve().as_posix()
+                changed = True
     for obj in (d.get("scene") or {}).get("objects") or []:
         value = obj.get("model")
         if obj.get("type") == "model" and value and not pathlib.Path(value).is_absolute():

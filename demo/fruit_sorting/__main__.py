@@ -58,10 +58,10 @@ def gui(args):
             central=QWidget();self.setCentralWidget(central);lay=QVBoxLayout(central)
             self.image=QLabel();self.image.setAlignment(Qt.AlignmentFlag.AlignCenter);self.image.setMinimumSize(640,360);self.image.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Expanding);lay.addWidget(self.image,1)
             bar=QHBoxLayout();lay.addLayout(bar)
-            self.start=QPushButton('开始：手眼标定 → 识别 → 分拣');self.pause=QPushButton('暂停');self.reset=QPushButton('重置');self.speed=QComboBox();self.speed.addItems(['1× 实时','2×','4×','8×']);self.speed.setCurrentIndex(1)
+            self.start=QPushButton('开始：加载标定 → 识别 → 分拣');self.pause=QPushButton('暂停');self.reset=QPushButton('重置');self.speed=QComboBox();self.speed.addItems(['1× 实时','2×','4×','8×']);self.speed.setCurrentIndex(1)
             for w in (self.start,self.pause,self.reset,self.speed):bar.addWidget(w)
             self.info=QLabel('Panda + 2FG7 · 腕部 RGB 相机 · 每种 2 个 · 红苹果 / 黄香蕉 / 紫葡萄');self.info.setWordWrap(True);lay.addWidget(self.info)
-            self.statusBar().showMessage('请点击开始。先标定，再进入分拣场景；全部动作使用物理仿真。')
+            self.statusBar().showMessage('请点击开始。读取已保存的标定结果后直接分拣；全部动作使用物理仿真。')
             self.start.clicked.connect(self.begin);self.pause.clicked.connect(self.toggle);self.reset.clicked.connect(self.restart)
             self.timer=QTimer(self);self.timer.timeout.connect(self.advance);self.timer.start(20);self.refresh()
         def begin(self):
@@ -86,7 +86,7 @@ def gui(args):
             rgb=dashboard(self.demo);h,w,_=rgb.shape
             q=QImage(rgb.data,w,h,3*w,QImage.Format.Format_RGB888).copy()
             self.image.setPixmap(QPixmap.fromImage(q).scaled(self.image.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
-            labels={'CALIBRATION':'采集手眼标定图','CALIBRATED':'标定完成','OBSERVE':'进入生产场景','DETECT':'HSV识别水果','PICK':'抓取','PLACE':'放入对应分拣框','VERIFY':'核对结果','COMPLETE':'分拣完成','FAILED':'分拣未全部成功','Ready':'等待开始'}
+            labels={'CALIBRATION_LOADED':'已加载标定结果','OBSERVE':'进入生产场景','DETECT':'HSV识别水果','PICK':'抓取','PLACE':'放入对应分拣框','VERIFY':'核对结果','COMPLETE':'分拣完成','FAILED':'分拣未全部成功','Ready':'等待开始'}
             self.info.setText(labels.get(self.demo.stage,self.demo.stage)+'  |  '+self.demo.detail+'  |  香蕉 BANANA · 苹果 APPLE · 葡萄 GRAPE')
         def resizeEvent(self,event):
             super().resizeEvent(event)

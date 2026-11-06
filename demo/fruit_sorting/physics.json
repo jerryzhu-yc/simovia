@@ -1,0 +1,43 @@
+{
+  "scenario": "dry ripe fruit, soft rubber pads, plastic bins; generic estimates",
+  "fruit_mass_kg": {
+    "banana": 0.12,
+    "apple": 0.1,
+    "grape": 0.1
+  },
+  "pad_sliding_friction": 0.6,
+  "fruit_surface_friction": {
+    "banana": 0.35,
+    "apple": 0.3,
+    "grape": 0.25
+  },
+  "gripper_mass_kg": 1.1,
+  "camera_mount_mass_kg": 0.12,
+  "grip_force_limit_N_per_finger": 20.0,
+  "grip_speed_m_s": 0.016,
+  "joint_velocity_limit_rad_s": [
+    2.175,
+    2.175,
+    2.175,
+    2.175,
+    2.61,
+    2.61,
+    2.61
+  ],
+  "joint_torque_limit_Nm": [
+    87,
+    87,
+    87,
+    87,
+    12,
+    12,
+    12
+  ],
+  "sources": {
+    "gripper": "https://onrobot.com/storage/datasheets/2fg7/datasheet_2fg7_v2.0_en.pdf",
+    "panda": "https://frankarobotics.github.io/docs/robot_specifications.html#limits-for-franka-emika-robot-fer",
+    "apple_friction": "https://doi.org/10.1080/10942912.2022.2107006",
+    "grape_friction": "https://www.mdpi.com/2073-4395/15/12/2813",
+    "banana_dimensions": "https://doi.org/10.4038/tar.v24i1.7988"
+  }
+}

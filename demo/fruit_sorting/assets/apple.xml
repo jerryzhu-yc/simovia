@@ -1,1 +1,14 @@
-<mujoco><worldbody><body name="fruit"><freejoint name="free"/><geom name="apple" type="ellipsoid" size=".028 .028 .027" mass=".060" rgba=".86 .035 .045 1" friction="2 .02 .002"/><geom type="capsule" size=".0025" fromto="0 0 .024 .003 0 .038" rgba=".20 .09 .025 1" contype="0" conaffinity="0" mass=".0001"/><geom type="ellipsoid" size=".011 .004 .001" pos=".010 0 .031" rgba=".12 .38 .045 1" contype="0" conaffinity="0" mass=".0001"/></body></worldbody></mujoco>
+<mujoco>
+  <default>
+    <geom friction="0.3 .0005 .0001" condim="6" solref=".008 1" solimp=".90 .95 .002" />
+  </default>
+  <worldbody>
+    <body name="fruit">
+      <freejoint name="free" />
+      <inertial mass="0.1" pos="0 0 0" diaginertia="3.722e-05 3.722e-05 3.844e-05" />
+      <geom name="apple" type="ellipsoid" size=".031 .031 .030" rgba=".86 .035 .045 1" />
+      <geom type="capsule" size=".0025" fromto="0 0 .028 .003 0 .041" rgba=".20 .09 .025 1" contype="0" conaffinity="0" />
+      <geom type="ellipsoid" size=".011 .004 .001" pos=".010 0 .034" rgba=".12 .38 .045 1" contype="0" conaffinity="0" />
+    </body>
+  </worldbody>
+</mujoco>

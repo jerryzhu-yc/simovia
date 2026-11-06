@@ -1,0 +1,138 @@
+name: hand_eye_panda
+timestep: 0.002
+ctrl_period: 10
+integrator: implicitfast
+impratio: 10
+scene:
+  floor:
+    size:
+    - 2
+    - 2
+    texture: solid
+  lights:
+  - pos:
+    - 0.3
+    - 0
+    - 3
+  objects:
+  - name: table
+    type: box
+    size:
+    - 0.45
+    - 0.48
+    - 0.025
+    pos:
+    - 0.37
+    - 0
+    - 0.655
+    static: true
+    color: '#D3D8DE'
+    friction: 0.2
+  - name: leg_-0.045_-0.44
+    type: box
+    size:
+    - 0.025
+    - 0.025
+    - 0.315
+    pos:
+    - -0.045
+    - -0.44
+    - 0.315
+    static: true
+    color: '#475569'
+  - name: leg_-0.045_0.44
+    type: box
+    size:
+    - 0.025
+    - 0.025
+    - 0.315
+    pos:
+    - -0.045
+    - 0.44
+    - 0.315
+    static: true
+    color: '#475569'
+  - name: leg_0.785_-0.44
+    type: box
+    size:
+    - 0.025
+    - 0.025
+    - 0.315
+    pos:
+    - 0.785
+    - -0.44
+    - 0.315
+    static: true
+    color: '#475569'
+  - name: leg_0.785_0.44
+    type: box
+    size:
+    - 0.025
+    - 0.025
+    - 0.315
+    pos:
+    - 0.785
+    - 0.44
+    - 0.315
+    static: true
+    color: '#475569'
+  - name: target
+    type: model
+    model: assets/calibration_board.xml
+    pos:
+    - 0.435
+    - 0.06
+    - 0.684
+    static: true
+robots:
+- name: arm
+  model: zoo://franka_emika_panda
+  pos:
+  - 0
+  - 0
+  - 0.68
+  end_effectors:
+  - model: assets/gripper.xml
+    pos:
+    - 0
+    - 0
+    - 0.1092
+    quat:
+    - 0.7071067811865476
+    - -0.7071067811865476
+    - 0
+    - 0
+  sensors:
+  - name: wrist_rgb
+    type: camera
+    body: gripper/gripper_base
+    pos:
+    - 0.075
+    - 0.01
+    - 0
+    quat:
+    - 0.7071067811865476
+    - -0.7071067811865476
+    - 0
+    - 0
+    fovy: 65
+  controller: controller.py
+  initial_qpos:
+    joint1: -1.81377252
+    joint2: 0.83052309
+    joint3: 2.25959338
+    joint4: -2.044603
+    joint5: -0.61069286
+    joint6: 1.46076571
+    joint7: -1.79144536
+    gripper/left_slide: 0.019
+    gripper/right_slide: 0.019
+  args:
+    calibration_profile: profiles/panda.json
+    preview_camera: wrist_rgb
+runtime:
+  realtime: false
+  controller_timeout: 5000
+  timeout_policy: pause
+task:
+  max_ticks: 6000

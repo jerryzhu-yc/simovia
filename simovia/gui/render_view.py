@@ -87,6 +87,8 @@ class RenderModel:
     def __init__(self, spec: WorldSpec, width: int = 800, height: int = 600):
         self.model, self.index = build_world(spec)
         self.data = mujoco.MjData(self.model)
+        from simovia.world.initial import apply_initial_state
+        apply_initial_state(spec, self.model, self.data, self.index)
         mujoco.mj_forward(self.model, self.data)
 
         self.cam = mujoco.MjvCamera()

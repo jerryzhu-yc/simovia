@@ -722,6 +722,17 @@ python examples/train_ppo_go2.py
 
 奖励设计：`forward（5× dz_root）+ 高度罚（-3 × |z - 0.30|）+ 能耗正则（-0.01 × Σ a²）+ 跌倒终止（rootz < 0.15）`。世界用 `zoo.generate("unitree_go2")` 生成 + 删 controller（env 直驱）+ 保留 `integrator=implicitfast` / `impratio=100` / `ctrl_period=8`——四足稳定的关键参数。
 
+## 视觉水果分拣与独立手眼标定
+
+[demo/](demo/README.md) 提供可直接在软件里加载、编辑控制器并运行的场景：
+
+- 水果分拣：Panda + 2FG7 + 腕部 RGB 相机，香蕉、苹果、葡萄各两个，HSV 识别后分拣到三个框，运行时自动显示识别画面。
+- 独立标定：Panda 与 UR5e 的眼在手上标定场景，采集 ArUco 图像、执行 PARK 手眼求解并保存经过留出验证的结果。
+
+先安装视觉依赖：`python -m pip install -r demo/fruit_sorting/requirements.txt`，然后启动 GUI，从“文件”菜单进入对应 demo。水果场景直接读取预先保存的标定结果；重新标定在独立场景中完成。
+
+详细操作、场景路径和其他机械臂的适配说明见 [demo 使用说明](demo/README.md)。
+
 ## 测试
 
 ```bash

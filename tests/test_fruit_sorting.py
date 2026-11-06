@@ -16,7 +16,7 @@ def test_passive_scene_assets_compile():
         assert m.body_mass[body]>0
     assert m.nu==8
 def test_static_calibration_asset():
-    m,index=build_world(load_world(DEMO/'calibration.yaml'))
+    m,index=build_world(load_world(ROOT/'demo/hand_eye/scene_panda.yaml'))
     assert m.body_jntnum[index.objects['target']]==0
 def test_asset_save_as_rewrites_model_paths(tmp_path):
     text=absolutize_world_paths((DEMO/'world.yaml').read_text(),DEMO)
