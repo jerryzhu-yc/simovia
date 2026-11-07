@@ -345,5 +345,19 @@ robots:
     - 0
     - 0
     fovy: 65
+  controller: controller.py
+  initial_qpos:
+    joint1: -1.81377252
+    joint2: 0.83052309
+    joint3: 2.25959338
+    joint4: -2.044603
+    joint5: -0.61069286
+    joint6: 1.46076571
+    joint7: -1.79144536
+    gripper/left_slide: 0.019
+    gripper/right_slide: 0.019
+  args:
+    calibration_file: ../hand_eye/results/panda_wrist_rgb.json
+    preview_camera: wrist_rgb
 runtime:
   realtime: false

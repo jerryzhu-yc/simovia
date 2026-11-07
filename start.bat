@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 rem Simovia 桌面 GUI 快速启动（Windows 双击入口）
 rem Python 选择优先级：SIMOVIA_PYTHON 环境变量 > 仓库内 .venv > PATH 里的 python > py 启动器
-rem 解释器路径可能含空格（C:\Program Files\...）或中文，统一用 "%~PYEXE%" 形式加引号调用；
+rem 解释器路径可能含空格（C:\Program Files\...）或中文，调用时统一给变量加双引号；
 rem 额外参数（如 py 启动器的 -3）单独放 PYARGS，避免把 "py -3" 整体当成一个路径。
 
 set "PYEXE=%SIMOVIA_PYTHON%"
