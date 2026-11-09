@@ -1,0 +1,91 @@
+# =============================================================================
+# RRP 三自由度机械臂 · DH 参数表 + 解析逆运动学
+# =============================================================================
+# 运行：     python -m simovia run worlds/rrp3_ik.yaml
+# 看设备名： python -m simovia inspect worlds/rrp3_ik.yaml
+# GUI：      文件 → 打开 worlds/rrp3_ik.yaml，点 Run
+#
+# 配置：R（回转）+ R（回转）+ P（升降），即 SCARA 构型。
+# 这是标准 DH 最自然的 RRP——标准 DH 的移动关节沿 z_{i-1} 平移，只有
+# 前两轴竖直时，第三轴才能得到干净的竖直伸缩（若第二轴是俯仰，z2 会
+# 躺在竖直平面内且随 q2 转动，无法表达"沿小臂伸长"）。
+#
+# DH 参数表（T_i = Rz(θ_i)·Tz(d_i)·Tx(a_i)·Rx(α_i)）
+# -----------------------------------------------------------------------------
+#  i | θ     | d     | a     | α     | 关节       物理含义
+# ---+-------+-------+-------+-------+------------------------------------------
+#  1 | q1    | 0.44  | 0.24  | 0°    | revolute   立柱 + 大臂（绕竖直轴回转）
+#  2 | q2    | 0     | 0.20  | 0°    | revolute   小臂（绕竖直轴回转）
+#  3 | 0     | q3    | 0     | 180°  | prismatic  末端滑台（沿 z2 升降）
+# -----------------------------------------------------------------------------
+# 末端法兰长 0.10 m 沿 z3 伸出；α3=180° 使 z3 朝下，法兰垂向桌面。
+# 工具点（法兰尖端）高度 = base_height + d1 + q3 - 0.10 = 0.40 + q3。
+#
+# 逆运动学（见 controllers/rrp3_ik.py）：水平面退化为 2R 平面臂，
+#   q3 = z_tip - 0.40
+#   q2 = ±acos((r² - a1² - a2²) / (2·a1·a2))
+#   q1 = atan2(y,x) - atan2(a2·sin q2, a1 + a2·cos q2)
+#
+# 骨架几何在 DH 自动生成时统一 contype=0：纯运动学演示，不与桌面/目标
+# 发生碰撞，逆解误差只反映伺服跟踪精度。
+# =============================================================================
+name: rrp3_ik
+timestep: 0.002
+ctrl_period: 32                  # 控制周期 64 ms
+gravity: [0, 0, -9.81]
+integrator: implicitfast         # 位置伺服刚度较高，隐式积分更稳
+impratio: 10
+
+scene:
+  floor:
+    size: [2.0, 2.0]
+    texture: grid
+    friction: 1.0
+  lights:
+    - {pos: [0, 0, 3]}
+  objects:
+    # 工作台：顶面 z=0.34，位于机械臂前方（x≥0.12，避开基座）
+    - name: table
+      type: box
+      size: [0.30, 0.22, 0.02]
+      pos: [0.42, 0, 0.32]
+      color: "#6B7280"
+      static: true
+    - {name: table_leg_0, type: box, size: [0.02, 0.02, 0.16], pos: [0.15, -0.20, 0.16], color: "#6B7280", static: true}
+    - {name: table_leg_1, type: box, size: [0.02, 0.02, 0.16], pos: [0.69, -0.20, 0.16], color: "#6B7280", static: true}
+    - {name: table_leg_2, type: box, size: [0.02, 0.02, 0.16], pos: [0.15,  0.20, 0.16], color: "#6B7280", static: true}
+    - {name: table_leg_3, type: box, size: [0.02, 0.02, 0.16], pos: [0.69,  0.20, 0.16], color: "#6B7280", static: true}
+    # 三个目标标记（静态球，只作视觉参照；工具点在它们上方 6.5 cm 通过）
+    - {name: target_a, type: sphere, size: [0.025], pos: [0.34, -0.10, 0.365], color: "#F59E0B", static: true}
+    - {name: target_b, type: sphere, size: [0.025], pos: [0.30,  0.12, 0.365], color: "#10B981", static: true}
+    - {name: target_c, type: sphere, size: [0.025], pos: [0.40,  0.00, 0.365], color: "#EF4444", static: true}
+
+robots:
+  - name: rrp3
+    pos: [0, 0, 0]
+    controller: ../controllers/rrp3_ik.py
+    args:
+      move_ticks: 70             # 每段点位运动 70 个控制 tick（4.5 s）
+      hold_ticks: 45             # 到点保持 45 tick（2.9 s），用于统计稳定误差
+      log_every: 30              # 每 30 tick 打一行跟踪日志
+      # 工具点（法兰尖端）路点；与场景里三个标记一一对应（高于标记 6.5 cm）
+      targets:
+        - [0.28, -0.16, 0.45]    # 起始位（避开基座正上方）
+        - [0.34, -0.10, 0.43]    # target_a 上方
+        - [0.30,  0.12, 0.43]    # target_b 上方
+        - [0.40,  0.00, 0.43]    # target_c 上方
+    spec:
+      name: rrp3
+      base_height: 0.06          # 底座圆柱高度：frame0 抬到 z=0.06
+      dh:
+        - {theta: 0, d: 0.44, a: 0.24, alpha: 0,   type: revolute,  range: [-160, 160], kp: 500,   kd: 8}
+        - {theta: 0, d: 0.00, a: 0.20, alpha: 0,   type: revolute,  range: [-145, 145], kp: 500,   kd: 8}
+        - {theta: 0, d: 0.00, a: 0.00, alpha: 180, type: prismatic, range: [-0.06, 0.06], kp: 10000, kd: 100}
+
+task:
+  max_ticks: 560                 # 4 段运动 + 4 段保持 = 460 tick，留 100 tick 余量
+
+runtime:
+  realtime: false
+  controller_timeout: 100        # 逆解 + 日志远低于 100 s 阈值
+  timeout_policy: last_ctrl
