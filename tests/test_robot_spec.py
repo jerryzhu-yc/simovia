@@ -239,6 +239,16 @@ def test_dh_parse_structure():
     assert by["joint1"].geoms and len(by["joint1"].geoms) == 3  # 球+d+a
     assert by["joint2"].geoms and len(by["joint2"].geoms) == 2  # 球+a
     assert by["link1"].geoms is None and by["link1"].geom is None
+    # 转动关节画球，移动关节画滑块箱体（+d 立管）
+    assert by["joint1"].geoms[0]["type"] == "sphere"
+    assert by["joint2"].geoms[0]["type"] == "sphere"
+    j3 = by["joint3"].geoms
+    assert len(j3) == 2 and j3[0]["type"] == "box"  # 滑块+d
+    # 移动关节的固定导轨挂在父连杆 link2（固定侧），不随滑块运动
+    assert by["link2"].geoms and len(by["link2"].geoms) == 1
+    assert by["link2"].geoms[0]["name"] == "joint3_guide"
+    assert by["link2"].geoms[0]["type"] == "cylinder"
+    assert by["link3"].geoms is None
 
 
 def test_dh_scara_zero_pose_kinematics():

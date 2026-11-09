@@ -272,7 +272,9 @@ def _parse_geom_dict(geom, where: str) -> dict:
 
 #: DH 骨架几何的默认尺寸（米）
 DH_BASE_R = 0.08          # 底座圆柱半径
-DH_JOINT_R = 0.045        # 关节球半径
+DH_JOINT_R = 0.045        # 转动关节球半径
+DH_SLIDER_HALF = (0.055, 0.055, 0.04)  # 移动关节滑块 box 半边 [x, y, z]
+DH_GUIDE_R = 0.012        # 移动关节固定导轨（光轴）半径
 DH_LINK_R = 0.022         # 连杆（立管/横杆）半径
 DH_FLANGE_H = 0.05        # 末端法兰圆柱半长
 
@@ -330,12 +332,17 @@ def _dh_row_T(row: DHRow) -> np.ndarray:
 
 
 def _cap(name: str, p0, p1, radius: float, color: str) -> dict:
-    """沿 p0->p1 的胶囊几何（中点 + 圆柱半长，端点自动补半球）。"""
+    """沿 p0->p1 的胶囊几何（中点 + 圆柱半长，端点自动补半球）。
+
+    圆柱段取全长而非全长减两个半径：两端半球虽然各探出一个半径，
+    但端点都埋在相邻关节球/箱体内部，外观上连杆与关节完全贴合、
+    不会出现"球与杆之间断开一圈"的缝隙。
+    """
     p0 = np.asarray(p0, dtype=float)
     p1 = np.asarray(p1, dtype=float)
     vec = p1 - p0
     length = float(np.linalg.norm(vec))
-    half = max(0.0, length - 2.0 * radius) / 2.0
+    half = length / 2.0
     mid = (p0 + p1) / 2.0
     quat = (1.0, 0.0, 0.0, 0.0)
     if length > 1e-9:
@@ -409,12 +416,33 @@ def dh_to_links(rows: list[DHRow], name: str = "robot",
             range=row.range if movable else None,
             kp=row.kp, kd=row.kd, actuator=movable)
         col = _DEFAULT_COLORS[(i - 1) % len(_DEFAULT_COLORS)]
+        # 移动关节：在父连杆（固定侧）上放一根与行程等长的固定光轴（导轨），
+        # 滑块沿它平移；导轨挂在运动侧会跟着滑块一起走，就失去参照意义
+        if jt == "prismatic" and row.range is not None:
+            lo, hi = float(row.range[0]), float(row.range[1])
+            if hi - lo > 1e-9:
+                z_off = base_height if i == 1 else 0.0
+                extra = DH_SLIDER_HALF[2] + 0.01
+                parent_doc = next(lk for lk in links if lk.name == prev)
+                parent_doc.geoms = list(parent_doc.geoms or [])
+                parent_doc.geoms.append({
+                    "name": f"{jname}_guide", "type": "cylinder",
+                    "size": (DH_GUIDE_R, (hi - lo) / 2.0 + extra),
+                    "pos": (0.0, 0.0, z_off + (lo + hi) / 2.0),
+                    "color": "#6B7280"})
         # 骨架几何挂在关节载体 body 上（随关节一起运动）：
-        #   关节球在 frame i-1 原点；d 立管沿 z 到 (0,0,d)；
-        #   a 横杆端点经 Rz(theta0) 旋转后正好是 frame i 原点 (a·c,a·s,d)
-        body_geoms = [{
-            "name": f"{jname}_sphere", "type": "sphere",
-            "size": (DH_JOINT_R,), "pos": (0.0, 0.0, 0.0), "color": col}]
+        #   转动关节 -> 球（frame i-1 原点）；移动关节 -> 滑块箱体；
+        #   d 立管沿 z 到 (0,0,d)；a 横杆端点经 Rz(theta0) 旋转后正好是
+        #   frame i 原点 (a·c,a·s,d)
+        if jt == "prismatic":
+            marker = {"name": f"{jname}_slider", "type": "box",
+                      "size": DH_SLIDER_HALF,
+                      "pos": (0.0, 0.0, 0.0), "color": col}
+        else:
+            marker = {"name": f"{jname}_sphere", "type": "sphere",
+                      "size": (DH_JOINT_R,),
+                      "pos": (0.0, 0.0, 0.0), "color": col}
+        body_geoms = [marker]
         ct0, st0 = math.cos(math.radians(row.theta_deg)), \
             math.sin(math.radians(row.theta_deg))
         end_a = (row.a * ct0, row.a * st0, row.d)
@@ -460,7 +488,7 @@ def dh_to_links(rows: list[DHRow], name: str = "robot",
              "pos": (0.0, 0.0, DH_FLANGE_H), "color": "#9CA3AF"},
         ]))
 
-    # 自动骨架只做可视化：相邻关节球/连杆端点位置重叠，统一关闭碰撞
+    # 自动骨架只做可视化：关节/连杆/导轨彼此穿插重叠，统一关闭碰撞
     for lk in links:
         for g in (lk.geoms or []):
             g.setdefault("contype", 0)
