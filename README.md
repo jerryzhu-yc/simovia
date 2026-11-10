@@ -45,7 +45,7 @@ Simovia 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿
 
 ## 安装
 
-统一使用 **64 位 Python 3.12** 作为新环境的推荐安装基线。其他 Python 版本是否可用取决于全部依赖的 wheel 和兼容性；当前没有覆盖所有 Python/操作系统组合的验收矩阵，不将“Python 3.10+”视为全功能兼容承诺。
+统一使用 **64 位 Python 3.12** 作为新环境的推荐安装基线。其他 Python 版本是否可用取决于全部依赖的 wheel 和兼容性；当前没有覆盖所有 Python/操作系统组合的验收矩阵。MuJoCo 4.0 已取消 Python 3.10 支持，**最低要求 Python 3.11**。
 
 Linux 安装命令如下；Windows 见 [Windows 部署](#windows-部署)。macOS 的图形后端尚未完成专项验收，见 [平台与渲染要求](#平台与渲染要求)。
 
@@ -78,9 +78,18 @@ python -m pip install -r requirements.txt -r demo/fruit_sorting/requirements.txt
 python -m pip install -r requirements-models.txt
 ```
 
-两个视觉 demo 使用相同的 OpenCV 依赖，装一次即可。2026-11-06 已通过 Python 3.12 的 Linux x86_64 / Windows x64 wheel 依赖解析检查；这不等于两种平台的完整运行验收。本机渲染与 HSV 冒烟检查使用 MuJoCo 3.13.0、NumPy 2.2.6、OpenCV 4.12.0。兼容版本范围可能解析到更新版本，仍需在实际环境验证。新增依赖后执行 `python -m pip check`；全量回归按[测试](#测试)章节运行。
+两个视觉 demo 使用相同的 OpenCV 依赖，装一次即可。2026-11-06 已通过 Python 3.12 的 Linux x86_64 / Windows x64 wheel 依赖解析检查；这不等于两种平台的完整运行验收。本机渲染与 HSV 冒烟检查使用 MuJoCo 4.0.0、NumPy 2.2.6、OpenCV 4.12.0。兼容版本范围可能解析到更新版本，仍需在实际环境验证。新增依赖后执行 `python -m pip check`；全量回归按[测试](#测试)章节运行。
 
-依赖使用兼容版本范围，`~=` 不等于固定到同一 minor：例如 `~=3.13` 表示 `>=3.13,<4`，`~=2.2.6` 表示 `>=2.2.6,<2.3`。核心 NumPy 统一为 2.2.x，以满足视觉依赖 `opencv-python-headless==4.12.0.88` 的 `numpy>=2,<2.3` 要求（[OpenCV 包元数据](https://pypi.org/pypi/opencv-python-headless/4.12.0.88/json)）。请在独立虚拟环境中安装，避免混装多个提供 `cv2` 的 OpenCV 包。
+**从 MuJoCo 3.x 升级到 4.0**：4.0 把 Python 发行包拆成 `mujoco-core`（物理 + 绑定）和 `mujoco-studio`（Studio / Filament 渲染），`mujoco` 变成同时装两者的元包。直接用 `pip install -U` 会让 pip 去删除已迁移到 `mujoco-core` 的文件，因此必须先卸再装：
+
+```bash
+python -m pip uninstall -y mujoco
+python -m pip install -r requirements-core.txt
+```
+
+4.0 还取消了 Python 3.10 支持（需 3.11+），并改变了执行器 `forcerange` 饱和时对 `implicit`/`implicitfast` 隐式导数的贡献——使用饱和力限的执行器时，积分结果会与 3.x 不同，必要时补关节 armature 或减小 `timestep`。
+
+依赖使用兼容版本范围，`~=` 不等于固定到同一 minor：例如 `~=4.0` 表示 `>=4.0,<5`，`~=2.2.6` 表示 `>=2.2.6,<2.3`。核心 NumPy 统一为 2.2.x，以满足视觉依赖 `opencv-python-headless==4.12.0.88` 的 `numpy>=2,<2.3` 要求（[OpenCV 包元数据](https://pypi.org/pypi/opencv-python-headless/4.12.0.88/json)）。请在独立虚拟环境中安装，避免混装多个提供 `cv2` 的 OpenCV 包。
 
 ### 配置建议
 
@@ -102,7 +111,7 @@ python -m pip install -r requirements-models.txt
 - **Windows**：GUI/MCP 默认使用 WGL，需显卡厂商提供的 OpenGL 驱动。部署步骤以 Windows 11、Python 3.12 x64 为建议基线；当前没有完整 Windows 硬件兼容性验收矩阵。
 - **macOS**：当前 GUI/MCP 的非 Windows 分支默认设置 EGL，不能据此宣称 macOS 开箱即用；仍需适配并验证原生图形上下文、Qt 和启动流程。
 
-当前已验证的 MuJoCo 3.13.0 环境使用经典 OpenGL 渲染路径，通过离屏图像显示到 PySide6 GUI。画面效果同时取决于模型网格、材质贴图、灯光、阴影和渲染器；Python 负责组织应用，物理与渲染的主要计算由原生库执行。
+当前已验证的 MuJoCo 4.0.0 环境使用经典 OpenGL 渲染路径，通过离屏图像显示到 PySide6 GUI。画面效果同时取决于模型网格、材质贴图、灯光、阴影和渲染器；Python 负责组织应用，物理与渲染的主要计算由原生库执行。
 
 | GUI 主视口画质 | MSAA | 阴影 | 渲染宽高倍率 |
 |---|---|---|---|
@@ -426,7 +435,7 @@ runtime:
 
 - **类型与挂点**：`encoder` / `joint_torque` 挂 `joint`；`imu` / `tactile` / `camera` 挂 `body`（`pos` 为 body 局部系挂点偏移，`quat` 仅 camera 用于朝向）
 - **读数进观测流**：obs 里 `sensors` 键为 `{名字: 读数}`，标量（encoder/joint_torque/tactile）是 float，IMU 是 6 维列表 `[陀螺 xyz, 加速度 xyz]`；相机不产生数值读数，只作 `screenshot` 的 viewpoint
-- **tactile 的 `radius`**：MuJoCo 3.x 的 touch 只统计接触点落在以挂点为球心、`radius` 为半径的球内的接触力——`radius` 要罩住挂点 body 的预期接触区，默认 0.06（约指尖/指板整面大小）
+- **tactile 的 `radius`**：MuJoCo 的 touch 只统计接触点落在以挂点为球心、`radius` 为半径的球内的接触力——`radius` 要罩住挂点 body 的预期接触区，默认 0.06（约指尖/指板整面大小）
 - **实现映射**：encoder→JOINTPOS、joint_torque→JOINTACTFRC、imu→GYRO+ACCELEROMETER、tactile→TOUCH 标量（不是需要 plugin 的 mjSENS_TACTILE 网格阵列）；传感器是只读派生量，加不加传感器物理轨迹逐位一致（有 bit 级守护测试）
 
 ## 末端夹爪装配（4 款：2FG7 / 2F-85 / UMI / LEAP）
@@ -746,7 +755,7 @@ GUI 右侧第五个 tab"Agent"：聊天式下达任务给 AI（OpenAI 兼容 cha
 
 配置保存到 `~/.simovia/agent.json`，`chmod 0600` 保护 api_key。配好后聊天下达任务（Enter 发送，Shift+Enter 换行）：
 
-- Agent 拿到的是 OpenAI function calling 格式工具清单（`bridge.to_openai_tools`）——MCP 的 12 个工具（含 `stop` 停止仿真）+ 2 个本地文件工具（`write_file`/`read_file`，限定在世界目录内防越界）
+- Agent 拿到的是 OpenAI function calling 格式工具清单（`bridge.to_openai_tools`）——MCP 的 12 个工具（含 `stop` 停止仿真）+ 3 个本地工具（`write_file`/`read_file` 限定在世界目录内防越界；`read_mujoco_doc` 按需读 MuJoCo 4.0 随包自带的官方手册与 agent skills，避免凭记忆写模型参数）
 - 工具循环：Agent 返回文本 → 显示在聊天框；返回 tool_calls → MCP 同步等回复（QEventLoop + 30s QTimer 兜底）→ 显示工具调用与结果 → 继续下一轮直到 Agent 不再调工具
 - 系统提示词包含：身份（机器人仿真助手）、当前世界名、所有工具清单（MCP + 本地）、建议工作流（read_world → load_world → run → get_observation）
 

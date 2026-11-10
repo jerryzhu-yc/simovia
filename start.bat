@@ -17,7 +17,7 @@ if not defined PYEXE (
     where py >nul 2>nul && (set "PYEXE=py" & set "PYARGS=-3")
 )
 if not defined PYEXE (
-    echo [错误] 未找到 Python。请安装 Python 3.10+ 并勾选 "Add python.exe to PATH"，
+    echo [错误] 未找到 Python。请安装 Python 3.11+ 并勾选 "Add python.exe to PATH"，
     echo        或设置环境变量 SIMOVIA_PYTHON 指向 python.exe 的完整路径。
     pause
     exit /b 1

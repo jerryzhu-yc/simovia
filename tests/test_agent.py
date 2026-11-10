@@ -62,17 +62,21 @@ def test_to_openai_tools_shape():
 
 
 def test_local_tools_manifest_fields():
-    """本地工具 write_file/read_file 的参数 schema 完整。"""
+    """本地工具 write_file/read_file/read_mujoco_doc 的参数 schema 完整。"""
     from simovia.agent.bridge import local_tools_manifest
     names = {t["name"] for t in local_tools_manifest()}
-    assert names == {"write_file", "read_file"}
+    assert names == {"write_file", "read_file", "read_mujoco_doc"}
     wf = next(t for t in local_tools_manifest() if t["name"] == "write_file")
     assert set(wf["inputSchema"]["properties"]) == {"path", "content"}
     assert set(wf["inputSchema"]["required"]) == {"path", "content"}
+    doc = next(t for t in local_tools_manifest() if t["name"] == "read_mujoco_doc")
+    assert set(doc["inputSchema"]["properties"]) == {
+        "skill", "path", "anchor", "max_chars"}
+    assert doc["inputSchema"]["required"] == []      # 不传参 = 看清单
 
 
 def test_system_prompt_lists_all_tools():
-    """系统 prompt 列出 MCP 10 + 本地 2，且含当前世界名 + 工作流建议。"""
+    """系统 prompt 列出 MCP 10 + 本地 3，且含当前世界名 + 工作流建议。"""
     from simovia.agent.bridge import system_prompt, local_tools_manifest
     mcp_tools = [{"name": "zoo_create", "description": "生成世界"},
                  {"name": "load_world", "description": "加载世界"},
@@ -158,6 +162,114 @@ def test_local_files_read_nonexistent(tmp_path):
     with pytest.raises(WorldError) as e:
         f.read_file("ghost.yaml")
     assert "ghost.yaml" in str(e.value)
+
+
+# ================================================================ T7-d2 MuJoCo 官方文档工具
+
+def test_read_mujoco_doc_catalog():
+    """不传参：列出随包自带的 skills 与用法。"""
+    from simovia.agent.local_tools import SKILLS, read_mujoco_doc
+    d = read_mujoco_doc({})
+    assert set(SKILLS) <= set(d["skills"])     # 以 doc/skills 目录为准，允许多
+    assert "spec_editing" in d["skills"] and d["usage"]
+
+
+def test_read_mujoco_doc_skill_clipped():
+    """skill 模式：整份 SKILL.md，按 max_chars 截断并标记。"""
+    from simovia.agent.local_tools import read_mujoco_doc
+    d = read_mujoco_doc({"skill": "spec_editing", "max_chars": 200})
+    assert d["source"] == "skills/spec_editing/SKILL.md"
+    assert d["truncated"] is True and len(d["content"]) == 200
+    assert d["chars"] > 200
+    # 全量读时不应误截断
+    full = read_mujoco_doc({"skill": "spec_editing"})
+    assert "MjSpec" in full["content"]
+
+
+def test_read_mujoco_doc_anchor_section():
+    """rst + anchor：从 '.. _CTuning:' 切到同级/更高级标题为止。"""
+    from simovia.agent.local_tools import read_mujoco_doc
+    d = read_mujoco_doc({"path": "modeling.rst", "anchor": "CTuning"})
+    assert d["source"] == "doc/modeling.rst#CTuning"
+    body = d["content"]
+    assert body.lstrip().startswith(".. _CTuning:")
+    assert len(body) < d["chars"] or not d["truncated"]   # 只取小节
+
+
+def test_read_mujoco_doc_errors():
+    """未知 skill / 路径越界 / 锚点不存在：都给可读错误。"""
+    from simovia.agent.local_tools import read_mujoco_doc
+    from simovia.errors import WorldError
+    with pytest.raises(WorldError) as e:
+        read_mujoco_doc({"skill": "nope"})
+    assert "未知 skill" in str(e.value)
+    with pytest.raises(WorldError) as e:
+        read_mujoco_doc({"path": "../../../../etc/passwd"})
+    assert "越界" in str(e.value)
+    with pytest.raises(WorldError) as e:
+        read_mujoco_doc({"path": "modeling.rst", "anchor": "NoSuchAnchor"})
+    assert "没有锚点" in str(e.value)
+    assert "相近可用" in str(e.value)      # 报错带真实候选，模型不用瞎猜
+
+
+def test_read_mujoco_doc_max_chars_edge():
+    """max_chars 为负不能变成「从尾部砍」：夹到 1 个字符。"""
+    from simovia.agent.local_tools import read_mujoco_doc
+    d = read_mujoco_doc({"skill": "python", "max_chars": -100})
+    assert len(d["content"]) == 1 and d["truncated"] is True
+
+
+def test_read_mujoco_doc_windows_path():
+    """LLM 从 Windows 习惯写反斜杠路径也能命中。"""
+    from simovia.agent.local_tools import read_mujoco_doc
+    d = read_mujoco_doc({"path": "programming\\modeledit.rst"})
+    assert d["source"] == "doc/programming/modeledit.rst"
+    assert "mjSpec" in d["content"]
+
+
+def test_read_mujoco_doc_ambiguous_args():
+    """skill+path 同时给、或只给 anchor：直接报错而非静默忽略。"""
+    from simovia.agent.local_tools import read_mujoco_doc
+    from simovia.errors import WorldError
+    with pytest.raises(WorldError) as e:
+        read_mujoco_doc({"skill": "python", "path": "modeling.rst"})
+    assert "二选一" in str(e.value)
+    with pytest.raises(WorldError) as e:
+        read_mujoco_doc({"anchor": "CTuning"})
+    assert "必须和 path" in str(e.value)
+
+
+def test_read_mujoco_doc_section_not_include_next_anchor():
+    """切出的小节不能带下一节的 `.. _label:` 锚点行。"""
+    from simovia.agent.local_tools import read_mujoco_doc
+    d = read_mujoco_doc({"path": "XMLreference.rst", "anchor": "actuator"})
+    lines = [ln for ln in d["content"].splitlines() if ln.strip()]
+    assert lines[0].strip() == ".. _actuator:"
+    assert not lines[-1].strip().startswith(".. _")
+
+
+def test_read_mujoco_doc_inline_anchor_block():
+    """行内锚点（属性说明）只切自己那一段，不能甩到下一个标题。"""
+    from simovia.agent.local_tools import read_mujoco_doc
+    d = read_mujoco_doc({"path": "XMLreference.rst", "anchor": "replicate-count"})
+    assert "The number of replicas" in d["content"]
+    assert len(d["content"].splitlines()) <= 10       # 一段而非整章
+    assert ".. _replicate-sep:" not in d["content"]
+
+
+def test_read_mujoco_doc_overline_heading():
+    """overline 风格（上划线 + 标题 + 下划线）的锚点仍按小节切。"""
+    from simovia.agent.local_tools import read_mujoco_doc
+    d = read_mujoco_doc({"path": "mjx.rst", "anchor": "Mjx"})
+    assert "MuJoCo XLA (MJX)" in d["content"]
+    assert len(d["content"].splitlines()) > 10
+
+
+def test_read_mujoco_doc_dispatch():
+    """dispatch_local 认这个名字，且不依赖世界目录（LocalFiles 无 root）。"""
+    from simovia.agent.local_tools import LocalFiles, dispatch_local
+    r = dispatch_local(LocalFiles(), "read_mujoco_doc", {})
+    assert r is not None and "skills" in r
 
 
 # ================================================================ T7-e 工具调用闭环

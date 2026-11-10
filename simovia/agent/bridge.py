@@ -43,11 +43,24 @@ def local_tools_manifest() -> list[dict]:
          "inputSchema": {"type": "object",
                          "properties": {"path": {"type": "string"}},
                          "required": ["path"]}},
+        {"name": "read_mujoco_doc",
+         "description": "读 MuJoCo 4.0 自带的官方手册与 agent skills（离线）。"
+                        "写模型/调物理参数前先查，别凭记忆。"
+                        "skill 取 accelerated/gui/parity/python/rendering/"
+                        "spec_editing/studio；或给 path（如 modeling.rst）"
+                        "与可选 anchor（如 CTuning）。不传参返回清单。",
+         "inputSchema": {"type": "object",
+                         "properties": {
+                             "skill": {"type": "string"},
+                             "path": {"type": "string"},
+                             "anchor": {"type": "string"},
+                             "max_chars": {"type": "integer"}},
+                         "required": []}},
     ]
 
 
 def system_prompt(world_name: str | None, mcp_tools: list[dict]) -> str:
-    """组装系统提示：身份 + 当前世界 + 工具清单（MCP 10 + 本地 2）。
+    """组装系统提示：身份 + 当前世界 + 工具清单（MCP 10 + 本地 3）。
 
     LLM 不能直接调工具——它回 tool_calls 由 worker 调，故 system prompt 里
     描述每项工具的用途，让 LLM 知道何时调。
@@ -72,6 +85,8 @@ def system_prompt(world_name: str | None, mcp_tools: list[dict]) -> str:
                  "load_world -> run")
     lines.append("- 改控制律：write_file 改控制器 .py -> load_world -> run")
     lines.append("- 截图自检：screenshot 看当前状态")
+    lines.append("- 写模型/调物理前先查官方文档：read_mujoco_doc(skill='spec_editing')"
+                 " 或 read_mujoco_doc(path='modeling.rst', anchor='CTuning')")
     return "\n".join(lines)
 
 

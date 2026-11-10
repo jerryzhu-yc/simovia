@@ -75,7 +75,8 @@ _RULES = """生成规则：
 1. 只输出一个 YAML 文档（可用 ```yaml 围栏包裹），不要任何解释文字。
 2. 拿不准的字段全部省略（用默认值），保持 YAML 尽量短。
 3. 物理常识：物体 z >= 半高（贴地）；机器人物体不要重叠；台子/墙/坡用
-   static: true；小物体质量 0.1-1kg，机器人附近别摆太挤；带机械臂或硬
+   static: true；小物体质量 0.1-1kg，机器人附近别摆太挤；抓取类物体
+   friction 取 1.2-1.5（默认 1.0 容易滑脱）；带机械臂或硬
    接触的世界写上 integrator: implicitfast 与 impratio: 10（高刚度伺服
    稳定性必需，否则 attach 时被默认 euler 覆盖会发散）。
 4. 任务 reward/success 引用的 body 必须是物体名或机器人内部 body 短名

@@ -26,7 +26,10 @@ def rig_identity(spec, robot_name, camera_name, tool_frame, width=WIDTH, height=
     def asset(value):
         if value is None: return None
         p = (spec.base_dir / value).resolve()
-        return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else str(value)
+        if not p.is_file(): return str(value)
+        # 模型是文本 XML：先把换行归一化再哈希。否则同一份模型在 Windows
+        # （CRLF）和 Linux（LF）上会算出两个指纹，跨平台标定必然互相不认。
+        return hashlib.sha256(p.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
     ees = []
     for ee in robot.end_effectors:
         item = asdict(ee); item['model'] = asset(ee.model); ees.append(item)

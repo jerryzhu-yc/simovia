@@ -84,8 +84,8 @@ def _doctor(args):
 
     # ---- Python ----
     v = sys.version_info
-    add("OK" if v >= (3, 10) else "FAIL", "Python",
-        f"{v.major}.{v.minor}.{v.micro}（需要 >= 3.10，"
+    add("OK" if v >= (3, 11) else "FAIL", "Python",
+        f"{v.major}.{v.minor}.{v.micro}（需要 >= 3.11，"
         f"{platform.system()} {platform.machine()}）")
 
     # ---- 依赖：必需 / 可选 ----

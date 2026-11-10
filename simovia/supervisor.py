@@ -3,10 +3,10 @@
 快照 = (FULLPHYSICS + WARMSTART) + ctrl + tick。
 
 三个刻意的实现决策（都被 T2/T1 的逐位断言保护着）：
-1. mjSTATE_FULLPHYSICS 实际只有 time+qpos+qvel+act（实测 24 != 35），
-   不含 warmstart——warmstart 影响迭代求解器收敛路径，漏存会导致
-   读档后轨迹微小偏移并被逐步放大（T2 实测踩过）。必须显式并上
-   mjSTATE_WARMSTART。
+1. mjSTATE_FULLPHYSICS 覆盖面随版本变化（3.13：time+qpos+qvel+act+
+   history+plugin；4.0 另加 plastic），但都不含 warmstart——warmstart
+   影响迭代求解器收敛路径，漏存会导致读档后轨迹微小偏移并被逐步放大
+   （T2 实测踩过）。必须显式并上 mjSTATE_WARMSTART。
 2. FULLPHYSICS 不含 data.ctrl，必须单独存——否则读档后第一步就分岔。
 3. load 故意不调 mj_forward：forward 会改写 warmstart，破坏逐位一致。
    派生量在下一个物理步自动刷新。
