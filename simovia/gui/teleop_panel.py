@@ -251,6 +251,10 @@ class TeleopPanel(QWidget):
                 listed = {f"{name}/{cam}" for cam in r.get("cameras") or []}
                 for key in sorted(listed - set(self._cam_cfg)):
                     self.camera_combo.addItem(key, key)
+            # 世界固定机位（scene.cameras）：名字不带机器人前缀，按原名渲染
+            for cam in manifest.get("scene_cameras") or []:
+                if cam:
+                    self.camera_combo.addItem(cam, cam)
             for combo, old in ((self.robot_combo, old_robot),
                                (self.camera_combo, old_cam)):
                 idx = combo.findData(old) if old is not None else -1

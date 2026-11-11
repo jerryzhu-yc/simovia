@@ -1,6 +1,6 @@
 """机器人模型库：MuJoCo Menagerie 官方模型一键接入（M4）。
 
-预配置 34 个著名机器人（四足/人形/双足/机械臂/灵巧手/双臂/移动操作/
+预配置 35 个著名机器人（四足/人形/双足/机械臂/灵巧手/双臂/移动操作/
 无人机）。
 generate() 生成可编辑的世界 YAML + 控制器模板——用户改控制律即编程，
 GUI/CLI/MCP zoo_create 三路同构。
@@ -333,6 +333,13 @@ MODELS: dict[str, dict] = {
     "trs_so_arm100": {
         "title": "SO-ARM100", "cat": "机械臂", "xml": "so_arm100.xml",
         "pos": [0, 0, 0], "desc": "The Robot Studio SO-ARM100，5 轴臂 + 夹爪",
+        "demo": _osc(sweep_frac=0.4)},
+    "so101_lerobot": {
+        "title": "SO-101 (LeRobot)", "cat": "机械臂", "xml": "so101.xml",
+        # 固定基座，menagerie 版贴地无悬空；入口用纯机器人 XML，
+        # scene.xml 的 floor/light 由 Simovia 世界提供
+        "pos": [0, 0, 0],
+        "desc": "LeRobot SO-101，5 轴臂 + 平行夹爪，含腕部相机 wrist_cam",
         "demo": _osc(sweep_frac=0.4)},
     "arx_l5": {
         "title": "ARX L5", "cat": "机械臂", "xml": "arx_l5.xml",

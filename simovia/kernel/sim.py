@@ -206,7 +206,8 @@ class Simulation:
                 self._st[rname]["active"] = False
             # REQ/REP 必须回复，否则控制器 close() 里的 recv 会挂死
             self._send(ident, {"op": "bye_ack"})
-        elif op in ("observe", "camera", "contacts", "camera_overlay", "result"):
+        elif op in ("observe", "camera", "contacts", "camera_overlay", "result",
+                    "reset_objects"):
             self._device_request(ident, msg)
         elif op == "supervise":
             self._supervise(ident, msg)
@@ -228,6 +229,9 @@ class Simulation:
                 self._send(ident,{"op":"ok"});return
             if op=="observe":
                 self._send(ident,self._obs_msg(name));return
+            if op=="reset_objects":
+                self._reset_objects()
+                self._send(ident,{"op":"ok"});return
             if op=="contacts":
                 own=set(self.index.robots[name].bodies.values());values={}
                 for i,c in enumerate(self.data.contact):
@@ -240,8 +244,12 @@ class Simulation:
                 self._send(ident,{"op":"contacts","forces_N":values});return
             sensor=msg.get("name")
             cid=self.index.robots[name].cameras.get(sensor)
-            if cid is None:raise WorldError(f"相机不存在: {sensor}")
             camera=name+"/"+sensor
+            if cid is None:
+                # 场景固定机位（scene.cameras）不属于任何机器人，按原名直接查
+                cid=self.index.cameras.get(sensor)
+                if cid is None:raise WorldError(f"相机不存在: {sensor}")
+                camera=sensor
             width,height=int(msg.get("width",640)),int(msg.get("height",480))
             if not (64<=width<=1280 and 48<=height<=960):raise WorldError("相机分辨率超出范围")
             if op=="camera_overlay":
@@ -257,6 +265,24 @@ class Simulation:
                               "rgb_zlib":base64.b64encode(zlib.compress(rgb.tobytes(),1)).decode('ascii')})
         except Exception as error:
             self._send(ident,{"op":"error","msg":str(error)})
+
+    def _reset_objects(self):
+        """把场景动态物体（YAML scene.objects 的自由体）搬回初始位姿并清零速度。
+
+        只动物体、不动关节机器人：机械臂由控制器自己 ramp 回预备姿态，否则
+        控制器每 tick 下发的位置目标会和内核直接写 qpos 打架。
+        """
+        for bid in self.index.objects.values():
+            if int(self.model.body_jntnum[bid]) == 0:
+                continue
+            jid = int(self.model.body_jntadr[bid])
+            if int(self.model.jnt_type[jid]) != int(mujoco.mjtJoint.mjJNT_FREE):
+                continue
+            qadr = int(self.model.jnt_qposadr[jid])
+            vadr = int(self.model.jnt_dofadr[jid])
+            self.data.qpos[qadr:qadr + 7] = self.model.qpos0[qadr:qadr + 7]
+            self.data.qvel[vadr:vadr + 6] = 0.0
+        mujoco.mj_forward(self.model, self.data)
 
     def close_device_renderers(self):
         for renderer in self._vision_renderers.values():renderer.close()

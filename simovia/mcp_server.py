@@ -1042,6 +1042,7 @@ class SimoviaSession:
             "robots": robots,
             "objects": [{"name": o.name, "type": o.type, "pos": list(o.pos)}
                         for o in self.spec.scene.objects],
+            "scene_cameras": list(self.sim.index.cameras) if self.sim else [],
             "end_effector_catalog": catalog,
             "gripper_catalog": catalog,      # 旧字段兼容
         }

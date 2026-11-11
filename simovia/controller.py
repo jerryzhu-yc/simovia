@@ -143,6 +143,11 @@ class Robot:
         self._ctrl=list(reply["ctrl"])
         return reply
 
+    def reset_objects(self):
+        """把场景动态物体搬回初始位姿（机械臂不动，由控制器自己回位）。"""
+        reply=self._rpc({"op":"reset_objects"})
+        if reply.get("op")=="error":raise RuntimeError(reply["msg"])
+
     def camera(self,name,width=640,height=480):
         """Current RGB uint8 image from this robot's declared camera."""
         import base64,zlib,numpy as np

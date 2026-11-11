@@ -73,6 +73,8 @@ class NameIndex:
     """编译后的全局名字索引：内核此后只用名字，不碰裸 id"""
     objects: dict[str, int] = field(default_factory=dict)     # YAML 物体名 -> body id
     robots: dict[str, RobotIndex] = field(default_factory=dict)
+    #: 世界固定机位（scene.cameras，挂在 worldbody，不随机器人运动）
+    cameras: dict[str, int] = field(default_factory=dict)     # 相机名 -> camera id
     bodies: dict[str, int] = field(default_factory=dict)     # 全部 body（含前缀名）-> id
     #: 每台机器人自带末端（人形灵巧手/夹爪）的检测结果，供 GUI 列出/删除。
     #: [{"key","anchor","bodies","site","pos","quat","stripped"}]
@@ -190,6 +192,16 @@ def _build_scene(spec: WorldSpec, mj: mujoco.MjSpec):
         mj.worldbody.add_light(pos=[0, 0, 3], dir=[0, 0, -1])
     for i, light in enumerate(sc.lights):
         mj.worldbody.add_light(name=f"light_{i}", pos=list(light.pos), dir=[0, 0, -1])
+    # 世界固定机位：挂在 worldbody，用于第三人称采集/预览（不随机器人运动）
+    for cam in sc.cameras:
+        kwargs = dict(name=cam.name, pos=list(cam.pos))
+        if cam.quat is not None:
+            kwargs["quat"] = list(cam.quat)
+        elif cam.euler is not None:
+            kwargs["euler"] = list(cam.euler)
+        if cam.fovy is not None:
+            kwargs["fovy"] = float(cam.fovy)
+        mj.worldbody.add_camera(**kwargs)
     # 物体：独立 body + freejoint（可被抓取/瞬移）；static 物体无 freejoint
     for od in sc.objects:
         if od.type == "model":
@@ -223,6 +235,32 @@ def _build_scene(spec: WorldSpec, mj: mujoco.MjSpec):
         body.add_geom(**kwargs)
 
 
+def _add_camera_visuals(body, s: SensorSpec) -> None:
+    """相机实体外观：镜头（圆柱）+ 机身（方块）。
+
+    布局约定：整个外壳放在相机局部 +z 一侧（成像平面背后、视野之外）——
+    相机沿自身 -z 观察，z>0 的几何在光心后方，自己画面里永远不会出现
+    自己的外壳（真实相机同理：光心在镜筒口，壳体在光心后方）。镜头圆柱
+    比机身前端再向 -z 凸出一点，从外部看是「镜筒伸出来」的造型。
+    纯视觉：不参与碰撞（contype/conaffinity=0）、密度 0 不加质量。
+    """
+    q = list(s.quat) if s.quat is not None else [1.0, 0.0, 0.0, 0.0]
+    box_off = _quat_rotate(q, [0.0, 0.0, 0.020])
+    body.add_geom(name=f"{s.name}_cam_body",
+                  type=mujoco.mjtGeom.mjGEOM_BOX,
+                  size=[0.018, 0.012, 0.010],
+                  pos=[s.pos[i] + box_off[i] for i in range(3)], quat=q,
+                  rgba=[0.12, 0.55, 0.95, 1.0],
+                  contype=0, conaffinity=0, density=0.0, group=2)
+    lens_off = _quat_rotate(q, [0.0, 0.0, 0.007])
+    body.add_geom(name=f"{s.name}_cam_lens",
+                  type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                  size=[0.007, 0.005],
+                  pos=[s.pos[i] + lens_off[i] for i in range(3)],
+                  quat=q, rgba=[0.04, 0.16, 0.28, 1.0],
+                  contype=0, conaffinity=0, density=0.0, group=2)
+
+
 def _add_child_sensors(robot: RobotSpec, child: mujoco.MjSpec) -> None:
     """attach 前往 child spec 注入传感器/site/相机（前缀随后自动生效）。
 
@@ -230,7 +268,9 @@ def _add_child_sensors(robot: RobotSpec, child: mujoco.MjSpec) -> None:
     - encoder/joint_torque/tactile：MuJoCo 传感器名 = YAML 传感器名
     - imu：拆成 "<名>_gyro"(3) + "<名>_accel"(3)，obs 拼成 6 维
     - imu/tactile 的挂点 site："<名>_site"
-    - camera：相机名 = YAML 传感器名（不加 MuJoCo sensor）
+    - camera：相机名 = YAML 传感器名（不加 MuJoCo sensor；模型自带同名相机
+      则复用并按 YAML 重设安装位姿）。两种来源都会补实体外观几何
+      （"<名>_cam_body"/"<名>_cam_lens"：纯视觉、无碰撞、零质量）
     """
     if not robot.sensors:
         return
@@ -248,10 +288,10 @@ def _add_child_sensors(robot: RobotSpec, child: mujoco.MjSpec) -> None:
         return child.body(s.body)
 
     for s in robot.sensors:
-        if s.name in sensor_names or s.name in camera_names:
+        if s.name in sensor_names:
             raise WorldError(
                 f"机器人 '{robot.name}' 的传感器 '{s.name}' 与模型里既有"
-                f" sensor/camera 名冲突")
+                f" sensor 名冲突")
         if s.type in ("encoder", "joint_torque"):
             if s.joint not in joint_names:
                 raise WorldError(
@@ -287,6 +327,24 @@ def _add_child_sensors(robot: RobotSpec, child: mujoco.MjSpec) -> None:
             child.add_sensor(name=s.name, type=mujoco.mjtSensor.mjSENS_TOUCH,
                              objtype=mujoco.mjtObj.mjOBJ_SITE, objname=site_name)
         elif s.type == "camera":
+            if s.name in camera_names:
+                # 模型自带相机（SO-101 的 wrist_cam）：复用该相机、按 YAML 重设
+                # 安装位姿/视场角。模型自带的只是不可见碰撞板（group 3），渲染
+                # 里挂点位是空的——同样补上实体外观，让相机"看得见地装在那里"。
+                # pos 语义与新建相机一致：YAML 给的是 body 局部系下的完整挂点偏移。
+                cam = child.camera(s.name)
+                parent = getattr(cam.parent, "name", None)
+                if parent and s.body != parent:
+                    raise WorldError(
+                        f"机器人 '{robot.name}' 的相机 '{s.name}' 是模型自带，"
+                        f"固定在 body '{parent}' 上，不能改挂到 '{s.body}'")
+                cam.pos[:] = list(s.pos)
+                if s.quat is not None:
+                    cam.quat[:] = list(s.quat)
+                if s.fovy is not None:
+                    cam.fovy = float(s.fovy)
+                _add_camera_visuals(cam.parent, s)
+                continue
             body = _find_body(s)
             kwargs = dict(name=s.name, pos=list(s.pos))
             if s.quat is not None:
@@ -294,21 +352,7 @@ def _add_child_sensors(robot: RobotSpec, child: mujoco.MjSpec) -> None:
             if s.fovy is not None:
                 kwargs["fovy"] = float(s.fovy)
             body.add_camera(**kwargs)
-            # 实体外观：相机机身（小方块）+ 镜头（朝自身 -z 伸出的圆柱）。
-            # 纯视觉：不参与碰撞（contype/conaffinity=0）、密度 0 不加质量。
-            q = list(s.quat) if s.quat is not None else [1.0, 0.0, 0.0, 0.0]
-            body.add_geom(name=f"{s.name}_cam_body",
-                          type=mujoco.mjtGeom.mjGEOM_BOX,
-                          size=[0.018, 0.012, 0.010], pos=list(s.pos), quat=q,
-                          rgba=[0.12, 0.55, 0.95, 1.0],
-                          contype=0, conaffinity=0, density=0.0, group=2)
-            lens_off = _quat_rotate(q, [0.0, 0.0, -0.014])
-            body.add_geom(name=f"{s.name}_cam_lens",
-                          type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                          size=[0.007, 0.006],
-                          pos=[s.pos[i] + lens_off[i] for i in range(3)],
-                          quat=q, rgba=[0.04, 0.16, 0.28, 1.0],
-                          contype=0, conaffinity=0, density=0.0, group=2)
+            _add_camera_visuals(body, s)
 
 
 def _ensure_actuator_names(child: mujoco.MjSpec) -> list[str]:
@@ -956,6 +1000,7 @@ def _assemble_robot_child(spec: WorldSpec,
         else:
             xf = {"pos": list(ee.pos), "quat": list(ee.quat)}
         try:
+            _align_option(child, grip)      # 先对齐 option，attach 不报冲突
             frame = child.attach(
                 grip, site=site_name,
                 prefix=_end_effector_prefix(i, total, side))
@@ -1065,12 +1110,28 @@ def _load_robot_spec(model_path: pathlib.Path) -> mujoco.MjSpec:
     return child
 
 
+def _align_option(parent: mujoco.MjSpec, child: mujoco.MjSpec) -> None:
+    """attach 前把 child 的 option 对齐到 parent，消除 "Attach conflict" 刷屏。
+
+    MuJoCo 的 attach 策略是 parent 优先，但每处差异都会往 stderr 打一段
+    警告。世界与机器人模型的 option 本来就该不同（世界把 timestep 压到
+    2ms 做 ZMQ 锁步、统一 impratio/cone 等），逐条警告只会掩盖真正的
+    差异。这里先把 child 改成 parent 的值——与 attach 的最终结果完全一致，
+    只是不再产生冲突提示。
+    """
+    for name in ("timestep", "iterations", "ls_iterations", "impratio",
+                 "integrator", "cone"):
+        setattr(child.option, name, getattr(parent.option, name))
+    child.option.gravity = list(parent.option.gravity)
+
+
 def _attach_robot(spec: WorldSpec, robot: RobotSpec, mj: mujoco.MjSpec) -> None:
     child, _ = _assemble_robot_child(spec, robot)
     frame = mj.worldbody.add_frame(
         name=f"{robot.name}_frame", pos=list(robot.pos),
         quat=list(robot.quat) if robot.quat else None)
     try:
+        _align_option(mj, child)        # 世界 option 优先，且不刷屏
         mj.attach(child, prefix=f"{robot.name}/", frame=frame)
     except Exception as e:
         raise WorldError(f"机器人 '{robot.name}' 挂载失败: {e}") from e
@@ -1084,6 +1145,13 @@ def _build_index(model: mujoco.MjModel, spec: WorldSpec) -> NameIndex:
         if bid < 0:
             raise WorldError(f"编译后找不到物体 '{od.name}' 的 body（编译器吞了名字？）")
         index.objects[od.name] = bid
+    # 世界固定机位（scene.cameras）
+    for cd in spec.scene.cameras:
+        cid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, cd.name)
+        if cid < 0:
+            raise WorldError(
+                f"编译后找不到场景相机 '{cd.name}'（编译器吞了名字？）")
+        index.cameras[cd.name] = cid
     # 机器人设备
     for rd in spec.robots:
         prefix = f"{rd.name}/"
@@ -1221,6 +1289,9 @@ def build_world(spec: WorldSpec) -> tuple[mujoco.MjModel, NameIndex]:
     # 原生用 implicitfast，被世界默认 Euler 覆盖后"硬接触 + 显式积分"会
     # 数值震荡弹跳（躯干周期性跳起、关节跟踪却良好的根因）
     mj.option.integrator = spec.integrator
+    # 摩擦锥同理：menagerie 的 SO-101 等模型原生用 elliptic，世界不声明
+    # cone 时会被默认的 pyramidal 覆盖（抓取时摩擦建模偏理想化）
+    mj.option.cone = spec.cone
     # 离屏帧缓冲调大：GUI 渲染视口可达 ~1600px，默认 640 会抛异常
     mj.visual.global_.offwidth = 1920
     mj.visual.global_.offheight = 1440

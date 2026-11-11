@@ -23,6 +23,10 @@ _TIMEOUT_POLICIES = {"last_ctrl", "pause"}
 # 积分器名 -> mjtIntegrator 枚举值；implicitfast 是 MuJoCo 官方推荐的
 # 稳定默认（比 Euler 略慢），高刚度接触模型（solref 0.004 量级）必须用它
 _INTEGRATORS = {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3}
+# 摩擦锥类型 -> mjtCone 枚举值；pyramidal 是 MuJoCo 默认，elliptic 更贴近
+# 真实摩擦（menagerie 的 SO-101 等模型原生用 elliptic，世界不声明就会被
+# attach 覆盖成 pyramidal）
+_CONE_TYPES = {"pyramidal": 0, "elliptic": 1}
 # 传感器类型 -> 挂点要求：joint 系只引用关节，body 系只引用 body
 _SENSOR_TYPES = {"encoder", "imu", "tactile", "joint_torque", "camera"}
 _JOINT_SENSORS = {"encoder", "joint_torque"}
@@ -41,6 +45,22 @@ class FloorSpec:
 @dataclass
 class LightSpec:
     pos: tuple[float, float, float] = (0.0, 0.0, 3.0)
+
+
+@dataclass
+class CameraSpec:
+    """世界固定机位（挂在 worldbody，不随任何机器人运动）。
+
+    与机器人 `sensors` 里的 camera 不同：这条是世界系绝对位姿，用于第三人称
+    机位（俯视全桌面）。quat（wxyz）与 euler（度，MJCF 语义）二选一。
+    相机沿自身 -z 观察、+y 为画面上方，因此俯视桌面通常只需绕 y 轴转几十度：
+    `euler: [0, 36, 0]` = 从 +x 一侧、向下 54° 俯看。
+    """
+    name: str
+    pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    quat: tuple[float, float, float, float] | None = None
+    euler: tuple[float, float, float] | None = None
+    fovy: float | None = None          # 垂直视场角（度），None = MuJoCo 默认 45
 
 
 @dataclass
@@ -196,6 +216,7 @@ class SceneSpec:
     floor: FloorSpec = field(default_factory=FloorSpec)
     lights: list[LightSpec] = field(default_factory=list)
     objects: list[ObjectSpec] = field(default_factory=list)
+    cameras: list[CameraSpec] = field(default_factory=list)   # 世界固定机位
 
 
 @dataclass
@@ -213,6 +234,10 @@ class WorldSpec:
                                   # solref=0.004）被 Euler 显式积分会数值
                                   # 震荡弹跳，必须 implicit 系（attach 时
                                   # world 值优先于模型原值）
+    cone: int = 0                 # 摩擦锥（0=pyramidal 1=elliptic）：模型原生
+                                  # 用 elliptic 的世界（如 SO-101）要显式声明，
+                                  # 否则 attach 时被世界默认值覆盖（同样
+                                  # world 值优先）
     scene: SceneSpec = field(default_factory=SceneSpec)
     robots: list[RobotSpec] = field(default_factory=list)
     task: TaskSpec = field(default_factory=TaskSpec)
@@ -290,6 +315,33 @@ def _parse_scene(d, path: str) -> SceneSpec:
         lights.append(LightSpec(pos=_vec(_req(ld, "pos", f"{path}.lights[{i}].pos"),
                                          3, f"{path}.lights[{i}].pos")))
 
+    cameras = []
+    seen_cams: set[str] = set()
+    for i, cd in enumerate(d.get("cameras", [])):
+        cp = f"{path}.cameras[{i}]"
+        if not isinstance(cd, dict):
+            raise _err(cp, f"需要字典，实际是: {cd!r}")
+        cname = _str(_req(cd, "name", cp), f"{cp}.name")
+        if cname in seen_cams:
+            raise _err(f"{cp}.name", f"相机名重复: '{cname}'")
+        seen_cams.add(cname)
+        cpos = _vec(cd.get("pos", [0, 0, 0]), 3, f"{cp}.pos")
+        quat = cd.get("quat")
+        euler = cd.get("euler")
+        if quat is not None and euler is not None:
+            raise _err(cp, "quat 与 euler 只能选一个（推荐 euler，单位为度）")
+        if quat is not None:
+            quat = _vec(quat, 4, f"{cp}.quat")
+        if euler is not None:
+            euler = _vec(euler, 3, f"{cp}.euler")
+        fovy = cd.get("fovy")
+        if fovy is not None:
+            fovy = _num(fovy, f"{cp}.fovy")
+            if not 0.0 < fovy < 180.0:
+                raise _err(f"{cp}.fovy", f"视场角必须在 (0,180) 度内，实际是 {fovy}")
+        cameras.append(CameraSpec(name=cname, pos=cpos, quat=quat,
+                                  euler=euler, fovy=fovy))
+
     objects = []
     for i, od in enumerate(d.get("objects", [])):
         p = f"{path}.objects[{i}]"
@@ -320,7 +372,8 @@ def _parse_scene(d, path: str) -> SceneSpec:
         objects.append(ObjectSpec(name=name, type=gtype, size=size, pos=pos,
                                   quat=quat, mass=mass, color=color, static=static,
                                   friction=friction, model=model))
-    return SceneSpec(floor=floor, lights=lights, objects=objects)
+    return SceneSpec(floor=floor, lights=lights, objects=objects,
+                     cameras=cameras)
 
 
 def _parse_sensors(rd: dict, p: str) -> list[SensorSpec]:
@@ -563,6 +616,8 @@ def world_to_dict(spec: WorldSpec) -> dict:
     d['base_dir'] = str(spec.base_dir)
     d['integrator'] = next(name for name, value in _INTEGRATORS.items()
                            if value == spec.integrator)
+    d['cone'] = next(name for name, value in _CONE_TYPES.items()
+                     if value == spec.cone)
     for robot in d['robots']:
         # Optional sensor fields must be absent, rather than explicit nulls.
         robot['sensors'] = [{k: v for k, v in sensor.items() if v is not None}
@@ -596,6 +651,11 @@ def parse_world(d: dict, path: str = "world") -> WorldSpec:
         raise _err(f"{path}.integrator",
                    f"必须是 {sorted(_INTEGRATORS)} 之一，实际是: {d.get('integrator')!r}")
     integrator = _INTEGRATORS[integ_name]
+    cone_name = str(d.get("cone", "pyramidal")).lower()
+    if cone_name not in _CONE_TYPES:
+        raise _err(f"{path}.cone",
+                   f"必须是 {sorted(_CONE_TYPES)} 之一，实际是: {d.get('cone')!r}")
+    cone = _CONE_TYPES[cone_name]
 
     scene = _parse_scene(d.get("scene", {}), f"{path}.scene")
     seen: dict[str, str] = {}
@@ -626,7 +686,7 @@ def parse_world(d: dict, path: str = "world") -> WorldSpec:
 
     return WorldSpec(name=name, timestep=timestep, ctrl_period=ctrl_period,
                      gravity=gravity, impratio=impratio, integrator=integrator,
-                     scene=scene, robots=robots, task=task, runtime=runtime)
+                     cone=cone, scene=scene, robots=robots, task=task, runtime=runtime)
 
 
 def resolve_zoo_models(d: dict, on_download=None) -> dict:

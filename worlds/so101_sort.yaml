@@ -1,0 +1,100 @@
+name: so101_sort               # SO-101 桌面分拣：两色方块 → 两个同色盒子
+timestep: 0.002
+ctrl_period: 32
+gravity: [0, 0, -9.81]
+integrator: implicitfast       # 位置伺服 kp=998，高刚度需隐式积分
+impratio: 10                   # 与模型自带接触刚度一致（不要用四足的 100）
+cone: elliptic                 # 与 SO-101 模型原生摩擦锥一致（默认 pyramidal）
+
+scene:
+  floor:
+    size: [2.0, 2.0]
+    texture: grid
+    friction: 1.0
+  lights:
+    - {pos: [0, 0, 1.2]}
+
+  objects:
+    # ---- 桌子：顶面 z=0.16（桌面 + 四条落地腿），机械臂坐在桌面上 ----
+    # 桌面 x[-0.10,0.50] y[-0.20,0.20]：前沿只到 x=0.50，保证方块/盒子
+    # 都落在 SO-101 的可达域内（x>0.30 处顶抓已够不到）
+    - name: table
+      type: box
+      size: [0.30, 0.20, 0.02]
+      pos: [0.20, 0, 0.14]
+      color: "#6B7280"
+      static: true
+    - {name: table_leg_0, type: box, size: [0.025, 0.025, 0.06], pos: [-0.08, -0.17, 0.06], color: "#6B7280", static: true}
+    - {name: table_leg_1, type: box, size: [0.025, 0.025, 0.06], pos: [0.48, -0.17, 0.06], color: "#6B7280", static: true}
+    - {name: table_leg_2, type: box, size: [0.025, 0.025, 0.06], pos: [-0.08, 0.17, 0.06], color: "#6B7280", static: true}
+    - {name: table_leg_3, type: box, size: [0.025, 0.025, 0.06], pos: [0.48, 0.17, 0.06], color: "#6B7280", static: true}
+
+    # ---- 两个 4cm 方块：质量 0.03kg、摩擦 1.2（默认 1.0 容易滑脱） ----
+    # 方块与盒子同半径（约 0.22m）：抬升后的运输段只需肩部 pan，不必切换
+    # 肘部构型（SO-101 在 0.18~0.28m 之间存在构型跳变）
+    - name: cube_red
+      type: box
+      size: [0.02, 0.02, 0.02]
+      pos: [0.22, -0.04, 0.18]
+      color: "#EF4444"
+      mass: 0.03
+      friction: 1.2
+    - name: cube_blue
+      type: box
+      size: [0.02, 0.02, 0.02]
+      pos: [0.22, 0.04, 0.18]
+      color: "#3B82F6"
+      mass: 0.03
+      friction: 1.2
+
+    # ---- 红盒：外径 0.12×0.12、壁高 0.03（底板 + 四壁，居中 0.178,-0.13） ----
+    - {name: box_red_floor, type: box, size: [0.055, 0.055, 0.002], pos: [0.178, -0.13, 0.162], color: "#EF4444", static: true}
+    - {name: box_red_wall_x0, type: box, size: [0.06, 0.005, 0.015], pos: [0.178, -0.185, 0.175], color: "#EF4444", static: true}
+    - {name: box_red_wall_x1, type: box, size: [0.06, 0.005, 0.015], pos: [0.178, -0.075, 0.175], color: "#EF4444", static: true}
+    - {name: box_red_wall_y0, type: box, size: [0.005, 0.06, 0.015], pos: [0.123, -0.13, 0.175], color: "#EF4444", static: true}
+    - {name: box_red_wall_y1, type: box, size: [0.005, 0.06, 0.015], pos: [0.233, -0.13, 0.175], color: "#EF4444", static: true}
+
+    # ---- 蓝盒：居中 0.178,+0.13 ----
+    - {name: box_blue_floor, type: box, size: [0.055, 0.055, 0.002], pos: [0.178, 0.13, 0.162], color: "#3B82F6", static: true}
+    - {name: box_blue_wall_x0, type: box, size: [0.06, 0.005, 0.015], pos: [0.178, 0.075, 0.175], color: "#3B82F6", static: true}
+    - {name: box_blue_wall_x1, type: box, size: [0.06, 0.005, 0.015], pos: [0.178, 0.185, 0.175], color: "#3B82F6", static: true}
+    - {name: box_blue_wall_y0, type: box, size: [0.005, 0.06, 0.015], pos: [0.123, 0.13, 0.175], color: "#3B82F6", static: true}
+    - {name: box_blue_wall_y1, type: box, size: [0.005, 0.06, 0.015], pos: [0.233, 0.13, 0.175], color: "#3B82F6", static: true}
+
+robots:
+  - name: arm
+    model: zoo://so101_lerobot
+    pos: [0, 0, 0.16]          # 贴在桌面上表面、靠后沿
+    end_effectors: []          # 夹爪是模型自带关节，不挂额外夹爪
+    controller: ../controllers/so101_pick_red.py
+    sensors:
+      # 腕部相机：复用官方模型自带 camera_mount / wrist_cam（不新增重名相机），
+      # 这里把安装位姿与光学参数显式写出来。
+      # - 安装位姿取官方 MJCF：pos 0.055/-0.045、euler -0.57 绕 x（此处换成
+      #   wxyz 四元数，与 euler 完全等价）
+      # - 光学参数取官方模组：sensorsize 5.76×3.24mm、focal 3.6mm
+      #   → 垂直视场 48.46°、水平视场 77.3°（fovy 与 focal 推导值一致，
+      #   模型里 focal 优先，这里显式写出仅作参数留档）
+      # - 官方采集端出图 640×480 @ 30fps；录制分辨率由 --record-width/-height
+      #   决定（默认就是 640×480）
+      - name: wrist_cam
+        type: camera
+        body: camera_mount
+        pos: [0.0, 0.055, -0.045]
+        quat: [0.959662, -0.281157, 0.0, 0.0]
+        fovy: 48.455
+
+task:
+  success:
+    body: cube_red
+    zone: {min: [0.13, -0.18, 0.16], max: [0.23, -0.08, 0.22]}
+  reward:
+    - distance: {a: cube_red, b: arm/gripper, weight: -0.01}
+    - zone: {body: cube_red, zone: {min: [0.13, -0.18, 0.16], max: [0.23, -0.08, 0.22]}, weight: 0.01}
+    - zone: {body: cube_blue, zone: {min: [0.13, 0.08, 0.16], max: [0.23, 0.18, 0.22]}, weight: 0.01}
+  max_ticks: 5000
+
+runtime:
+  realtime: false
+  controller_timeout: 100
+  timeout_policy: last_ctrl
