@@ -32,7 +32,8 @@ Simovia 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿
 - **进程级控制器隔离**：每个机器人的控制器是独立 OS 进程，通过 ZMQ REQ/ROUTER 与内核栅栏同步；控制器崩溃、超时都不会死锁内核
 - **MCP 原生接入**：零依赖自实现的 stdio JSON-RPC MCP 服务器，任何支持 MCP 的 AI Agent（Claude、Trae 等）都能直接驱动仿真，包括让 Agent 用 `screenshot` 截取仿真画面"亲眼"看世界
 - **传感器系统**：YAML 里给机器人声明 encoder / IMU / 触觉 / 关节力矩 / 相机五类传感器，编译进 MuJoCo 模型、读数进观测流，GUI 面板实时显示；传感器是只读派生量，不改变物理轨迹（bit 级守护测试保证）
-- **机器人模型库（资产自带）**：MuJoCo Menagerie 官方模型一键接入——预配置 34 个著名机器人（四足 Go1/Go2/A1/ANYmal C/Spot/Barkour、人形 H1/G1/OP3/TALOS/T1/Berkeley、机械臂 Panda/FR3/iiwa/Gen3/UR5e/UR10e/xArm7/Lite6/SO-ARM100 等、无人机 X2/Crazyflie、移动操作 TIAGo/Stretch 3/TidyBot），**模型资产随仓库自带（`models/zoo/`），clone 完即离线可用、无需下载**；GUI 点"模型库"选模型即生成世界 + 控制器模板并自动打开编辑器，改完控制律点 Run 即跑；AI Agent 走同一条 `zoo_create` 工具
+- **VR 遥操作数据采集**：PICO 头显自带浏览器连上控制器（无需装 APP），手柄位移经操作空间控制（OSC）驱动机械臂，A 键一键录制 LeRobot 数据集（多路相机 + 关节状态/动作，v2.1 增量落盘，退出时自动升级 v3.0），每集结束自动复位场景，采完直接微调 SmolVLA——见下方「PICO 遥操作」教程
+- **机器人模型库（资产自带）**：MuJoCo Menagerie 官方模型一键接入——预配置 35 个著名机器人（四足 Go1/Go2/A1/ANYmal C/Spot/Barkour、人形 H1/G1/OP3/TALOS/T1/Berkeley、机械臂 Panda/FR3/iiwa/Gen3/UR5e/UR10e/xArm7/Lite6/SO-ARM100/SO-101 等、无人机 X2/Crazyflie、移动操作 TIAGo/Stretch 3/TidyBot），**模型资产随仓库自带（`models/zoo/`），clone 完即离线可用、无需下载**；GUI 点"模型库"选模型即生成世界 + 控制器模板并自动打开编辑器，改完控制律点 Run 即跑；AI Agent 走同一条 `zoo_create` 工具
 - **夹爪装配工作台**：内置 4 款末端执行器（OnRobot 2FG7、Robotiq 2F-85、UMI Gripper 三款平行夹爪 + LEAP Hand 16 自由度灵巧手），GUI"装备"页点选即可给 UR5e / UR10e / xArm7 / Panda 四臂挂爪/拆爪，并可视化挂点、关节、body 清单；灵巧手用 `actuators` + `poses` 描述多关节开合姿态。同一页表单式添加五类传感器（encoder/IMU/触觉/关节力矩/相机），全部改 YAML 自动重载，不手写配置。夹爪安装位姿（mount）按各臂腕部几何逐臂标定，夹爪后法兰与机器人法兰同轴贴合、指尖沿法兰法向伸出；自带"码垛分区"场景模板（UR5e+2FG7，A 区取料→B 区码放）
 - **从零造机器人**：连杆树 YAML（parent / pos / rpy / 几何 / 关节）直接编译成 MJCF 挂进世界；GUI 文件 → 造机器人（Ctrl+B）提供连杆树编辑 + 实时 3D 预览 + 每个连杆的 R_rel / R_world 旋转矩阵与 RGB 坐标轴，按 `R = Rz·Ry·Rx` 直观展示角度怎么变成矩阵，适合机器人学入门
 - **RL 训练接口**：一个 YAML 世界 = 一个确定性 gymnasium.Env——动作空间 = 执行器拼接、观测 = qpos/qvel/传感器、reset 逐位一致（同 YAML 跑两遍轨迹逐 bit 相同，eval 可复现），单进程直驱不起 ZMQ，训练吞吐优先
@@ -282,6 +283,8 @@ python -m simovia run worlds/pick_cube.yaml --record episodes/pick1_img \
 - `--record-camera` 支持 YAML 传感器短名（`wrist_cam`）或全名（`arm/wrist_cam`），`inspect` 可查看世界里已声明的相机；名字错误会直接报错并列出可用相机。
 - 产物：`data.npz`（观测/动作/root 位姿/物体位姿）+ `meta.json`（契约、统计、`images` 里的相机全名、挂载 body/pos/quat、分辨率、步长、帧数）+ `frames/frame_000000.png`。
 - 当前保存 PNG 帧序列，需要视频时可用 `ffmpeg -framerate 30 -i frames/frame_%06d.png -c:v libx264 out.mp4` 合成。
+
+要录 VLA 训练数据集（LeRobot 格式、多路相机视频、语言指令条件），用 PICO 遥操作链路，见 [PICO 遥操作：VR 采集 LeRobot 数据集](#pico-遥操作vr-采集-lerobot-数据集smolvla-微调链路)。
 
 ### 1.6 写控制器前先 `inspect`
 
@@ -792,6 +795,65 @@ python examples/train_ppo_go2.py
 在已激活的虚拟环境中统一安装平台与视觉依赖：`python -m pip install -r requirements.txt -r demo/fruit_sorting/requirements.txt`，然后启动 GUI，从“文件”菜单进入对应 demo。水果场景直接读取预先保存的标定结果；重新标定在独立场景中完成。
 
 详细操作、场景路径和其他机械臂的适配说明见 [demo 使用说明](demo/README.md)。
+
+## PICO 遥操作：VR 采集 LeRobot 数据集（SmolVLA 微调链路）
+
+PICO 头显**自带浏览器**连上控制器（不需要装任何 APP），右手柄经操作空间控制（OSC）驱动 SO-101 机械臂做桌面分拣；A 键一键录制 LeRobot 数据集（腕部 + 俯视两路相机、关节状态/动作、语言指令条件），每集结束自动复位场景，程序退出时数据集自动升级成 lerobot >= 0.6 可直接训练的 v3.0 格式——采完拿去微调 SmolVLA，中间零手工转换。
+
+完整 demo（含训练命令与常见坑）见独立仓库：**[jerryzhu-yc/so101-smolvla-demo](https://github.com/jerryzhu-yc/so101-smolvla-demo)**。
+
+### 启动与连接
+
+```bash
+# 1. 启动世界（控制器由 YAML 自动拉起，同时开 HTTP/WS 服务，默认 8090 端口）
+python -m simovia run worlds/so101_pico_sort.yaml
+
+# 2. 连 PICO（二选一）
+#    a. 同一局域网：PICO 浏览器打开 http://<PC 的 IP>:8090
+#       （启动日志会列出所有可用 IP）
+#    b. USB 直连（推荐，不受 WiFi 联网校验影响）：
+adb reverse tcp:8090 tcp:8090
+adb shell am start -a android.intent.action.VIEW -d "http://localhost:8090"
+
+# 3. 页面里点「进入 VR 遥操作」，机械臂自动走到预备姿态
+```
+
+> PICO 浏览器开 `http://localhost:8090` 属于安全上下文，WebXR 可用；局域网 http 地址下 `navigator.xr` 为 undefined，此时必须走上面的 adb 方案。
+
+### 操作
+
+| 输入 | 作用 |
+| --- | --- |
+| 右手柄位移 | 增量映射到 TCP 目标（缩放与工作域 clamp 见控制器顶部参数） |
+| 扳机 | 夹爪开合（模拟量） |
+| A 键 | 开始 / 停止录制一集（停止时自动复位：物体回初始位姿 + 机械臂回预备姿态 + 手柄重新对中） |
+| B 键 | 原地重新对中（机械臂不动，手柄当前位置成为新原点） |
+
+### 数据集格式与续采
+
+- 采集期按 LeRobot **v2.1** 逐帧落盘（每集一个 mp4 + 一个 parquet，可安全续写、可整集删除）；回看后手动删掉不满意的集，下次启动 `sync()` 会自动剔除残集并从 0 重新连续编号
+- 程序退出时**自动就地升级 v3.0**（标量列拼接、各路相机无损拼接成单 mp4、补 episodes parquet 与统计量），原 v2.1 保留为 `<root>_v21`；下次对同一路径启动采集自动换回 v2.1 继续续写，「采完即 v3.0、再采自动回退」可反复
+- 调参阶段设 `SIMOVIA_NO_V30=1` 跳过退出时的升级；也可手动转换：`python -m simovia.lerobot_v30 <数据集路径>`
+- 不要用 lerobot 官方 `convert_dataset_v21_to_v30` 转本链路产出的数据：它假设 v2.1 相机是抽帧 PNG，对真视频版 v2.1 会残留 video struct 列、把视频特征 `names` 写成 null，加载和建 policy 双双失败
+
+### 去训练
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+lerobot-train \
+  --policy.path=lerobot/smolvla_base \
+  --policy.device=cuda \
+  --policy.use_amp=true \
+  --policy.push_to_hub=false \
+  --dataset.repo_id=local/so101_sort2 \
+  --dataset.root=<数据集路径> \
+  --rename_map='{"observation.images.wrist_cam":"observation.images.camera1","observation.images.top":"observation.images.camera2"}' \
+  --batch_size=32 --steps=20000 \
+  --save_checkpoint=true --save_freq=5000 \
+  --output_dir=~/outputs/so101_sort2
+```
+
+`smolvla_base` 的相机槽位是 `camera1/2/3`，本链路只有两路相机，用 `--rename_map` 映射；**不要**用 `--policy.empty_cameras`（那是"额外追加空相机"，会让期望路数变成 4 路反而对不上）。推理时必须保持与训练一致的相机顺序。
 
 ## 测试
 
