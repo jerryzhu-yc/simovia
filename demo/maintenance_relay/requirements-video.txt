@@ -1,0 +1,2 @@
+# Optional: headless MP4 recording only. Physics and GUI need no extra packages.
+opencv-python-headless~=4.12.0

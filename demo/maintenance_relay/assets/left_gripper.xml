@@ -1,0 +1,62 @@
+<mujoco model="onrobot_2fg7">
+  <compiler angle="radian" coordinate="local" meshdir="../../../models/grippers/assets" autolimits="true" />
+
+  <asset>
+    <mesh name="base_mesh" file="Base.stl" />
+    <mesh name="left_finger_body" file="LeftFingerBody.stl" />
+    <mesh name="left_finger_pad" file="LeftFingerPad.stl" />
+    <mesh name="right_finger_body" file="RightFingerBody.stl" />
+    <mesh name="right_finger_pad" file="RightFingerPad.stl" />
+    <mesh name="left_finger_pad_coll" file="LeftFingerPad_Coll.stl" />
+    <mesh name="right_finger_pad_coll" file="RightFingerPad_Coll.stl" />
+
+    <material name="polished_aluminium" rgba=".66 .70 .73 1" specular="0.95" shininess="0.7" reflectance="0.28" />
+    <material name="silicone_pad" rgba="0.05 0.05 0.05 1" specular="0.1" shininess="0.2" reflectance="0" />
+  </asset>
+
+  <contact>
+    <exclude body1="gripper_base" body2="left_finger" />
+    <exclude body1="gripper_base" body2="right_finger" />
+  </contact>
+
+  <worldbody>
+
+    <body name="gripper_base">
+      <inertial pos="0 0 0" mass="0.95" diaginertia="0.002 0.002 0.002" />
+      <geom type="mesh" mesh="base_mesh" material="polished_aluminium" />
+
+      <site name="gripper_tcp" pos="0 -0.028 0" size="0.003" rgba="0 1 1 0.4" />
+
+      <body name="left_finger" pos="0.0125 0 0">
+        <inertial pos="0 0 0" mass="0.075" diaginertia="2e-5 2e-5 2e-5" />
+        <joint name="left_slide" type="slide" axis="-1 0 0" range="0 0.019" damping="5" frictionloss="0.2" />
+        <geom type="mesh" mesh="left_finger_body" material="polished_aluminium" contype="0" conaffinity="0" />
+        <geom type="mesh" mesh="left_finger_pad" material="silicone_pad" contype="0" conaffinity="0" />
+        <geom type="mesh" mesh="left_finger_pad_coll" rgba="1 1 1 0" friction="1.0 0.02 0.002" />
+
+        <site name="left_pad_site" pos="-0.029 -0.028 0" size="0.01" rgba="1 0 0 0.25" />
+      </body>
+
+      <body name="right_finger" pos="-0.0125 0 0">
+        <inertial pos="0 0 0" mass="0.075" diaginertia="2e-5 2e-5 2e-5" />
+        <joint name="right_slide" type="slide" axis="1 0 0" range="0 0.019" damping="5" frictionloss="0.2" />
+        <geom type="mesh" mesh="right_finger_body" material="polished_aluminium" contype="0" conaffinity="0" />
+        <geom type="mesh" mesh="right_finger_pad" material="silicone_pad" contype="0" conaffinity="0" />
+        <geom type="mesh" mesh="right_finger_pad_coll" rgba="1 1 1 0" friction="1.0 0.02 0.002" />
+
+        <site name="right_pad_site" pos="0.029 -0.028 0" size="0.01" rgba="1 0 0 0.25" />
+      <geom name="button_probe" type="sphere" pos=".029 -.055 0" size=".009" mass=".005" rgba=".15 .18 .2 1" /><site name="button_tcp" pos=".029 -.055 0" size=".003" /></body>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <fixed name="gripper_tendon">
+      <joint joint="left_slide" coef="1" />
+      <joint joint="right_slide" coef="1" />
+    </fixed>
+  </tendon>
+
+  <actuator>
+    <position name="gripper_act" tendon="gripper_tendon" kp="500" ctrlrange="0 0.038" forcerange="-25 25" />
+  </actuator>
+</mujoco>

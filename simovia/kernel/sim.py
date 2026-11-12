@@ -103,9 +103,23 @@ class Simulation:
         self._ident: dict[bytes, str] = {}      # zmq identity -> robot name
         # Supervisor 快照（__init__ 在 reset 用）
         self._snaps: dict[str, tuple] = {}
+        self._coordinator = None
+        self._coordinator_factory = None
+        if autostart_controllers and any(r.args.get('shared_world_controller') is True for r in spec.robots):
+            import runpy
+            paths = {(spec.base_dir / r.controller).resolve() for r in spec.robots if r.controller}
+            if len(paths) != 1 or not all(r.controller and r.args.get('shared_world_controller') is True for r in spec.robots):
+                self.close()
+                raise WorldError('共享控制器必须由所有机器人绑定同一个脚本')
+            try:
+                self._coordinator_factory = runpy.run_path(str(paths.pop()))['create_controller']
+                self._coordinator = self._coordinator_factory(self)
+            except Exception:
+                self.close()
+                raise
         supervisor.save_state(self.model, self.data, self._snaps,
                               supervisor.INIT_TAG, tick=0, internal=True)
-        if autostart_controllers:
+        if autostart_controllers and self._coordinator is None:
             self._spawn_controllers()
 
     # ---------------------------------------------------------------- 子进程
@@ -309,7 +323,15 @@ class Simulation:
 
     def reset(self) -> None:
         """回到编译完成、还没跑过任何 tick 的初始状态。"""
+        if self._coordinator is not None:
+            self._coordinator.close()
         self.load_state(supervisor.INIT_TAG)
+        if self._coordinator_factory is not None:
+            from simovia.world.initial import apply_initial_state
+            mujoco.mj_resetData(self.model, self.data)
+            apply_initial_state(self.spec, self.model, self.data, self.index)
+            self._coordinator = self._coordinator_factory(self)
+            self.controller_results.clear()
 
     def ensure_controllers(self) -> bool:
         """确保控制器进程在跑（继续推进用）。返回是否重新拉起。
@@ -592,6 +614,26 @@ class Simulation:
             sample_stride = max(
                 1, int(round((1.0 / _SAMPLE_HZ) / self.spec.timestep)))
 
+        if self._coordinator is not None:
+            controller = self._coordinator
+            while self.tick < max_ticks and not controller.done:
+                if stop_check is not None and stop_check():
+                    break
+                if not controller.advance():
+                    break
+                self.tick += 1
+                if on_tick is not None:
+                    on_tick()
+                if on_sample is not None:
+                    on_sample()
+                _pace()
+            if controller.done:
+                self.controller_results = {r.name: {'success': controller.success,
+                    'detail': controller.detail} for r in self.spec.robots}
+            stats = self._stats(t_start, sim_start)
+            stats['done'] = [r.name for r in self.spec.robots] if controller.done else []
+            return stats
+
         # 无控制器的世界：直接空跑（scene_gen 冒烟等用途）。
         # max_ticks 是"目标总 tick"（与控制器分支的 budget=max_ticks-tick
         # 语义一致）：暂停后继续 run 不会把 N 步进重复累加。
@@ -746,6 +788,8 @@ class Simulation:
 
     def _task_success(self) -> bool | None:
         """Scene task takes precedence; optional explicit controller reports otherwise."""
+        if self._coordinator is not None:
+            return self._coordinator.success if self._coordinator.done else None
         result=task_success(self.task,self.data)
         if result is not None:return result
         names=[r.name for r in self.spec.robots if r.controller]
@@ -774,6 +818,8 @@ class Simulation:
     # ---------------------------------------------------------------- 收尾
 
     def close(self):
+        if self._coordinator is not None:
+            self._coordinator.close()
         self.close_device_renderers()
         for proc in self._procs.values():
             if proc.poll() is None:

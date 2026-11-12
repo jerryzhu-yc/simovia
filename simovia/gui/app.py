@@ -1133,6 +1133,8 @@ class MainWindow(QMainWindow):
             "实时预览并查看每个连杆的旋转矩阵")
         self.act_fruit_sorting = mk("水果视觉分拣 Demo…", tip="Panda + 腕部相机：加载标定结果、HSV识别、三类水果分拣")
         self.act_fruit_sorting.triggered.connect(self._on_fruit_sorting)
+        self.act_maintenance_relay = mk("Go2 × G1 × UR5e 联合维修 Demo…", tip="机械臂备料、机械狗配送、人形机器人维修；独立任务控制台")
+        self.act_maintenance_relay.triggered.connect(self._on_maintenance_relay)
         self.act_hand_eye_panda = mk("Panda 手眼标定…", tip="独立标定场景，保存可复用的腕部相机外参")
         self.act_hand_eye_ur5e = mk("UR5e 手眼标定…", tip="六轴机械臂的可配置标定示例")
         self.act_hand_eye_panda.triggered.connect(lambda: self._on_hand_eye("panda"))
@@ -1279,6 +1281,7 @@ class MainWindow(QMainWindow):
         m_file.addAction(self.act_zoo)
         m_file.addAction(self.act_robot_builder)
         m_file.addAction(self.act_fruit_sorting)
+        m_file.addAction(self.act_maintenance_relay)
         m_calibration = m_file.addMenu("手眼标定 Demo")
         m_calibration.addAction(self.act_hand_eye_panda)
         m_calibration.addAction(self.act_hand_eye_ur5e)
@@ -1876,6 +1879,22 @@ class MainWindow(QMainWindow):
             "Ctrl+左键拖动 调高度</p>")
 
     # ============================================================ 模型库
+
+    def _on_maintenance_relay(self):
+        """Open the physical multi-robot mission console without replacing the editor world."""
+        window = getattr(self, "_maintenance_relay_window", None)
+        if window is None:
+            try:
+                from demo.maintenance_relay.gui import create_window
+                window = create_window(parent=self)
+            except Exception as error:
+                QMessageBox.warning(self, "联合维修 Demo", str(error))
+                return
+            self._maintenance_relay_window = window
+            window.destroyed.connect(lambda: setattr(self, "_maintenance_relay_window", None))
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _on_fruit_sorting(self):
         """Load the actual scene and controller in the main application."""

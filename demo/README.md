@@ -1,14 +1,17 @@
-# Simovia 视觉 demo
+# Simovia 演示
 
-当前示例分为两个独立模块：水果分拣直接加载标定结果；手眼标定单独采集并保存结果。
+包含三机联合维修、视觉分拣和手眼标定。联合维修在独立任务控制台中运行；视觉分拣与手眼标定沿用主窗口场景工作流。
 
 | 场景 | 软件内入口 | 场景文件 |
 |---|---|---|
+| Go2 × G1 × UR5e 联合维修 | 文件 → Go2 × G1 × UR5e 联合维修 Demo… | [使用说明](maintenance_relay/README.md) |
 | 香蕉、苹果、葡萄分拣 | 文件 → 水果视觉分拣 Demo… | [fruit_sorting/scene.yaml](fruit_sorting/scene.yaml) |
 | Panda 腕部相机标定 | 文件 → 手眼标定 Demo → Panda 手眼标定… | [hand_eye/scene_panda.yaml](hand_eye/scene_panda.yaml) |
 | UR5e 腕部相机标定 | 文件 → 手眼标定 Demo → UR5e 手眼标定… | [hand_eye/scene_ur5e.yaml](hand_eye/scene_ur5e.yaml) |
 
-## 快速运行
+联合维修可直接运行 `python -m demo.maintenance_relay`，使用平台现有依赖；具体范围、无头验证与录像方式见[联合维修说明](maintenance_relay/README.md)。
+
+## 视觉示例快速运行
 
 先按[主 README 安装说明](../README.md#安装)创建并激活 64 位 Python 3.12 虚拟环境。在仓库根目录统一安装平台和视觉依赖，然后启动软件：
 

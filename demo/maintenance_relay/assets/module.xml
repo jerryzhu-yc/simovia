@@ -1,0 +1,5 @@
+<mujoco model="service_module"><worldbody><body name="module"><freejoint/>
+      <geom name="case" type="box" size=".045 .035 .02" mass=".08" rgba=".12 .45 .95 1" friction="1.2 .02 .002"/>
+      <geom name="handle" type="box" pos="0 0 .045" size=".024 .024 .025" mass=".02" rgba=".35 .72 1 1" friction="1.2 .02 .002"/>
+      <geom type="box" pos="0 -.0355 0" size=".026 .001 .01" mass=".001" rgba=".85 .94 1 1" contype="0" conaffinity="0"/>
+    </body></worldbody></mujoco>
