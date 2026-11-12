@@ -5,6 +5,7 @@
 import json
 import pathlib
 import subprocess
+import time
 
 import mujoco
 import numpy as np
@@ -386,7 +387,8 @@ robot = Robot()
 for name in ("left_elbow_joint", "left_hip_pitch_joint"):
     robot.set(name, 0.5)
 while robot.step():
-    open({str(out)!r}, "w").write(json.dumps(robot.joint_state()))
+    open({str(out)!r}, "w").write(json.dumps(
+        {{"tick": robot.tick, "joints": robot.joint_state()}}))
 robot.close()
 """)
         d = {"name": "float_base", "timestep": 0.002, "ctrl_period": 8,
@@ -396,10 +398,23 @@ robot.close()
                          "controller": ctrl_path}]}
         with Simulation(parse_world(d)) as sim:
             stats = sim.run(max_ticks=80)
+            # run 收尾不终止控制器（暂停语义）：控制器可能还在写最后一帧
+            # 观测，等到 stats["ticks"] 那一 tick 落盘再读，避免读到上一帧
+            payload = {}
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                try:
+                    payload = json.loads(out.read_text())
+                except (OSError, ValueError):
+                    payload = {}
+                if payload.get("tick") == stats["ticks"]:
+                    break
+                time.sleep(0.01)
             truth = {n: float(sim.data.qpos[sim.model.jnt_qposadr[jid]])
                      for n, jid in sim.index.robots["arm"].joints.items()}
         assert stats["crashed"] == []
-        js = json.loads(out.read_text())
+        assert payload.get("tick") == stats["ticks"]
+        js = payload["joints"]
         assert set(js) == set(truth)
         assert len(js["floating_base_joint"]) == 7
         assert js["left_elbow_joint"] == pytest.approx(truth["left_elbow_joint"])
