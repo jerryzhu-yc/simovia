@@ -237,22 +237,30 @@ class TestAgentLoop:
         finally:
             s.close()
 
-    def test_partial_run_releases_controller(self):
-        """run(ticks=N) 中途截断后控制器必须收到 stop 退出——
-        stop 窗口竞态（step 在 run 返回后才到）曾致永久阻塞（压测实测）。"""
+    def test_partial_run_pauses_controller(self):
+        """run(ticks=N) 截断后控制器保留为暂停态（报告 F1）：
+        进程不退出、下一段 run 复用同一控制器上下文；close() 才终止，
+        不会泄漏进程。"""
         import subprocess
+        import time
         s = SimoviaSession()
         try:
             s.call_tool("load_world", {"yaml_path": str(WORLD)})
             stats = s.call_tool("run", {"ticks": 50})   # 截断时控制器还在相位机中
             assert stats["ticks"] == 50
             proc = s.sim._procs["arm"]
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                raise AssertionError("run 截断后控制器未在 3s 内退出（窗口泄漏）")
+            time.sleep(0.2)                    # 给控制器发下一个 step 的时间窗
+            assert proc.poll() is None, "暂停后控制器进程被错误终止"
+            # 继续 run 复用同一进程（分段运行 = 连续运行，控制器进度不丢）
+            r2 = s.call_tool("run", {"ticks": 10})
+            assert r2["ticks"] == 60, r2
+            assert s.sim._procs["arm"] is proc
         finally:
             s.close()
+        try:
+            proc.wait(timeout=3)               # close() 必须收掉进程
+        except subprocess.TimeoutExpired:
+            raise AssertionError("close() 后控制器进程仍未退出（泄漏）")
 
     def test_failed_load_keeps_old_world(self):
         """新世界创建失败必须保留旧世界（先建新仿真，成功后再关旧的）。"""

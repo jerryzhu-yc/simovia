@@ -11,45 +11,78 @@ from simovia.errors import WorldError
 
 
 class LocalFiles:
-    """管理本地文件工具的根目录（= 当前世界 YAML 所在目录）。
+    """管理本地文件工具的根目录集合。
+
+    世界 YAML 所在目录是主根（相对路径的解析基准）；世界显式引用的
+    控制器所在目录作为附加根——项目把 worlds/ 与 controllers/ 设计成
+    同级，若只允许 worlds/，Agent 连示例世界的控制器都读不了（报告 F4）。
 
     路径解析：
-    - 绝对路径：必须在 root 内（防止 AI 越界写 ~/.bashrc 等）
-    - 相对路径：按 root 拼接
+    - 绝对路径：必须落在任一允许根内（防止 AI 越界写 ~/.bashrc 等）
+    - 相对路径：按主根拼接
     """
 
-    def __init__(self, root: pathlib.Path | None = None):
-        self._root = root.resolve() if root else None
+    def __init__(self, root: pathlib.Path | None = None,
+                 extra_roots=None):
+        self._roots: list[pathlib.Path] = []
+        self.set_roots([root] if root else [], extra_roots)
 
     @property
     def root(self) -> pathlib.Path | None:
-        return self._root
+        """主根（世界目录）；无根时为 None。"""
+        return self._roots[0] if self._roots else None
+
+    @property
+    def roots(self) -> list[pathlib.Path]:
+        return list(self._roots)
 
     def set_root(self, root: pathlib.Path | None) -> None:
-        self._root = root.resolve() if root else None
+        self.set_roots([root] if root else [])
+
+    def set_roots(self, roots, extra_roots=None) -> None:
+        """设置允许根：第一个是主根，其余只作越界校验。去重保序。"""
+        out: list[pathlib.Path] = []
+        for r in list(roots) + list(extra_roots or []):
+            if not r:
+                continue
+            p = pathlib.Path(r).resolve()
+            if p not in out:
+                out.append(p)
+        self._roots = out
+
+    def _in_roots(self, full: pathlib.Path) -> bool:
+        for r in self._roots:
+            try:
+                full.relative_to(r)
+                return True
+            except ValueError:
+                continue
+        return False
 
     def _resolve(self, path: str) -> pathlib.Path:
-        if self._root is None:
+        if not self._roots:
             raise WorldError("LocalFiles", "未设置世界目录，无法读写文件")
         p = pathlib.Path(path)
-        full = p if p.is_absolute() else (self._root / p)
+        full = p if p.is_absolute() else (self._roots[0] / p)
         full = full.resolve()
-        try:
-            full.relative_to(self._root)        # 越界抛 ValueError
-        except ValueError:
+        if not self._in_roots(full):
+            allowed = "、".join(str(r) for r in self._roots)
             raise WorldError(
                 "LocalFiles",
-                f"路径 '{path}' 越界：只能在 {self._root} 内读写") from None
+                f"路径 '{path}' 越界：只能在 {allowed} 内读写") from None
         return full
 
     def write_file(self, path: str, content: str) -> dict:
         full = self._resolve(path)
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content, encoding="utf-8")
-        try:
-            rel = full.relative_to(self._root)
-        except ValueError:
-            rel = full
+        rel = full
+        for r in self._roots:
+            try:
+                rel = full.relative_to(r)
+                break
+            except ValueError:
+                continue
         return {"path": str(rel), "bytes": len(content.encode("utf-8")),
                 "abs": str(full)}
 
@@ -58,9 +91,10 @@ class LocalFiles:
         try:
             content = full.read_text(encoding="utf-8")
         except FileNotFoundError:
+            allowed = "、".join(str(r) for r in self._roots)
             raise WorldError(
                 "LocalFiles",
-                f"文件不存在: {path}（在 {self._root} 下）") from None
+                f"文件不存在: {path}（在 {allowed} 下）") from None
         return {"path": path, "content": content,
                 "bytes": len(content.encode("utf-8"))}
 

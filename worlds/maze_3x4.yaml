@@ -1,0 +1,63 @@
+name: maze_3x4
+timestep: 0.002
+ctrl_period: 32
+gravity: [0, 0, -9.81]
+scene:
+  floor:
+    size: [3.0, 2.5]
+    texture: grid
+  lights:
+  - pos: [0, 0, 3]
+  objects:
+  - name: wall_x0
+    type: box
+    size: [0.75, 0.015, 0.06]
+    pos: [0.75, 0.5, 0.06]
+    color: '#6B7280'
+    static: true
+  - name: wall_x1
+    type: box
+    size: [0.75, 0.015, 0.06]
+    pos: [1.25, 1.0, 0.06]
+    color: '#6B7280'
+    static: true
+  - name: wall_n
+    type: box
+    size: [1.015, 0.015, 0.06]
+    pos: [1.0, 1.5, 0.06]
+    color: '#6B7280'
+    static: true
+  - name: wall_s
+    type: box
+    size: [1.015, 0.015, 0.06]
+    pos: [1.0, 0.0, 0.06]
+    color: '#6B7280'
+    static: true
+  - name: wall_w
+    type: box
+    size: [0.015, 0.765, 0.06]
+    pos: [0.0, 0.75, 0.06]
+    color: '#6B7280'
+    static: true
+  - name: wall_e
+    type: box
+    size: [0.015, 0.765, 0.06]
+    pos: [2.0, 0.75, 0.06]
+    color: '#6B7280'
+    static: true
+robots:
+- name: car
+  model: ../models/diff_car.xml
+  pos: [0.25, 0.25, 0.0]
+task:
+  success:
+    body: car
+    zone: &id001
+      min: [0.05, 1.05, 0.0]
+      max: [0.45, 1.45, 0.3]
+  reward:
+  - zone:
+      body: car
+      zone: *id001
+      weight: 0.01
+  max_ticks: 20000

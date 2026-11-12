@@ -28,10 +28,12 @@ import numpy as np
 import yaml
 from PySide6.QtCore import (QEvent, Qt, QSettings, QSize, QThread, QTimer,
                             QUrl, Signal)
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence
+from PySide6.QtGui import (QAction, QDesktopServices, QFont, QKeySequence,
+                           QTextCursor)
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox,
                                QApplication, QCheckBox,
-                               QComboBox, QDialog, QDockWidget, QFileDialog,
+                               QComboBox, QCommandLinkButton, QDialog,
+                               QDockWidget, QFileDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
                                QMainWindow, QMessageBox, QPlainTextEdit,
@@ -93,6 +95,225 @@ def _yaml_kind(p) -> str:
     if any(k in doc for k in ("robots", "floor", "scene", "name")):
         return "world"
     return "unknown"
+
+
+def _controller_template(name: str) -> str:
+    """导入机器人后生成的控制器模板：保持初始姿态，可运行的最小骨架。"""
+    return f'''"""控制器模板（{name}）：保持导入时的初始姿态。
+
+这是"能跑起来"的最小骨架：先确认仿真、观测、执行器链路正常，再把
+下面 TODO 处的控制逻辑换成自己的（IK / 轨迹 / 抓取相位机等）。
+
+接口（名字驱动，跨仿真器 / 真机可复用）：
+- robot.step()          推进一个控制周期，跑到终态返回 False
+- robot.obs["qpos"]     当前关节位置（按执行器顺序，含夹爪）
+- robot.obs["qvel"]     当前关节速度
+- robot.set(name, val)  按执行器名下发目标
+- robot.set_all([...])  按执行器顺序整体下发
+"""
+from simovia.controller import Robot
+
+robot = Robot()
+hold = None          # 首 tick 记录初始姿态后一直保持
+
+
+def run() -> None:
+    global hold
+    while robot.step():
+        q = robot.obs["qpos"]
+        if hold is None:
+            hold = list(q)
+        # TODO: 在这里写你的控制律（hold 只是安全占位）
+        robot.set_all(hold)
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    finally:
+        robot.close()
+'''
+
+
+def _common_dir(paths: list[pathlib.Path]) -> pathlib.Path:
+    """一组文件的公共父目录（路径都是 resolve 过的绝对路径）。"""
+    parts = [(p if p.is_dir() else p.parent).parts for p in paths]
+    common: list[str] = []
+    for group in zip(*parts):
+        if all(g == group[0] for g in group):
+            common.append(group[0])
+        else:
+            break
+    return pathlib.Path(*common) if common else pathlib.Path(paths[0].anchor)
+
+
+def _collect_model_files(model: pathlib.Path):
+    """收集模型 XML 显式引用的资源文件，返回 ``(files, missing)``。
+
+    只跟进 mesh / include / hfield / texture / skin 的 file（URDF 为
+    filename），不整目录打包——引用共享 ``models/`` 目录时整目录复制会把
+    几百 MB 官方模型库一起塞进项目包。
+    """
+    import re
+
+    files: list[pathlib.Path] = []
+    missing: list[str] = []
+    seen: set[pathlib.Path] = set()
+    abs_re = r"^([A-Za-z]:[\\/]|\\\\|/)"
+
+    def add(p: pathlib.Path) -> None:
+        rp = p.resolve()
+        if rp not in seen:
+            seen.add(rp)
+            files.append(rp)
+
+    def attr(tag: str, name: str) -> str | None:
+        mm = re.search(rf"""\b{name}\s*=\s*["']([^"']*)["']""", tag)
+        return mm.group(1) if mm else None
+
+    def walk(p: pathlib.Path, root: pathlib.Path | None = None,
+             meshdir: str = "", texturedir: str = "") -> None:
+        add(p)
+        if p.suffix.lower() not in (".xml", ".urdf"):
+            return
+        root = root or p.parent
+        try:
+            text = read_text_compat(p)
+        except (OSError, UnicodeDecodeError):
+            return
+        base = p.parent
+        if "<robot" in text:                       # URDF：只认 filename
+            for m in re.finditer(r"""filename\s*=\s*["']([^"']+)["']""", text):
+                raw = m.group(1).replace("\\", "/")
+                if re.match(abs_re, raw):
+                    cands = [pathlib.Path(raw)]
+                else:
+                    mm = re.match(r"^(?:package|file)://([^/]+)/(.+)$", raw)
+                    if mm:
+                        pkg, fn = mm.group(1), mm.group(2)
+                        # 与 builder._urdf_spec 的解析顺序保持一致
+                        cands = [base / fn, base / pkg / fn,
+                                 base.parent / fn, base.parent / pkg / fn]
+                    else:
+                        cands = [base / raw]
+                for c in cands:
+                    if c.is_file():
+                        add(c)
+                        break
+                else:
+                    missing.append(raw)
+            return
+        for m in re.finditer(r"<compiler\b[^>]*>", text):
+            meshdir = attr(m.group(0), "meshdir") or meshdir
+            texturedir = attr(m.group(0), "texturedir") or texturedir
+        for m in re.finditer(
+                r"<(include|mesh|hfield|texture|skin)\b([^>]*)>", text):
+            tag = m.group(1)
+            raw = attr(m.group(2), "file")
+            if not raw:
+                continue
+            raw = raw.replace("\\", "/")
+            if re.match(abs_re, raw):
+                cands = [pathlib.Path(raw)]
+            elif tag == "mesh":
+                cands = [base / meshdir / raw if meshdir else base / raw,
+                         base / raw, root / meshdir / raw if meshdir
+                         else root / raw, root / raw]
+            elif tag == "texture":
+                cands = [base / texturedir / raw if texturedir
+                         else base / raw, base / raw, root / raw]
+            else:
+                cands = [base / raw, root / raw]
+            for c in cands:
+                if c.is_file():
+                    if tag == "include":
+                        # include 合并进父文档：沿用根目录与 compiler 目录
+                        walk(c, root, meshdir, texturedir)
+                    else:
+                        add(c)
+                    break
+            else:
+                missing.append(raw)
+
+    walk(pathlib.Path(model))
+    return files, missing
+
+
+def _export_project_zip(world_text: str, base_dir: pathlib.Path,
+                        out_zip: pathlib.Path) -> dict:
+    """把世界 YAML + 引用的控制器/本地模型打成可分享的 zip。
+
+    - 控制器统一复制到 ``controllers/``，YAML 引用改写为相对路径
+    - 本地模型连同它显式引用的 mesh/include 复制到 ``models/``
+      （按公共父目录保持相对结构，URDF/MJCF 的相对引用才不断）
+    - ``zoo://`` 保持原样；缺失的模型/引用在 ``external`` 中列出
+    """
+    import zipfile
+
+    doc = yaml.safe_load(world_text) or {}
+    used: set[str] = set()
+    packed_names: set[str] = set()       # zip 内去重（共用同一模型目录的机器人）
+    packed_ctrl, packed_model, external = [], [], []
+
+    def uniq(name: str) -> str:
+        stem, dot, suf = name.rpartition(".")
+        cand, i = name, 2
+        while cand in used:
+            cand = f"{stem}_{i}.{suf}" if dot else f"{name}_{i}"
+            i += 1
+        used.add(cand)
+        return cand
+
+    def add_file(zf, src: pathlib.Path, dest: str) -> None:
+        try:
+            zf.write(src, dest)
+        except ValueError:      # 源文件 mtime < 1980（跨平台拷贝常见）
+            info = zipfile.ZipInfo(dest)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, src.read_bytes())
+
+    out_zip.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        for rd in doc.get("robots") or []:
+            ctrl = rd.get("controller")
+            if ctrl:
+                p = pathlib.Path(ctrl)
+                if not p.is_absolute():
+                    p = base_dir / p
+                if p.is_file():
+                    rel = f"controllers/{uniq(p.name)}"
+                    add_file(zf, p, rel)
+                    rd["controller"] = rel
+                    packed_ctrl.append(rel)
+                else:
+                    external.append(str(ctrl))
+            model = rd.get("model")
+            if not model or str(model).startswith("zoo://"):
+                continue
+            p = pathlib.Path(model)
+            if not p.is_absolute():
+                p = base_dir / p
+            if not p.is_file():
+                external.append(str(model))
+                continue
+            assets, lost = _collect_model_files(p)
+            external.extend(f"{p.name}: 缺少 {x}" for x in lost)
+            common = _common_dir(assets)
+            group = pathlib.Path("models")
+            if (group / p.name).as_posix() in packed_names:
+                group = group / p.parent.name          # 同名模型防覆盖
+            for f in assets:
+                dest = (group / f.relative_to(common)).as_posix()
+                if dest not in packed_names:
+                    add_file(zf, f, dest)
+                    packed_names.add(dest)
+            ref = (group / p.resolve().relative_to(common)).as_posix()
+            rd["model"] = ref
+            packed_model.append(ref)
+        zf.writestr("world.yaml",
+                    yaml.safe_dump(doc, allow_unicode=True, sort_keys=False))
+    return {"world": doc.get("name"), "controllers": packed_ctrl,
+            "models": packed_model, "external": external}
 
 
 def _import_spawn_z(p) -> float:
@@ -270,6 +491,155 @@ class NewSceneDialog(QDialog):
         for pname, (typ, w) in self._param_widgets.items():
             params[pname] = w.value() if typ is int else w.text().strip()
         return key, params
+
+
+class WelcomeDialog(QDialog):
+    """首屏引导：示例世界 / 新建场景 / AI 生成场景三条开始路径。
+
+    空场景首启时用户不知道“下一步做什么”，这里把三条最常用的起点直接
+    摆出来；取消勾选“启动时显示”后不再自动弹出，可从帮助菜单重开。
+    """
+    openSample = Signal()
+    newScene = Signal()
+    aiScene = Signal()
+
+    def __init__(self, sample_name: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("开始使用 Simovia")
+        self.setModal(False)
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+
+        head = QLabel("从哪开始？")
+        head.setStyleSheet("font-size:16pt; font-weight:600;")
+        lay.addWidget(head)
+        tip = QLabel("三个入口任选其一；已有世界可从「文件 → 打开世界」直接加载。")
+        tip.setStyleSheet(f"color:{theme.C_TEXT_DIM};")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        def entry(title: str, desc: str, signal) -> QCommandLinkButton:
+            b = QCommandLinkButton(title, desc)
+            b.clicked.connect(signal.emit)
+            lay.addWidget(b)
+            return b
+
+        suffix = f"（{sample_name}）" if sample_name else ""
+        self.bt_sample = entry(
+            f"打开示例世界{suffix}",
+            "Panda 机械臂抓取方块：加载后按 F5 即可跑完整一轮",
+            self.openSample)
+        self.bt_new = entry(
+            "新建场景…",
+            "按参数化模板生成世界（码垛 / 分拣等），保存后运行",
+            self.newScene)
+        self.bt_ai = entry(
+            "AI 生成场景…",
+            "用自然语言描述需求，AI 生成并通过本地校验的世界 YAML",
+            self.aiScene)
+
+        self.chk_show = QCheckBox("启动时显示")
+        self.chk_show.setChecked(True)
+        lay.addWidget(self.chk_show)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton("以后再说")
+        close.clicked.connect(self.close)
+        row.addWidget(close)
+        lay.addLayout(row)
+
+    def should_show_next_time(self) -> bool:
+        return self.chk_show.isChecked()
+
+
+class _DoctorWorker(QThread):
+    """后台跑 doctor_checks：离屏渲染探测要起子进程，不能卡 GUI 主线程。"""
+
+    done = Signal(list)                      # [(level, name, detail)]
+
+    def run(self):
+        try:
+            from simovia.cli import doctor_checks
+            checks = doctor_checks()
+        except Exception as e:               # noqa: BLE001 诊断要吞掉一切
+            checks = [("FAIL", "诊断", f"{type(e).__name__}: {e}")]
+        self.done.emit(checks)
+
+
+class DoctorDialog(QDialog):
+    """环境诊断：依赖 / 模型资产 / 离屏渲染 / 样例世界，不必开命令行。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("环境诊断")
+        self.resize(760, 440)
+        lay = QVBoxLayout(self)
+        self._summary = QLabel("正在检查…")
+        self._summary.setWordWrap(True)
+        lay.addWidget(self._summary)
+        self._text = QPlainTextEdit()
+        self._text.setReadOnly(True)
+        lay.addWidget(self._text, stretch=1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._bt_refresh = QPushButton("重新检查")
+        self._bt_refresh.clicked.connect(self.run_checks)
+        row.addWidget(self._bt_refresh)
+        close = QPushButton("关闭")
+        close.clicked.connect(self.close)
+        row.addWidget(close)
+        lay.addLayout(row)
+        self._worker = None
+        self.run_checks()
+
+    def run_checks(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+        self._bt_refresh.setEnabled(False)
+        self._summary.setStyleSheet(f"color:{theme.C_TEXT_DIM};")
+        self._summary.setText(
+            "正在检查依赖 / 模型资产 / 离屏渲染 / 样例世界…")
+        self._text.clear()
+        w = _DoctorWorker(self)
+        w.done.connect(self.show_checks)
+        w.finished.connect(self._on_worker_done)
+        self._worker = w
+        w.start()
+
+    def _on_worker_done(self) -> None:
+        self._bt_refresh.setEnabled(True)
+        self._worker = None
+
+    def show_checks(self, checks: list) -> None:
+        self._text.setPlainText("\n".join(
+            f"[{lv:<4}] {name:<22} {detail}" for lv, name, detail in checks))
+        fails = [n for lv, n, _ in checks if lv == "FAIL"]
+        warns = [n for lv, n, _ in checks if lv == "WARN"]
+        if fails:
+            self._summary.setStyleSheet(
+                f"color:{theme.C_ERR}; font-weight:600;")
+            self._summary.setText(
+                f"{len(fails)} 项必需检查未通过（{', '.join(fails)}），"
+                "按下方提示处理后再运行。")
+        elif warns:
+            self._summary.setStyleSheet(
+                f"color:{theme.C_WARN}; font-weight:600;")
+            self._summary.setText(
+                f"必需项全部通过；{len(warns)} 项可选/降级"
+                f"（{', '.join(warns)}）。")
+        else:
+            self._summary.setStyleSheet(
+                f"color:{theme.C_OK}; font-weight:600;")
+            self._summary.setText("全部通过。")
+
+    def closeEvent(self, e):
+        # 线程还在跑时不允许关闭：QThread 运行中被销毁会让进程直接退出
+        if self._worker is not None and self._worker.isRunning():
+            self._summary.setText("检查进行中，完成后即可关闭…")
+            e.ignore()
+            return
+        super().closeEvent(e)
 
 
 class _SceneGenWorker(QThread):
@@ -479,6 +849,8 @@ class MainWindow(QMainWindow):
         self._manifest = None
         self._world_path = None          # 当前世界来源文件（保存/最近打开用；
                                          # 拖动/位姿提交的 yaml_text 重载不换它）
+        self._welcome_dlg = None         # 首屏引导对话框（帮助菜单可重开）
+        self._welcome_pending = True     # 首次启动是否还需自动弹出引导
         self._zoo_dlg: ZooDialog | None = None
         self._builder_dlg: RobotBuilderDialog | None = None
         self._busy = False              # load_world 在途（防重入提交）
@@ -520,6 +892,8 @@ class MainWindow(QMainWindow):
             lambda k, n: self._on_tree_delete(k, n))
         self.props = PropertiesPanel()
         self.props.poseApplied.connect(self._on_pose_applied)
+        self.props.locateRequested.connect(self._locate_task_target)
+        self.props.logRequested.connect(self._show_log_dock)
         self.obs = ObsPanel()
         self.console = ConsolePanel()
         self.code = CodePanel()
@@ -569,6 +943,9 @@ class MainWindow(QMainWindow):
         self.agent_worker.assistantText.connect(self.agent.append_assistant)
         self.agent_worker.toolCall.connect(self.agent.append_tool)
         self.agent_worker.toolResult.connect(self.agent.append_result)
+        # 工具结果不只进聊天日志，还要把后端世界/运行状态同步到 GUI（F2）
+        self.agent_worker.toolCall.connect(self._on_agent_tool_call)
+        self.agent_worker.toolResult.connect(self._on_agent_tool_result)
         self.agent_worker.error.connect(self.agent.append_error)
         self.agent_worker.error.connect(lambda t: self._log(t, "error"))
         self.agent_worker.finishedRound.connect(self._on_agent_round_done)
@@ -640,6 +1017,9 @@ class MainWindow(QMainWindow):
             self._apply_state("就绪。文件 → 打开世界（worlds/ 下有示例），"
                               "或从模型库新建。")
             self.console.info("GUI 已启动，等待加载世界。")
+
+        # 首屏引导：等默认空场景加载完成后再弹出（不与 load_world 抢后端）
+        QTimer.singleShot(200, self._maybe_show_welcome)
 
     # ============================================================ 界面构建
 
@@ -775,6 +1155,10 @@ class MainWindow(QMainWindow):
                                "写回 YAML 后立刻运行一轮")
         self.act_save_run.triggered.connect(
             lambda: self._on_save_world(run_after=True))
+        self.act_export = mk("导出项目包…", "",
+                             "把当前世界与它引用的控制器、本地模型打包成 "
+                             "zip，便于分享/迁移")
+        self.act_export.triggered.connect(self._on_export_project)
         # 场景级撤销/重做（YAML 快照）：编辑框聚焦时自动转交文本框撤销
         self.act_undo = mk("撤销场景编辑", "Ctrl+Z",
                            "回到上一次场景编辑前的状态")
@@ -802,6 +1186,14 @@ class MainWindow(QMainWindow):
         self.act_stop.triggered.connect(self._on_stop)
         self.act_step = mk("步进", "F7", "推进指定步数后暂停（N 取自工具栏）")
         self.act_screenshot = mk("导出截图…", "Ctrl+P", "把当前视口另存为 PNG")
+
+        # 首屏引导：示例世界 / 新建场景 / AI 生成场景（帮助菜单可重开）
+        self.act_welcome = mk("开始引导…", "",
+                              "打开首屏引导：示例世界、新建场景、AI 生成场景")
+        self.act_welcome.triggered.connect(self._show_welcome)
+        self.act_doctor = mk("环境诊断…", "",
+                             "检查依赖版本、模型资产、离屏渲染与样例世界编译")
+        self.act_doctor.triggered.connect(self._show_doctor)
 
         self.act_add_object = mk("添加物体…", "",
                                  "往场景添加一个物体（放在相机注视点）")
@@ -869,7 +1261,8 @@ class MainWindow(QMainWindow):
         self.quality_combo.setCurrentText(DEFAULT_QUALITY)   # 与 RenderView 默认一致
         self.quality_combo.setToolTip(
             "渲染画质（低配电脑选「低」）：\n"
-            "高 = 8x MSAA；均衡 = 4x MSAA；低 = 关 MSAA/阴影 + 75% 分辨率渲染")
+            "高 = 2x 超采样 + 8x MSAA + 8192 阴影贴图\n"
+            "均衡 = 4x MSAA + 4096 阴影贴图；低 = 关 MSAA/阴影 + 75% 分辨率渲染")
         self.quality_combo.currentTextChanged.connect(self._on_quality_changed)
 
     def _on_quality_changed(self, level: str) -> None:
@@ -894,6 +1287,7 @@ class MainWindow(QMainWindow):
         m_file.addSeparator()
         m_file.addAction(self.act_save)
         m_file.addAction(self.act_save_run)
+        m_file.addAction(self.act_export)
         m_file.addSeparator()
         m_file.addAction(self.act_screenshot)
         m_file.addSeparator()
@@ -952,6 +1346,9 @@ class MainWindow(QMainWindow):
             m_view.addAction(dock.toggleViewAction())
 
         m_help = mb.addMenu("帮助(&H)")
+        m_help.addAction(self.act_welcome)
+        m_help.addAction(self.act_doctor)
+        m_help.addSeparator()
         a_about = m_help.addAction("关于 Simovia")
         a_about.triggered.connect(self._on_about)
 
@@ -1070,6 +1467,7 @@ class MainWindow(QMainWindow):
         can_edit = self.state.can("edit") and self._spec is not None
         self.act_save.setEnabled(can_edit)
         self.act_save_run.setEnabled(can_edit)
+        self.act_export.setEnabled(self._spec is not None)
         self.act_undo.setEnabled(can_edit and self._history.can_undo())
         self.act_redo.setEnabled(can_edit and self._history.can_redo())
         self.act_history.setEnabled(len(self._history) > 0)
@@ -1153,6 +1551,10 @@ class MainWindow(QMainWindow):
         if r == QMessageBox.StandardButton.Cancel:
             return False
         if r == QMessageBox.StandardButton.Discard:
+            # 显式清掉控制器草稿（报告 F5）：只返回 True 的话，随后
+            # set_world 的 _stash_current 会把编辑器旧内容重新存成草稿
+            if hasattr(self, "code"):
+                self.code.discard_drafts()
             return True
         if dirty_code:
             errs = self.code.save_dirty_files()
@@ -1182,6 +1584,76 @@ class MainWindow(QMainWindow):
         self.client.call_tool(
             "load_world", {"yaml_path": path},
             lambda e, d: self._on_loaded(e, d, spec, path))
+
+    # ------------------------------------------------------------ 首屏引导
+
+    def _sample_world(self) -> pathlib.Path:
+        return (pathlib.Path(__file__).resolve().parents[2]
+                / "worlds" / "pick_cube.yaml")
+
+    def _maybe_show_welcome(self, attempt: int = 0) -> None:
+        """首次启动自动弹引导；用户取消“启动时显示”后不再自动弹。"""
+        st = QSettings().value("gui/welcome_on_start", True)
+        if st in (False, "false", "0", 0):
+            return
+        # 等默认空场景加载完再弹：避免引导里的入口和启动 load_world 抢后端
+        if self._spec is None and attempt < 50:
+            QTimer.singleShot(100, lambda: self._maybe_show_welcome(attempt + 1))
+            return
+        if not self._welcome_pending:
+            return
+        self._welcome_pending = False
+        self._show_welcome()
+
+    def _show_welcome(self) -> None:
+        dlg = self._welcome_dlg
+        if dlg is not None and dlg.isVisible():
+            dlg.raise_()
+            return
+        sample = self._sample_world()
+        dlg = WelcomeDialog(sample.stem if sample.exists() else "", self)
+        dlg.openSample.connect(self._welcome_open_sample)
+        dlg.newScene.connect(self._welcome_new_scene)
+        dlg.aiScene.connect(self._welcome_ai_scene)
+        dlg.finished.connect(self._on_welcome_closed)
+        self._welcome_dlg = dlg
+        dlg.show()
+
+    def _on_welcome_closed(self, _result: int = 0) -> None:
+        dlg = self._welcome_dlg
+        if dlg is None:
+            return
+        QSettings().setValue("gui/welcome_on_start",
+                             dlg.should_show_next_time())
+        dlg.deleteLater()
+        self._welcome_dlg = None
+
+    def _close_welcome(self) -> None:
+        dlg = self._welcome_dlg
+        if dlg is not None:
+            dlg.close()          # 触发 finished：保存“启动时显示”选择
+
+    def _welcome_open_sample(self) -> None:
+        self._close_welcome()
+        sample = self._sample_world()
+        if sample.exists():
+            self._load_world_path(str(sample))
+        else:                    # 示例缺失：退回文件选择
+            self._on_load()
+
+    def _welcome_new_scene(self) -> None:
+        self._close_welcome()
+        self._on_new_scene()
+
+    def _welcome_ai_scene(self) -> None:
+        self._close_welcome()
+        self._on_scene_agent()
+
+    def _show_doctor(self) -> None:
+        """GUI 内环境诊断（与 `simovia doctor` 同一套检查项）。"""
+        dlg = DoctorDialog(self)
+        dlg.exec()
+        dlg.deleteLater()
 
     # ------------------------------------------------------------ 最近打开
 
@@ -1259,6 +1731,51 @@ class MainWindow(QMainWindow):
                 self._do_run(self._run_args())
 
         self.client.call_tool("save_world", {"path": self._world_path}, saved)
+
+    def _on_export_project(self):
+        """导出项目包：世界 YAML + 引用控制器 + 本地模型 → 单个 zip。"""
+        if self._spec is None:
+            QMessageBox.information(self, "导出项目包", "还没有加载世界。")
+            return
+        text = self._yaml_text
+        if text is None and self._world_path:
+            try:
+                text = read_text_compat(self._world_path)
+            except (OSError, UnicodeDecodeError) as e:
+                self._log(f"读取世界失败：{e}", "error")
+                QMessageBox.critical(self, "导出项目包", f"读取世界失败：{e}")
+                return
+        if text is None:
+            QMessageBox.information(
+                self, "导出项目包",
+                "当前世界还没有 YAML 文本，先保存世界再导出。")
+            return
+        base = self._base_dir or (
+            pathlib.Path(self._world_path).parent if self._world_path
+            else pathlib.Path.cwd())
+        default = (str(pathlib.Path(self._world_path).with_suffix(".zip"))
+                   if self._world_path else f"{self._spec.name}.zip")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出项目包", default, "项目包 (*.zip)")
+        if not path:
+            return
+        out = pathlib.Path(path)
+        try:
+            info = _export_project_zip(text, base, out)
+        except Exception as e:                     # noqa: BLE001 打包失败要报给用户
+            self._log(f"导出项目包失败：{e}", "error")
+            QMessageBox.critical(self, "导出项目包", f"导出失败：\n{e}")
+            return
+        self._log(f"已导出项目包：{out}（控制器 "
+                  f"{len(info['controllers'])}，模型 "
+                  f"{len(info['models'])}）", "ok")
+        msg = (f"已导出 {out}\n\n控制器 {len(info['controllers'])} 个，"
+               f"模型 {len(info['models'])} 个。")
+        if info["external"]:
+            msg += ("\n\n以下引用没有打进包（zoo:// 或世界目录之外，"
+                    "接收方需自备）：\n" + "\n".join(info["external"]))
+            self._log("项目包外部依赖：" + "、".join(info["external"]), "warn")
+        QMessageBox.information(self, "导出项目包", msg)
 
     def _on_new_scene(self):
         if not self._confirm_discard("新建场景"):
@@ -1461,7 +1978,9 @@ class MainWindow(QMainWindow):
         return f"{base}_{i}"
 
     def _append_robot_yaml(self, key: str, xml: str,
-                           x: float, y: float, z: float):
+                           x: float, y: float, z: float, *,
+                           name: str | None = None,
+                           controller: str | None = None):
         """读当前世界 YAML -> 追加机器人 -> load_world 提交（整链复用）。"""
         def got_yaml(err, text):
             if err:
@@ -1471,23 +1990,29 @@ class MainWindow(QMainWindow):
             try:
                 d = yaml.safe_load(text)
                 robots = d.setdefault("robots", [])
-                rd = {"name": self._unique_name(key), "model": xml,
+                rd = {"name": name or self._unique_name(key), "model": xml,
                       "pos": [round(float(x), 4), round(float(y), 4),
                               round(float(z), 4)]}
+                if controller:
+                    rd["controller"] = controller
                 robots.append(rd)
                 new_text = yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
             except Exception as e:
                 self._apply_state(f"YAML 修改失败: {e}")
                 self._log(f"YAML 修改失败: {e}", "error")
                 return
-            name = rd["name"]
+            rname = rd["name"]
             self._reload_yaml(
                 new_text,
-                ok_msg=f"已添加机器人 {name} 于 "
+                ok_msg=f"已添加机器人 {rname} 于 "
                        f"({rd['pos'][0]:+.2f}, {rd['pos'][1]:+.2f}, {z:+.2f})",
-                label=f"添加机器人 {name}")
-            self._log(f"添加机器人 {name}（模型 {key}，未绑定控制器；"
-                      f"需要控制律请用 模型库 → 生成并打开）", "ok")
+                label=f"添加机器人 {rname}")
+            if controller:
+                self._log(f"添加机器人 {rname}（模型 {key}，控制器 {controller}）",
+                          "ok")
+            else:
+                self._log(f"添加机器人 {rname}（模型 {key}，未绑定控制器；"
+                          f"需要控制律请用 模型库 → 生成并打开）", "ok")
         self.client.call_tool("read_world", {}, got_yaml)
 
     # ============================================================ 导入模型
@@ -1538,25 +2063,71 @@ class MainWindow(QMainWindow):
             # 已有世界：追加到相机注视点（复用"添加机器人"整链）
             lookat = (self.view.rm.cam.lookat if self.view.rm is not None
                       else (0.0, 0.0, 0.0))
+            name = self._unique_name(stem)
+            # 导入的机器人默认没有控制律（不能运行）：问一次是否生成模板
+            controller = self._make_controller_for_import(name)
             self._log(f"导入模型 {p.name} 到当前场景"
                       f"（{'URDF' if p.suffix.lower() == '.urdf' else 'MJCF'}，"
-                      f"未绑定控制器）", "ok")
+                      f"{'控制器 ' + controller if controller else '未绑定控制器'}）",
+                      "ok")
             # as_posix()：Windows 反斜杠路径进 YAML 统一正斜杠（跨平台安全）
             self._append_robot_yaml(stem, p.resolve().as_posix(),
-                                    float(lookat[0]), float(lookat[1]), z)
+                                    float(lookat[0]), float(lookat[1]), z,
+                                    name=name, controller=controller)
         else:
             # 无世界：新建仅含该机器人的世界（Ctrl+S 可另存）
             # floor 必须写在 scene 下；尺寸与初始场景一致，避免四足跑出地面
+            rd = {"name": stem, "model": p.resolve().as_posix(),
+                  "pos": [0.0, 0.0, z]}
+            controller = self._make_controller_for_import(stem)
+            if controller:
+                rd["controller"] = controller
             d = {"name": f"{stem}_import",
                  "scene": {"floor": {"size": [15.0, 15.0], "texture": "grid"},
                            "objects": []},
-                 "robots": [{"name": stem, "model": p.resolve().as_posix(),
-                             "pos": [0.0, 0.0, z]}]}
+                 "robots": [rd]}
             text = yaml.safe_dump(d, allow_unicode=True, sort_keys=False)
             self._log(f"导入模型 {p.name}：已生成新世界 {d['name']}", "ok")
             self._reload_yaml(
                 text, ok_msg=f"已导入 {p.name} 为新世界（Ctrl+S 保存）",
                 label=f"导入 {p.name}", reset_history=True)
+
+    def _make_controller_for_import(self, name: str) -> str | None:
+        """导入后按用户意愿生成“保持初始姿态”的控制器模板。
+
+        返回写进世界 YAML 的控制器路径（取消/失败返回 None）。已有世界
+        时写成相对世界目录的路径（世界可整体搬走）；尚无世界时写绝对
+        路径（世界还没落盘，相对路径没有基准）。
+        """
+        ans = QMessageBox.question(
+            self, "导入模型",
+            f"已导入机器人「{name}」，但它还没有控制器（不能运行）。\n\n"
+            "现在生成一个保持初始姿态的控制器模板吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if ans != QMessageBox.StandardButton.Yes:
+            return None
+        base = self._base_dir or pathlib.Path.cwd()
+        default = base.parent / "controllers" / f"{name}_ctrl.py"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存控制器模板", str(default), "Python (*.py)")
+        if not path:
+            return None
+        out = pathlib.Path(path)
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(_controller_template(name), encoding="utf-8")
+        except OSError as e:
+            self._log(f"控制器模板写入失败：{e}", "error")
+            QMessageBox.critical(self, "导入模型", f"控制器写入失败：{e}")
+            return None
+        self._log(f"已生成控制器模板：{out}", "ok")
+        if self._spec is None:
+            return out.resolve().as_posix()
+        try:
+            return out.resolve().relative_to(base.resolve()).as_posix()
+        except ValueError:
+            return out.resolve().as_posix()      # 世界目录之外：绝对路径
 
     # ============================================================ 编辑提交
 
@@ -1774,6 +2345,94 @@ class MainWindow(QMainWindow):
 
     def _on_agent_round_done(self):
         self._refresh_agent_state(busy=False)
+
+    # ---- Agent 工具结果 -> GUI 同步（报告 F2：界面必须跟后端一致）
+
+    def _on_agent_tool_call(self, name: str, args: dict):
+        """Agent 发起会改后端状态的工具：先把界面切到对应运行态。"""
+        if name == "run":
+            self._run_is_step = bool(args.get("ticks"))
+            self.state.to(UiState.RUNNING)
+            self.view.set_hud_state("运行中（Agent）")
+            self._apply_state("Agent 正在运行仿真…")
+        elif name == "load_world":
+            self._apply_state("Agent 正在加载世界…")
+
+    def _on_agent_tool_result(self, name: str, result):
+        ok = isinstance(result, dict) and "error" not in result
+        if name == "load_world":
+            if ok:
+                self._sync_agent_world(result)
+            else:
+                self._apply_state(f"Agent 加载世界失败: {result}")
+                self._log(f"Agent 加载世界失败: {result}", "error")
+        elif name == "run":
+            if ok:
+                self._on_run_done(False, result)
+            elif isinstance(result, dict) and result.get("error") == "timeout":
+                # Agent 侧 30s 等待超时，不代表后端 run 结束（F7 后续处理）
+                self._apply_state("Agent run 等待超时，后台可能仍在运行…")
+            else:
+                self._on_run_done(True, result)
+        elif name == "reset" and ok:
+            self.state.to(UiState.IDLE)
+            self.view.set_hud_state("就绪")
+            self._apply_state("Agent 已重置世界。")
+            self._fetch_obs()
+
+    def _sync_agent_world(self, data: dict):
+        """Agent 换了后端世界：拉回 YAML，按同一套 _on_loaded 流程重建界面。"""
+        base_dir = data.get("base_dir")
+        world_path = data.get("world_path")
+
+        def got_yaml(err, text):
+            if err or not isinstance(text, str):
+                self._log(f"同步 Agent 世界失败: {text}", "error")
+                return
+            try:
+                d = yaml.safe_load(text)
+                resolve_zoo_models(d)
+                spec = parse_world(d)
+            except Exception as e:
+                self._log(f"同步 Agent 世界失败（解析）: {e}", "error")
+                return
+            if base_dir:
+                spec.base_dir = pathlib.Path(base_dir)
+            # 基线：文件世界按磁盘内容算干净；yaml_text 世界算未保存
+            self._yaml_text = text
+            self._saved_text = text if world_path else None
+            self._history.reset(text, f"Agent 加载 {spec.name}")
+            self._world_path = world_path
+            if world_path:
+                self._push_recent(world_path)
+                self._rebuild_recent_menu()
+            # 复用界面重建；不要重置 Agent 对话历史（本轮对话仍在进行）
+            self._on_loaded(None, {}, spec, reset_agent_history=False)
+            self._update_title()
+            self._apply_state(f"已同步 Agent 加载的世界：{spec.name}")
+            self._log(f"Agent 已切换世界：{spec.name}", "ok")
+
+        self.client.call_tool("read_world", {}, got_yaml)
+
+    @staticmethod
+    def _agent_file_roots(spec) -> list:
+        """世界显式引用的控制器所在目录（给 Agent 文件工具的附加允许根）。
+
+        worlds/ 与 controllers/ 是同级目录（pick_cube.yaml 里写
+        controller: ../controllers/pick_place.py），Agent 只被允许 world
+        目录时连示例控制器都改不了（报告 F4）。这里只放开被世界引用的
+        控制器目录，不放开整个文件系统。
+        """
+        roots = []
+        for r in spec.robots:
+            ctrl = getattr(r, "controller", None)
+            if not ctrl:
+                continue
+            p = pathlib.Path(ctrl)
+            if not p.is_absolute():
+                p = spec.base_dir / p
+            roots.append(p.resolve().parent)
+        return roots
 
     def _on_agent_config(self):
         dlg = AgentConfigDialog(self)
@@ -2058,7 +2717,8 @@ class MainWindow(QMainWindow):
 
     # ============================================================ 仿真流程
 
-    def _on_loaded(self, err, data, spec, path=None):
+    def _on_loaded(self, err, data, spec, path=None,
+                   reset_agent_history: bool = True):
         if err:
             self._apply_state(f"load_world 失败: {data}")
             self._log(f"load_world 失败: {data}", "error")
@@ -2098,8 +2758,11 @@ class MainWindow(QMainWindow):
             self.agent_worker.configure(self._agent_cfg, _TOOLS)
         except ImportError:
             pass
-        self.agent_worker.set_world_dir(spec.base_dir)
-        self.agent_worker.set_history(spec.name)
+        self.agent_worker.set_world_dir(spec.base_dir,
+                                        extra_roots=self._agent_file_roots(spec))
+        if reset_agent_history:
+            # Agent 自己触发的换世界不能清空本轮对话历史（sync 时传 False）
+            self.agent_worker.set_history(spec.name)
         self.obs.clear()
         self.props.reset_task()
         self.lbl_world.setText(f"世界：{spec.name}")
@@ -2430,6 +3093,7 @@ class MainWindow(QMainWindow):
         n = args.get("ticks")
         self._run_is_step = n is not None
         self.state.to(UiState.RUNNING)
+        self.props.mark_running()
         self.view.set_hud_state("运行中")
         msg = (f"步进 {n} tick（控制器已接管）…" if n
                else "运行中（控制器已接管）…")
@@ -2464,6 +3128,8 @@ class MainWindow(QMainWindow):
         if err:
             self.state.to(UiState.FINISHED)
             self.view.set_hud_state("已结束")
+            self.props.update_stats({}, f"run 失败：{stats}", final=True,
+                                    error=True)
             self._apply_state(f"run 失败: {stats}")
             self._log(f"run 失败: {stats}", "error")
             self._fetch_obs()
@@ -2475,10 +3141,17 @@ class MainWindow(QMainWindow):
         paused = stopped or self._run_is_step
         self.state.to(UiState.PAUSED if paused else UiState.FINISHED)
         self.view.set_hud_state("已暂停" if paused else "已结束")
-        self.props.update_stats(stats)
         self.lbl_tick.setText(f"tick {stats.get('ticks')}")
         succ = stats.get("success")
         crashed = stats.get("crashed") or []
+        # 任务状态与失败解释：暂停/成功/未达标/异常分开，未达标给出具体条件
+        reason = "" if succ else self._task_failure_reason(stats)
+        if crashed:
+            reason = (f"控制器异常退出：{', '.join(crashed)}"
+                      + (f"；{reason}" if reason else ""))
+        self.props.update_stats(
+            stats, reason, final=not paused, error=bool(crashed),
+            can_locate=self._task_success_spec() is not None)
         prefix = ("已暂停（停止）：" if stopped else
                   "已暂停（步进完成）：" if self._run_is_step else "运行结束：")
         self._apply_state(
@@ -2493,6 +3166,56 @@ class MainWindow(QMainWindow):
         if crashed:
             self._log(f"控制器异常退出：{crashed}", "warn")
         self._fetch_obs()
+
+    # ---------------------------------------------------- 任务状态解释
+
+    def _task_success_spec(self):
+        spec = self._spec
+        task = getattr(spec, "task", None) if spec is not None else None
+        return getattr(task, "success", None)
+
+    def _task_failure_reason(self, stats: dict) -> str:
+        """把“未达标”说清楚：哪个物体、差多少、成功区在哪。"""
+        succ = self._task_success_spec()
+        if succ is None:
+            return "该世界未定义成功条件（task.success）"
+        body, zone = succ.body, succ.zone
+        pos = (stats.get("objects") or {}).get(body)
+        if pos is None:
+            return f"未找到任务目标 {body} 的位置"
+        x, y, z = (float(v) for v in list(pos)[:3])
+        lo, hi = zone.min, zone.max
+        if all(l - 1e-9 <= v <= h + 1e-9
+               for v, l, h in zip((x, y, z), lo, hi)):
+            return f"{body} 已在成功区内，但未满足任务的判定条件"
+        if z < lo[2] - 1e-9:
+            return (f"{body} 高度 {z:.3f} m，未达到成功区下限 {lo[2]:.2f} m"
+                    f"（目标区 z {lo[2]:.2f}–{hi[2]:.2f} m）")
+        if z > hi[2] + 1e-9:
+            return f"{body} 高度 {z:.3f} m，高于成功区上限 {hi[2]:.2f} m"
+        return (f"{body} 不在成功区：当前 ({x:.3f}, {y:.3f}, {z:.3f})，"
+                f"目标区 x[{lo[0]:.2f},{hi[0]:.2f}] "
+                f"y[{lo[1]:.2f},{hi[1]:.2f}] z[{lo[2]:.2f},{hi[2]:.2f}]")
+
+    def _locate_task_target(self) -> None:
+        """任务未达标/异常时，一键在场景树选中目标物体。"""
+        succ = self._task_success_spec()
+        if succ is None:
+            return
+        body = succ.body
+        if "/" in body:            # 机器人杆件（如 arm/link7）-> 选到机器人
+            kind, name = "robot", body.split("/", 1)[0]
+        else:
+            kind, name = "object", body
+        if self.scene_tree.select_node(kind, name):
+            self._apply_state(f"已定位任务目标：{body}")
+        else:
+            self._apply_state(f"场景树中没有任务目标 {body}")
+
+    def _show_log_dock(self) -> None:
+        self.dock_console.show()
+        self.dock_console.raise_()
+        self.console._edit.moveCursor(QTextCursor.MoveOperation.End)
 
     # ============================================================ 遥操作
 
@@ -2584,7 +3307,8 @@ class MainWindow(QMainWindow):
                   "点 3D 视口后使用 WASD/QE/JL 操作")
         self._cam_pending = False
         self._cam_timer.start()
-        self.client.call_tool("teleop_start", args, self._on_teleop_done)
+        self.client.call_tool("teleop_start", args, self._on_teleop_done,
+                              timeout_ms=None)   # 遥操作延迟应答，停止后才返回
 
     def _on_teleop_done(self, err, stats):
         """teleop_start 的延迟响应：停止后到达（或启动失败立即到达）。"""

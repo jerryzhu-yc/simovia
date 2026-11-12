@@ -198,6 +198,19 @@ class PropertiesPanel(QWidget):
     """右侧属性：上半部分显示选中节点属性，下半部分常驻任务统计。"""
 
     poseApplied = Signal(str, str, list, object)   # kind, 名字, pos, quat
+    locateRequested = Signal()                     # 未达标/异常：定位任务目标
+    logRequested = Signal()                        # 未达标/异常：打开控制台
+
+    #: 任务状态文案与配色（“任务状态与失败解释”）
+    _PHASE = {
+        "idle": ("未运行", theme.C_TEXT_DIM),
+        "running": ("运行中", theme.C_ACCENT),
+        "paused": ("已暂停", theme.C_WARN),
+        "success": ("成功", theme.C_OK),
+        "fail": ("未达标", theme.C_ERR),
+        "error": ("异常", theme.C_ERR),
+        "unknown": ("—", theme.C_TEXT_DIM),
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -252,17 +265,53 @@ class PropertiesPanel(QWidget):
         tl = QFormLayout(task_box)
         self._tick = QLabel("-")
         self._time = QLabel("-")
-        self._success = QLabel("-")
+        self._state = QLabel("未运行")
         self._reward = QLabel("-")
-        for lb in (self._tick, self._time, self._success, self._reward):
+        for lb in (self._tick, self._time, self._state, self._reward):
             lb.setStyleSheet("font-size:13pt; font-weight:600;")
-        self._success.setStyleSheet(
-            f"font-size:13pt; font-weight:600; color:{theme.C_TEXT_DIM};")
+        self._phase = "idle"
+        self._apply_phase("idle")
         tl.addRow("tick", self._tick)
         tl.addRow("仿真时间 (s)", self._time)
-        tl.addRow("成功", self._success)
+        tl.addRow("状态", self._state)
         tl.addRow("reward", self._reward)
+        # 失败/异常时的具体原因（例如“方块高度 0.712 m，未达到 0.80 m”）
+        self._reason = QLabel("")
+        self._reason.setWordWrap(True)
+        self._reason.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._reason.setStyleSheet(f"color:{theme.C_ERR}; font-size:9pt;")
+        self._reason.setVisible(False)
+        tl.addRow("", self._reason)
+        # 定位物体 / 查看日志：让用户能立刻核对场景与控制器输出
+        self._bt_locate = QPushButton("定位物体")
+        self._bt_locate.setToolTip("在场景树中选中任务目标物体，核对它的当前位置")
+        self._bt_locate.clicked.connect(self.locateRequested.emit)
+        self._bt_log = QPushButton("查看日志")
+        self._bt_log.setToolTip("打开控制台查看控制器输出与运行日志")
+        self._bt_log.clicked.connect(self.logRequested.emit)
+        self._task_btns = QWidget()
+        bt_lay = QHBoxLayout(self._task_btns)
+        bt_lay.setContentsMargins(0, 0, 0, 0)
+        bt_lay.addWidget(self._bt_locate)
+        bt_lay.addWidget(self._bt_log)
+        self._task_btns.setVisible(False)
+        tl.addRow("", self._task_btns)
         outer.addWidget(task_box)
+
+    def _apply_phase(self, phase: str) -> None:
+        self._phase = phase
+        text, color = self._PHASE.get(phase, self._PHASE["unknown"])
+        self._state.setText(text)
+        self._state.setStyleSheet(
+            f"font-size:13pt; font-weight:600; color:{color};")
+
+    def _set_reason(self, text: str, can_locate: bool = False) -> None:
+        self._reason.setText(text)
+        self._reason.setVisible(bool(text))
+        self._bt_locate.setVisible(bool(text) and can_locate)
+        self._bt_log.setVisible(bool(text))
+        self._task_btns.setVisible(bool(text))
 
     def _clear_rows(self) -> None:
         for k, v in self._sel_rows:
@@ -383,38 +432,45 @@ class PropertiesPanel(QWidget):
                         self.update_live_pose(
                             "object", self._pose_name, p,
                             oinfo.get("quat") or (1, 0, 0, 0))
-        self._tick.setText(str(obs.get("tick", "-")))
+        tick = obs.get("tick")
+        self._tick.setText(str(tick if tick is not None else "-"))
         self._time.setText(str(obs.get("time", "-")))
-        succ = task.get("success")
-        if succ is None:
-            self._success.setText("-")
-            self._success.setStyleSheet(
-                f"font-size:13pt; font-weight:600; color:{theme.C_TEXT_DIM};")
-        else:
-            self._success.setText("成功" if succ else "未成功")
-            self._success.setStyleSheet(
-                f"font-size:13pt; font-weight:600; color:"
-                f"{theme.C_OK if succ else theme.C_ERR};")
-        self._reward.setText(str(task.get("reward", "-")))
+        # tick=0 的 reward 只是初始距离代价（通常是负数），还没开始跑，
+        # 显示出来像“一加载就在扣分”，因此保持 "-"
+        self._reward.setText(
+            "-" if not tick else str(task.get("reward", "-")))
+        # 状态标签只由 run 生命周期驱动（mark_running/update_stats/reset_task）：
+        # 刚加载时 tick=0 的 success=False 只是“还没跑”，不能标红成失败。
 
-    def update_stats(self, stats: dict) -> None:
-        self._tick.setText(f"{stats.get('ticks', '-')}  (结束)")
-        succ = stats.get("success")
-        if succ is None:
-            self._success.setText("-")
-        else:
-            self._success.setText("成功" if succ else "未成功")
-            self._success.setStyleSheet(
-                f"font-size:13pt; font-weight:600; color:"
-                f"{theme.C_OK if succ else theme.C_ERR};")
+    def mark_running(self) -> None:
+        """run 开始：切到“运行中”，清掉上一次的失败原因。"""
+        self._apply_phase("running")
+        self._set_reason("")
+
+    def update_stats(self, stats: dict, reason: str = "", *,
+                     final: bool = True, error: bool = False,
+                     can_locate: bool = False) -> None:
+        self._tick.setText(
+            f"{stats.get('ticks', '-')}  ({'结束' if final else '暂停'})")
         self._reward.setText(str(stats.get("reward", "-")))
+        succ = stats.get("success")
+        if error:
+            phase = "error"
+        elif not final:
+            phase = "paused"
+        elif succ is None:
+            phase = "unknown"
+        else:
+            phase = "success" if succ else "fail"
+        self._apply_phase(phase)
+        self._set_reason(reason if phase in ("fail", "error") else "",
+                         can_locate=can_locate)
 
     def reset_task(self) -> None:
         for lb in (self._tick, self._time, self._reward):
             lb.setText("-")
-        self._success.setText("-")
-        self._success.setStyleSheet(
-            f"font-size:13pt; font-weight:600; color:{theme.C_TEXT_DIM};")
+        self._apply_phase("idle")
+        self._set_reason("")
 
 
 # ================================================================ 观测树（保留 M1 接口）
@@ -1062,6 +1118,21 @@ class CodePanel(QWidget):
         if path == self._current:
             self.edit.document().setModified(False)
 
+    def discard_drafts(self) -> None:
+        """放弃未保存修改：清空全部草稿并把编辑器恢复为磁盘内容。
+
+        弹窗选"放弃"后必须先清干净（报告 F5）：否则切换世界时
+        set_world -> _stash_current 会把编辑框里的旧内容重新收进草稿，
+        用户以为已放弃的修改又出现在 dirty_files 里，退出时再次弹窗。
+        """
+        self._drafts.clear()
+        path = self._current
+        if path:
+            self._load_path(path)          # 从磁盘重读（已无草稿可命中）
+        else:
+            self.edit.document().setModified(False)
+            self._on_modified(False)
+
     # ------------------------------------------------------------ 载入
 
     def set_world(self, spec, base_dir) -> None:
@@ -1231,6 +1302,14 @@ class AgentPanel(QWidget):
         self._append(f"  ↪ 调用 {name}({args})", theme.C_TEXT_DIM)
 
     def append_result(self, name: str, result) -> None:
+        if isinstance(result, dict) and isinstance(result.get("image"),
+                                                   (bytes, bytearray)):
+            # 图片结果不能 str() 整段bytes 打出来（几十 KB 噪音）
+            color = theme.C_TEXT_DIM
+            text = (f"  ← {name}: <图片 {len(result['image'])} 字节, "
+                    f"{result.get('mime') or 'image/png'}>")
+            self._append(text, color)
+            return
         if isinstance(result, dict) and "error" in result:
             color = theme.C_ERR
             text = f"  ← {name}: {result}"

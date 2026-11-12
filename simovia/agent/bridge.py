@@ -5,6 +5,7 @@ OpenAI function calling 的 schema 与 MCP 的 inputSchema 同源（都是 JSON 
 """
 from __future__ import annotations
 
+import base64
 import json
 
 
@@ -31,7 +32,8 @@ def local_tools_manifest() -> list[dict]:
     都用——它们不经 MCP，由 AgentWorker 直接 dispatch）。"""
     return [
         {"name": "write_file",
-         "description": "在当前世界目录写文件（场景 YAML / 控制器 .py 等）。"
+         "description": "在当前世界目录（及其引用的控制器目录，如 ../controllers）"
+                        "写文件（场景 YAML / 控制器 .py 等）。"
                         "参数 path（相对当前世界目录）、content（文件全文）。",
          "inputSchema": {"type": "object",
                          "properties": {
@@ -39,7 +41,8 @@ def local_tools_manifest() -> list[dict]:
                              "content": {"type": "string"}},
                          "required": ["path", "content"]}},
         {"name": "read_file",
-         "description": "读当前世界目录下文件全文（含 AI 自己刚写的代码）。",
+         "description": "读当前世界目录（或世界引用的控制器目录）下文件全文"
+                        "（含 AI 自己刚写的代码）。",
          "inputSchema": {"type": "object",
                          "properties": {"path": {"type": "string"}},
                          "required": ["path"]}},
@@ -126,3 +129,28 @@ def content_text(resp_json: dict) -> str:
         return resp_json["choices"][0]["message"].get("content") or ""
     except (TypeError, KeyError, IndexError):
         return ""
+
+
+def tool_payload(result) -> tuple[str, list[dict]]:
+    """工具结果 -> (role=tool 的文本内容, 需追加的图片消息列表)。
+
+    screenshot / camera_frame 经 McpClient 解析成 {"image": bytes, ...}：
+    bytes 不能直接 json.dumps（报告 F3 的崩溃点），这里转 base64 并构造
+    视觉模型要求的 image_url 消息；其余结果仍按 JSON 字符串回灌。
+    """
+    if isinstance(result, dict) and isinstance(result.get("image"),
+                                              (bytes, bytearray)):
+        raw = bytes(result["image"])
+        mime = result.get("mime") or "image/png"
+        b64 = base64.b64encode(raw).decode("ascii")
+        text = (f"已返回一张图片（{mime}，{len(raw)} 字节），"
+                "图像内容见下一条 user 消息。")
+        msgs = [{"role": "user", "content": [
+            {"type": "text", "text": "这是上一步工具调用返回的图片："},
+            {"type": "image_url",
+             "image_url": {"url": f"data:{mime};base64,{b64}"}},
+        ]}]
+        return text, msgs
+    if isinstance(result, dict):
+        return json.dumps(result, ensure_ascii=False), []
+    return str(result), []

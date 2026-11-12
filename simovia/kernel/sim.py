@@ -312,11 +312,13 @@ class Simulation:
         self.load_state(supervisor.INIT_TAG)
 
     def ensure_controllers(self) -> bool:
-        """确保控制器进程在跑（暂停后继续推进用）。返回是否重新拉起。
+        """确保控制器进程在跑（继续推进用）。返回是否重新拉起。
 
-        run 收尾会让控制器正常退出（REQ/REP 一段轨迹约定），暂停后继续
-        推进时进程已经不在了：重新 spawn 一批，model/data/tick 保持不变，
-        新进程重新握手后从当前状态接着跑。
+        run 收尾现在保留控制器进程（暂停语义），暂停后继续推进时一般直接
+        命中 alive 分支、返回 False——控制器上下文原样续用。只有当控制器
+        自行跑完 episode 退出（进程已不在）时才重新 spawn；此时新进程从
+        初始相位开始，与当前物理状态继续配合（旧行为，便于多段验证跑完
+        一个 episode 后再来一轮）。
         """
         if not self._ran or not self._procs:
             return False                 # 没跑过 / 无控制器世界（或没起过进程）
@@ -552,8 +554,9 @@ class Simulation:
         开启后按墙钟对齐仿真时间（GUI 看动画用；机器跑批应关闭以全速推进）。
 
         stop_check()：每个控制 tick 检查一次，返回 True 时提前收尾
-        （GUI"停止"按钮 / MCP stop 工具）。收尾语义与跑满完全一致：
-        控制器收 stop 正常退出（exit 0 不算崩溃），已跑轨迹不变。
+        （GUI"停止"按钮 / MCP stop 工具）。收尾后控制器进程保留为暂停态：
+        下一段 run 从同一控制器上下文（局部变量/相位机进度）继续，分段
+        运行与连续运行的物理轨迹一致；reset/load_world/close 才终止控制器。
 
         on_sample()：实时模式下按约 _SAMPLE_HZ 把控制 tick 内的物理步切片，
         每片对齐墙钟后回调一次（给 GUI 出中间帧）。非实时模式不切片。
@@ -680,8 +683,10 @@ class Simulation:
             # pause: 什么都不做，下一轮继续等
             _pace()
 
-        self._notify_stop()
-        self._drain_controllers()
+        # 分段/暂停语义（报告 F1）：本段 run 收尾不通知控制器退出——进程和
+        # 局部变量（控制器 phase_i 等）保留，下一段 run 从同一上下文继续，
+        # 多段累计轨迹与一次连续运行一致。控制器自行跑完 episode 时进程已
+        # 退出，无需处理；只有 close()（load_world/reset/后端退出）才终止。
         self.close_device_renderers()
         return self._stats(t_start, sim_start)
 

@@ -75,7 +75,7 @@ robots:
     controller: ../controllers/so101_pico_teleop.py
     args:
       # 两路图像是新的 features 结构，不能和旧的单路数据集混写（meta 会不一致）
-      dataset: ~/桌面/so101_smolvla_sort2
+      dataset: ~/桌面/逆向工程/simovia_workspace/datasets/so101_smolvla_sort2
       # 任务文本会作为语言条件写进每一集，必须与操作一致；
       # 旧的 so101_smolvla_dataset_2cam 只录过"红块进红盒"，指令不同，故换新目录
       task: pick up the red cube and put it into the red box, then pick up the blue cube and put it into the blue box

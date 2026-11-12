@@ -57,14 +57,20 @@ _CAM_PRESETS = {
 _FOV_Y_DEG = 45.0        # MuJoCo 自由相机垂直 fov（定标实验确认）
 
 # 画质档位：低配机器用"低"把光栅化像素数和后处理成本砍下来。
-# - scale：先按 0.75 分辨率离屏渲染，再由 Qt 放大到控件尺寸（像素数 -44%）
+# - scale：离屏渲染分辨率倍率，>1 即超采样（SSAA），下采样时平滑插值；
+#   实测 1280x720 窗口 scale=2.0 为 3.3ms/帧，代价可忽略
+# - offsamples：离屏 MSAA 采样数（与 SSAA 叠加生效）
+# - shadowsize：投影贴图边长，越大影子边缘越干净（8192 约占 268MB 显存）
 # - shadows：关掉投影图（地面影子消失，几何/颜色不受影响）
 # - 天空盒保持开启：MuJoCo 离屏渲染清屏色硬编码为黑，关掉天空盒背景会变纯黑
 _QUALITY_PRESETS = {
-    "高": dict(offsamples=8, shadows=True, scale=1.0),
-    "均衡": dict(offsamples=4, shadows=True, scale=1.0),
-    "低": dict(offsamples=0, shadows=False, scale=0.75),
+    "高": dict(offsamples=8, shadows=True, scale=2.0, shadowsize=8192),
+    "均衡": dict(offsamples=4, shadows=True, scale=1.0, shadowsize=4096),
+    "低": dict(offsamples=0, shadows=False, scale=0.75, shadowsize=2048),
 }
+
+# 离屏帧缓冲边长上限：4K 屏再乘 2 倍超采样会到 7680，超出多数显卡的单纹理上限
+_MAX_OFFSCREEN = 4096
 DEFAULT_QUALITY = "均衡"
 
 
@@ -153,6 +159,7 @@ class RenderModel:
         self._offsamples = _QUALITY_PRESETS[DEFAULT_QUALITY]["offsamples"]
         self._shadows = _QUALITY_PRESETS[DEFAULT_QUALITY]["shadows"]
         self._scale = _QUALITY_PRESETS[DEFAULT_QUALITY]["scale"]
+        self._shadowsize = _QUALITY_PRESETS[DEFAULT_QUALITY]["shadowsize"]
         self._apply_quality_to_model()
         self._renderer = self._make_renderer()
 
@@ -477,10 +484,20 @@ class RenderModel:
         """按逻辑尺寸 × 分辨率倍率建离屏 renderer（低配档位更省像素）。"""
         w = max(1, int(round(self._width * self._scale)))
         h = max(1, int(round(self._height * self._scale)))
+        if max(w, h) > _MAX_OFFSCREEN:
+            k = _MAX_OFFSCREEN / max(w, h)
+            w, h = max(1, int(w * k)), max(1, int(h * k))
+        # 离屏帧缓冲上限由 model.vis.global_.offwidth/offheight 决定，必须在
+        # 建 Renderer 前扩到足够大，否则超采样会报
+        # "Image width > framebuffer width"
+        g = self.model.vis.global_
+        g.offwidth = max(int(g.offwidth), w)
+        g.offheight = max(int(g.offheight), h)
         return mujoco.Renderer(self.model, h, w)
 
     def _apply_quality_to_model(self) -> None:
         self.model.vis.quality.offsamples = self._offsamples
+        self.model.vis.quality.shadowsize = self._shadowsize
 
     def set_quality(self, level: str) -> None:
         """切换画质档位（高/均衡/低）。未知档位回落到均衡。"""
@@ -489,12 +506,14 @@ class RenderModel:
             level, q = DEFAULT_QUALITY, _QUALITY_PRESETS[DEFAULT_QUALITY]
         if (level == self._quality and q["offsamples"] == self._offsamples
                 and q["shadows"] == self._shadows
-                and q["scale"] == self._scale):
+                and q["scale"] == self._scale
+                and q["shadowsize"] == self._shadowsize):
             return
         self._quality = level
         self._offsamples = q["offsamples"]
         self._shadows = q["shadows"]
         self._scale = q["scale"]
+        self._shadowsize = q["shadowsize"]
         self._apply_quality_to_model()
         self._renderer.close()
         self._renderer = self._make_renderer()
@@ -703,9 +722,10 @@ class RenderView(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.fillRect(self.rect(), QColor("#101113"))
         if self._frame is not None:
-            # 低画质档位按 0.75 分辨率离屏渲染，放大时用平滑插值避免马赛克
-            # （满分辨率帧不设此 hint，省掉一次无意义的重采样）
-            if self._frame.width() < self.width():
+            # 帧尺寸与控件不一致时才需要重采样：低画质档位缩小渲染需要平滑放大
+            # 避免马赛克；高画质档位超采样后缩小，同样必须平滑才能消除锯齿。
+            # 尺寸相同时不设此 hint，省掉一次无意义的重采样。
+            if self._frame.width() != self.width():
                 p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             p.drawImage(self.rect(), self._frame)
             self._draw_origin_axes(p)

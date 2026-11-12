@@ -68,10 +68,10 @@ def main(argv=None):
         raise SystemExit(_doctor(args))
 
 
-def _doctor(args):
-    """环境诊断：依赖版本、模型资产、离屏渲染、样例世界能否编译。
+def doctor_checks() -> list[tuple[str, str, str]]:
+    """环境自检项（CLI doctor 与 GUI 环境诊断共用）。
 
-    返回进程退出码（0 = 必需项全通过；1 = 有 FAIL，可直接贴给维护者）。
+    返回 [(level, name, detail)]，level ∈ {OK, WARN, FAIL}。
     """
     import importlib.metadata as md
     import platform
@@ -151,6 +151,15 @@ def _doctor(args):
     except Exception as e:                           # noqa: BLE001
         add("FAIL", "样例世界", f"编译失败：{type(e).__name__}: {e}")
 
+    return checks
+
+
+def _doctor(args):
+    """环境诊断：依赖版本、模型资产、离屏渲染、样例世界能否编译。
+
+    返回进程退出码（0 = 必需项全通过；1 = 有 FAIL，可直接贴给维护者）。
+    """
+    checks = doctor_checks()
     if getattr(args, "json", False):
         print(json.dumps(
             {"ok": not any(lv == "FAIL" for lv, _, _ in checks),

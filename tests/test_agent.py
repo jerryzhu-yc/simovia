@@ -297,9 +297,11 @@ def test_worker_mcp_sync_callback_is_two_args(qapp):
     class _Client:
         def __init__(self, err, data):
             self.err, self.data, self.seen = err, data, None
+            self.timeout_ms = "unset"
 
-        def call_tool(self, name, args, on_done):
+        def call_tool(self, name, args, on_done, timeout_ms="unset"):
             self.seen = (name, args)
+            self.timeout_ms = timeout_ms
             on_done(self.err, self.data)      # 同步回调（本地后端/测试）
             return 1
 
@@ -307,6 +309,7 @@ def test_worker_mcp_sync_callback_is_two_args(qapp):
     w = AgentWorker(ok_client)
     assert w._call_mcp_sync("run", {"ticks": 5}) == {"ticks": 5}
     assert ok_client.seen == ("run", {"ticks": 5})
+    assert ok_client.timeout_ms is None   # run 是长任务，不设等待上限（F7）
 
     err_client = _Client(True, "后端未加载世界")
     w2 = AgentWorker(err_client)
@@ -338,6 +341,62 @@ def test_worker_tool_messages_reuse_model_call_ids(qapp):
     tool_msgs = [m for m in w._messages if m.get("role") == "tool"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0]["tool_call_id"] == "call_1"
+
+
+def test_worker_cancel_fills_skipped_tool_calls(qapp):
+    """取消时未执行的 tool_call 必须补齐占位回复（报告 F6）：
+    assistant.tool_calls 与 role=tool 必须一一对应，否则下一轮请求
+    会被严格校验的消息服务拒绝。"""
+    from simovia.agent.worker import AgentWorker
+
+    class _W(AgentWorker):
+        def __init__(self):
+            super().__init__(client=None)
+            self._cancel = False
+
+        def _post_chat(self):
+            return {"choices": [{"message": {"tool_calls": [
+                {"id": "call_1", "function": {
+                    "name": "run", "arguments": '{"ticks": 1}'}},
+                {"id": "call_2", "function": {
+                    "name": "run", "arguments": '{"ticks": 1}'}},
+            ]}}]}
+
+        def _dispatch_tool(self, name, args):
+            self.stop()               # 第一个工具执行期间用户取消
+            return {"ok": name}
+
+    w = _W()
+    w._run_round()
+    asked = [c["id"] for m in w._messages if m.get("role") == "assistant"
+             for c in (m.get("tool_calls") or [])]
+    answered = [m["tool_call_id"] for m in w._messages
+                if m.get("role") == "tool"]
+    assert asked == ["call_1", "call_2"]
+    assert answered == ["call_1", "call_2"]     # 无悬空 tool_call_id
+    assert "已取消" in w._messages[-1]["content"]
+
+
+def test_worker_long_tools_skip_wait_timeout(qapp):
+    """run/teleop_start 不设等待上限（报告 F7）：长任务耗时由仿真决定，
+    不能像普通工具那样 30s 提前判 timeout；普通工具仍用默认超时。"""
+    from simovia.agent.worker import AgentWorker
+
+    seen = {}
+
+    class _Client:
+        def call_tool(self, name, args, on_done, timeout_ms="unset"):
+            seen[name] = timeout_ms
+            on_done(False, {"ok": name})
+            return 1
+
+    w = AgentWorker(_Client())
+    assert w._call_mcp_sync("run", {}) == {"ok": "run"}
+    assert seen["run"] is None
+    assert w._call_mcp_sync("teleop_start", {}) == {"ok": "teleop_start"}
+    assert seen["teleop_start"] is None
+    assert w._call_mcp_sync("read_world", {}) == {"ok": "read_world"}
+    assert seen["read_world"] == "unset"
 
 
 def test_worker_stop_only_cancels_current_round(qapp):

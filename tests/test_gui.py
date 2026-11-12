@@ -352,7 +352,10 @@ class TestRenderQuality:
             assert rm.render_frame().shape[:2] == (225, 300)
             rm.set_quality("高")
             assert rm.model.vis.quality.offsamples == 8
-            assert rm._renderer.width == 400
+            # 高档 = 2× 超采样（scale=2.0），离屏分辨率翻倍后在 paintEvent 下采样
+            assert rm._renderer.width == 800
+            assert rm._renderer.height == 600
+            assert rm.render_frame().shape[:2] == (600, 800)
             assert _QUALITY_PRESETS["低"]["scale"] < 1.0
         finally:
             rm.close()
@@ -875,6 +878,35 @@ def test_code_panel_keeps_unsaved_drafts(qapp, tmp_path):
         assert a.read_text(encoding="utf-8") == "A1 未保存\n"
         assert p.dirty_files() == {}
         assert p.btn_save.text() == "保存并运行"
+    finally:
+        p.deleteLater()
+
+
+def test_code_panel_discard_drafts_clears_stash(qapp, tmp_path):
+    """放弃修改后草稿彻底清除（报告 F5）：再次 set_world 不能把编辑器
+    旧内容重新收进草稿，否则用户以为已放弃的修改又出现在 dirty_files。"""
+    from simovia.gui.panels import CodePanel
+
+    class _R:
+        def __init__(self, name, controller):
+            self.name = name; self.controller = controller
+
+    a = tmp_path / "a.py"
+    a.write_text("A0\n", encoding="utf-8")
+    spec = type("S", (), {"robots": [_R("ra", "a.py")]})()
+    p = CodePanel()
+    try:
+        p.set_world(spec, tmp_path)
+        p.edit.clear()
+        p.edit.insertPlainText("A1 未保存\n")
+        assert p.dirty_files()
+        p.discard_drafts()
+        assert p.dirty_files() == {}
+        assert p.edit.toPlainText() == "A0\n"      # 回到磁盘内容
+        assert not p.edit.document().isModified()
+        # 关键回归：随后的切世界流程（set_world -> _stash_current）不能复活草稿
+        p.set_world(type("S", (), {"robots": []})(), tmp_path)
+        assert p.dirty_files() == {}
     finally:
         p.deleteLater()
 
@@ -1632,4 +1664,370 @@ def test_gear_camera_backfill_validation_and_selection(qapp):
         assert cur.data(Qt.ItemDataRole.UserRole) == "wrist_imu"
     finally:
         p.deleteLater()
+
+
+def test_properties_task_status_phases(qapp):
+    """任务状态：未运行/运行中/已暂停/成功/未达标/异常分开显示。
+
+    tick=0 的 success=False 只是“还没跑”，不能标红成失败；未达标时给出
+    具体原因并露出定位物体/查看日志入口。
+    """
+    from simovia.gui.panels import PropertiesPanel
+
+    p = PropertiesPanel()
+    p.show()
+    qapp.processEvents()
+    try:
+        assert p._phase == "idle" and p._state.text() == "未运行"
+        # 刚加载（tick=0, success=False）不改状态，不标红
+        p.update_obs({"tick": 0, "time": 0.0,
+                      "task": {"success": False, "reward": -0.011}})
+        assert p._state.text() == "未运行"
+        assert p._reward.text() == "-"        # tick=0 不显示初始负 reward
+        assert not p._reason.isVisible()
+
+        p.mark_running()
+        assert p._state.text() == "运行中"
+        # 步进/停止 -> 已暂停，不显示原因
+        p.update_stats({"ticks": 32, "success": False, "reward": -0.1},
+                       final=False)
+        assert p._state.text() == "已暂停"
+        assert "暂停" in p._tick.text()
+        assert not p._reason.isVisible()
+
+        # 未达标：原因可见 + 定位/日志按钮可用
+        p.update_stats({"ticks": 297, "success": False, "reward": 0.0},
+                       "cube 高度 0.712 m，未达到成功区下限 0.80 m",
+                       can_locate=True)
+        assert p._state.text() == "未达标"
+        assert p._reason.isVisible() and "0.80" in p._reason.text()
+        assert p._bt_locate.isVisible() and p._bt_log.isVisible()
+
+        # 成功：原因与按钮全部收起
+        p.update_stats({"ticks": 300, "success": True, "reward": 1.2},
+                       "不该显示")
+        assert p._state.text() == "成功"
+        assert not p._reason.isVisible()
+        assert not p._task_btns.isVisible()
+
+        # 控制器异常退出 -> 异常（即使 success 为 False 也优先报异常）
+        p.update_stats({"ticks": 10, "success": False},
+                       "控制器异常退出：arm", error=True)
+        assert p._state.text() == "异常"
+        assert p._reason.isVisible()
+
+        p.reset_task()
+        assert p._state.text() == "未运行"
+        assert p._tick.text() == "-"
+    finally:
+        p.deleteLater()
+
+
+def test_properties_task_buttons_emit(qapp):
+    """未达标时的“定位物体/查看日志”按钮分别发出信号。"""
+    from simovia.gui.panels import PropertiesPanel
+
+    p = PropertiesPanel()
+    p.show()
+    qapp.processEvents()
+    hits = []
+    p.locateRequested.connect(lambda: hits.append("locate"))
+    p.logRequested.connect(lambda: hits.append("log"))
+    try:
+        p.update_stats({"ticks": 1, "success": False}, "未达标原因",
+                       can_locate=True)
+        qapp.processEvents()
+        p._bt_locate.click()
+        p._bt_log.click()
+        assert hits == ["locate", "log"]
+    finally:
+        p.deleteLater()
+
+
+def test_task_failure_reason_explains_goal():
+    """未达标解释：哪个物体、差多少、成功区在哪。"""
+    from types import SimpleNamespace
+
+    from simovia.gui.app import MainWindow
+
+    fake = SimpleNamespace(_spec=load_world(WORLD))
+    fake._task_success_spec = lambda: MainWindow._task_success_spec(fake)
+    reason = MainWindow._task_failure_reason(
+        fake, {"objects": {"cube": [0.55, 0.0, 0.71]}})
+    assert "cube" in reason and "0.71" in reason and "0.80" in reason
+    # 高度够了但横向偏离：给出当前坐标与目标区
+    reason = MainWindow._task_failure_reason(
+        fake, {"objects": {"cube": [0.30, 0.20, 0.86]}})
+    assert "0.30" in reason and "目标区" in reason
+    # 拿不到目标位置
+    reason = MainWindow._task_failure_reason(fake, {"objects": {}})
+    assert "cube" in reason
+    # 世界没有定义成功条件
+    no_task = SimpleNamespace(task=SimpleNamespace(success=None))
+    ns = SimpleNamespace(_spec=no_task)
+    ns._task_success_spec = lambda: MainWindow._task_success_spec(ns)
+    reason = MainWindow._task_failure_reason(ns, {})
+    assert "task.success" in reason
+
+
+def test_welcome_dialog_three_entries(qapp):
+    """首屏引导：三个入口各自发信号；“启动时显示”可关闭。"""
+    from simovia.gui.app import WelcomeDialog
+
+    d = WelcomeDialog("pick_cube")
+    hits = []
+    d.openSample.connect(lambda: hits.append("sample"))
+    d.newScene.connect(lambda: hits.append("new"))
+    d.aiScene.connect(lambda: hits.append("ai"))
+    try:
+        assert "pick_cube" in d.bt_sample.text()
+        assert d.should_show_next_time() is True
+        d.chk_show.setChecked(False)
+        assert d.should_show_next_time() is False
+        d.bt_sample.click()
+        d.bt_new.click()
+        d.bt_ai.click()
+        assert hits == ["sample", "new", "ai"]
+    finally:
+        d.deleteLater()
+
+
+def test_welcome_respects_startup_setting(monkeypatch):
+    """用户取消“启动时显示”后，启动不再自动弹引导。"""
+    import simovia.gui.app as app_mod
+    from types import SimpleNamespace
+
+    class _St:
+        def __init__(self, val):
+            self._val = val
+        def value(self, _key, default=None):
+            return self._val
+
+    called = []
+    fake = SimpleNamespace(_spec=object(), _welcome_pending=True,
+                           _show_welcome=lambda: called.append(1))
+
+    monkeypatch.setattr(app_mod, "QSettings", lambda: _St(False))
+    app_mod.MainWindow._maybe_show_welcome(fake)
+    assert called == []
+    assert fake._welcome_pending is True      # 只是没弹，标记保留
+
+    monkeypatch.setattr(app_mod, "QSettings", lambda: _St(True))
+    app_mod.MainWindow._maybe_show_welcome(fake)
+    assert called == [1]
+    assert fake._welcome_pending is False
+
+
+def test_doctor_dialog_summary_levels(qapp, monkeypatch):
+    """GUI 环境诊断：FAIL 优先报错、仅 WARN 提示降级、全通过显示成功。"""
+    import simovia.gui.app as app_mod
+
+    monkeypatch.setattr(app_mod._DoctorWorker, "start", lambda self: None)
+    d = app_mod.DoctorDialog()
+    try:
+        d.show_checks([("OK", "Python", "3.12"),
+                       ("WARN", "离屏渲染", "不可用"),
+                       ("FAIL", "样例世界", "编译失败")])
+        assert "必需检查未通过" in d._summary.text()
+        assert "[FAIL]" in d._text.toPlainText()
+        d.show_checks([("OK", "Python", "3.12"), ("WARN", "离屏渲染", "不可用")])
+        assert "可选/降级" in d._summary.text()
+        d.show_checks([("OK", "Python", "3.12")])
+        assert d._summary.text() == "全部通过。"
+    finally:
+        d.deleteLater()
+
+
+def test_controller_template_is_runnable():
+    """导入后生成的控制器模板：语法可编译、保持姿态、正确收尾。"""
+    from simovia.gui.app import _controller_template
+
+    text = _controller_template("arm")
+    compile(text, "<controller>", "exec")       # 语法合法
+    assert "from simovia.controller import Robot" in text
+    assert "robot.set_all(hold)" in text
+    assert "robot.close()" in text
+
+
+def test_append_robot_yaml_binds_controller():
+    """导入机器人时把控制器路径写进世界 YAML。"""
+    import yaml
+
+    from simovia.gui.app import MainWindow
+
+    class _Cli:
+        def call_tool(self, _name, _args, cb):
+            cb(None, "name: w\nrobots: []\n")
+
+    out = []
+    fake = type("F", (), {})()
+    fake.client = _Cli()
+    fake._unique_name = lambda k: k
+    fake._reload_yaml = lambda text, **kw: out.append(text)
+    fake._log = lambda *a, **k: None
+    fake._apply_state = lambda *a, **k: None
+
+    MainWindow._append_robot_yaml(fake, "go2", "/tmp/go2.xml", 0.1, 0.2, 0.4,
+                                  name="go2", controller="controllers/go2.py")
+    doc = yaml.safe_load(out[-1])
+    assert doc["robots"][0]["name"] == "go2"
+    assert doc["robots"][0]["controller"] == "controllers/go2.py"
+
+
+def test_make_controller_for_import_writes_relative(
+        qapp, monkeypatch, tmp_path):
+    """选“是”并指定路径后生成模板，返回相对世界目录的路径。"""
+    import simovia.gui.app as app_mod
+    from simovia.gui.app import MainWindow
+
+    class _MB:
+        class StandardButton:
+            Yes = 1
+            No = 0
+        @staticmethod
+        def question(*_a, **_k):
+            return _MB.StandardButton.Yes
+        @staticmethod
+        def critical(*_a, **_k):
+            pass
+
+    target = tmp_path / "controllers" / "arm_ctrl.py"
+    monkeypatch.setattr(app_mod, "QMessageBox", _MB)
+    monkeypatch.setattr(
+        app_mod, "QFileDialog",
+        type("_FD", (), {"getSaveFileName":
+                         staticmethod(lambda *_a, **_k: (str(target), ""))}))
+
+    fake = type("F", (), {})()
+    fake._base_dir = tmp_path
+    fake._spec = object()
+    fake._log = lambda *a, **k: None
+
+    rel = MainWindow._make_controller_for_import(fake, "arm")
+    assert rel == "controllers/arm_ctrl.py"
+    assert target.exists()
+    compile(target.read_text(encoding="utf-8"), "<ctrl>", "exec")
+
+
+def test_export_project_zip_packs_ctrl_and_model(tmp_path):
+    """导出包：控制器进 controllers/、本地模型连 mesh 整目录进 models/。"""
+    import yaml
+    import zipfile
+
+    from simovia.gui.app import _export_project_zip
+
+    base = tmp_path / "worlds"
+    base.mkdir()
+    (tmp_path / "controllers").mkdir()
+    (tmp_path / "controllers" / "pick.py").write_text(
+        "from simovia.controller import Robot\n", encoding="utf-8")
+    arm = tmp_path / "models" / "arm"
+    (arm / "meshes").mkdir(parents=True)
+    (arm / "arm.xml").write_text(
+        '<mujoco><compiler meshdir="meshes"/>'
+        '<asset><mesh file="link.stl"/></asset></mujoco>', encoding="utf-8")
+    (arm / "meshes" / "link.stl").write_bytes(b"solid link")
+    world = {
+        "name": "w",
+        "robots": [
+            {"name": "a", "model": "../models/arm/arm.xml",
+             "controller": "../controllers/pick.py", "pos": [0, 0, 0]},
+            {"name": "b", "model": "zoo://go2", "pos": [1, 0, 0]},
+        ],
+    }
+    out = tmp_path / "pkg.zip"
+    info = _export_project_zip(yaml.safe_dump(world), base, out)
+
+    assert info["controllers"] == ["controllers/pick.py"]
+    assert info["models"] == ["models/arm.xml"]
+    assert info["external"] == []
+    with zipfile.ZipFile(out) as zf:
+        names = set(zf.namelist())
+        doc = yaml.safe_load(zf.read("world.yaml"))
+    assert "world.yaml" in names
+    assert "controllers/pick.py" in names
+    assert "models/arm.xml" in names
+    # URDF/MJCF 的相对 mesh 引用必须一起打包
+    assert "models/meshes/link.stl" in names
+    assert doc["robots"][0]["controller"] == "controllers/pick.py"
+    assert doc["robots"][0]["model"] == "models/arm.xml"
+    assert doc["robots"][1]["model"] == "zoo://go2"      # 官方库模型保持原样
+
+
+def test_export_collects_mjcf_includes_and_meshdir(tmp_path):
+    """MJCF：include 递归跟进；mesh 的 file 相对 compiler meshdir 解析。"""
+    import yaml
+    import zipfile
+
+    from simovia.gui.app import _export_project_zip
+
+    base = tmp_path / "w"
+    (tmp_path / "robot" / "parts").mkdir(parents=True)
+    (tmp_path / "robot" / "meshes").mkdir(parents=True)
+    model = tmp_path / "robot" / "robot.xml"
+    model.write_text(
+        '<mujoco><compiler meshdir="meshes"/>'
+        '<include file="parts/body.xml"/>'
+        '<asset><mesh name="l" file="link.stl"/></asset></mujoco>',
+        encoding="utf-8")
+    (tmp_path / "robot" / "parts" / "body.xml").write_text(
+        "<mujoco><asset><mesh file='other.stl'/></asset></mujoco>",
+        encoding="utf-8")
+    (tmp_path / "robot" / "meshes" / "link.stl").write_bytes(b"solid a")
+    (tmp_path / "robot" / "meshes" / "other.stl").write_bytes(b"solid b")
+    base.mkdir()
+    world = {"name": "w", "robots": [
+        {"name": "r", "model": "../robot/robot.xml"}]}
+    out = tmp_path / "pkg.zip"
+    _export_project_zip(yaml.safe_dump(world), base, out)
+    with zipfile.ZipFile(out) as zf:
+        names = set(zf.namelist())
+        doc = yaml.safe_load(zf.read("world.yaml"))
+    assert "models/robot.xml" in names
+    assert "models/parts/body.xml" in names
+    assert "models/meshes/link.stl" in names
+    assert "models/meshes/other.stl" in names
+    assert doc["robots"][0]["model"] == "models/robot.xml"
+
+
+def test_export_project_zip_reports_external(tmp_path):
+    """缺失控制器 / 世界目录外的模型不打包，但要列进 external 提醒。"""
+    import yaml
+
+    from simovia.gui.app import _export_project_zip
+
+    base = tmp_path / "w"
+    base.mkdir()
+    world = {"name": "w", "robots": [
+        {"name": "a", "model": "/outside/arm.xml",
+         "controller": "missing.py"}]}
+    info = _export_project_zip(yaml.safe_dump(world), base,
+                               tmp_path / "pkg.zip")
+    assert info["controllers"] == [] and info["models"] == []
+    assert "missing.py" in info["external"]
+    assert "/outside/arm.xml" in info["external"]
+
+
+def test_export_project_zip_handles_old_mtime(tmp_path):
+    """源文件 mtime < 1980（跨平台拷贝常见）时 zip 仍能写入。"""
+    import os
+    import yaml
+    import zipfile
+
+    from simovia.gui.app import _export_project_zip
+
+    base = tmp_path / "w"
+    arm = tmp_path / "models" / "arm"
+    base.mkdir()
+    arm.mkdir(parents=True)
+    model = arm / "arm.xml"
+    model.write_text("<mujoco/>", encoding="utf-8")
+    os.utime(model, (0, 0))                 # 1970-01-01，早于 zip 时间下限
+    world = {"name": "w", "robots": [
+        {"name": "a", "model": "../models/arm/arm.xml"}]}
+    out = tmp_path / "pkg.zip"
+    _export_project_zip(yaml.safe_dump(world), base, out)
+    with zipfile.ZipFile(out) as zf:
+        assert zf.read("models/arm.xml") == b"<mujoco/>"
+
 

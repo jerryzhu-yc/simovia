@@ -36,8 +36,14 @@ _REANCHOR_POS_ERR = 0.05  # 位置残差超过此值视为不可达：目标回�
 
 
 def _is_ee_joint(name: str) -> bool:
-    """末端执行器关节：装配前缀是 gripper/（单个）或 gripper_<side>/（多个）。"""
-    return name.startswith("gripper/") or name.startswith("gripper_")
+    """末端执行器关节：装配前缀是 gripper/（单个）或 gripper_<side>/（多个）。
+
+    机器人模型自带的夹爪关节常直接叫 gripper（SO-101 等），没有装配前缀，
+    一并识别——否则它会被当成一个机械臂自由度塞进 IK，解算时拿夹爪开合
+    去凑末端位姿，表现为升降/平移方向乱飘、夹爪自己动。
+    """
+    return (name.rsplit("/", 1)[-1] == "gripper"
+            or name.startswith("gripper/") or name.startswith("gripper_"))
 
 
 def _rotvec_from_matrix(R: np.ndarray) -> np.ndarray:
@@ -74,10 +80,14 @@ class ArmTeleop:
                         and int(model.jnt_type[jid])
                         in (int(mujoco.mjtJoint.mjJNT_HINGE),
                             int(mujoco.mjtJoint.mjJNT_SLIDE))]
-        if len(self._joints) < 6:
+        if len(self._joints) < 3:
             raise WorldError(
                 f"机器人 '{robot_name}' 只有 {len(self._joints)} 个机械臂关节，"
-                "遥操作 IK 至少需要 6 个（固定基座机械臂）")
+                "遥操作至少需要 3 个（固定基座机械臂）")
+        # 少于 6 个自由度无法同时跟踪位置与姿态（SO-101 是 5DoF）：只跟随
+        # 位置，姿态随动。否则姿态残差永远消不掉，目标会被 _REANCHOR 反复
+        # 打回当前位姿，表现为按键不动或一顿一顿。
+        self._pos_only = len(self._joints) < 6
         self._qadr = [int(model.jnt_qposadr[jid]) for _, jid in self._joints]
         self._dofadr = [int(model.jnt_dofadr[jid]) for _, jid in self._joints]
 
@@ -209,19 +219,28 @@ class ArmTeleop:
             mujoco.mj_kinematics(self.model, d)
             mujoco.mj_comPos(self.model, d)
             pos = d.site_xpos[self.site_id]
-            mat = d.site_xmat[self.site_id].reshape(3, 3)
             ep = self._target_pos - pos
-            er = _rotvec_from_matrix(self._target_mat @ mat.T)
             pos_err = float(np.linalg.norm(ep))
-            if pos_err < 1e-4 and float(np.linalg.norm(er)) < 1e-3:
-                break
-            mujoco.mj_jacSite(self.model, d, self._jacp, self._jacr,
-                              self.site_id)
-            jac = np.vstack([self._jacp[:, self._dofadr],
-                             self._jacr[:, self._dofadr]])
-            err = np.concatenate([ep, 0.5 * er])
-            dq = jac.T @ np.linalg.solve(
-                jac @ jac.T + _IK_DAMPING ** 2 * np.eye(6), err)
+            if self._pos_only:
+                if pos_err < 1e-4:
+                    break
+                mujoco.mj_jacSite(self.model, d, self._jacp, self._jacr,
+                                  self.site_id)
+                jacp = self._jacp[:, self._dofadr]
+                dq = jacp.T @ np.linalg.solve(
+                    jacp @ jacp.T + _IK_DAMPING ** 2 * np.eye(3), ep)
+            else:
+                mat = d.site_xmat[self.site_id].reshape(3, 3)
+                er = _rotvec_from_matrix(self._target_mat @ mat.T)
+                if pos_err < 1e-4 and float(np.linalg.norm(er)) < 1e-3:
+                    break
+                mujoco.mj_jacSite(self.model, d, self._jacp, self._jacr,
+                                  self.site_id)
+                jac = np.vstack([self._jacp[:, self._dofadr],
+                                 self._jacr[:, self._dofadr]])
+                err = np.concatenate([ep, 0.5 * er])
+                dq = jac.T @ np.linalg.solve(
+                    jac @ jac.T + _IK_DAMPING ** 2 * np.eye(6), err)
             norm = float(np.linalg.norm(dq))
             if norm > _IK_MAX_STEP:
                 dq *= _IK_MAX_STEP / norm

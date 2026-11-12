@@ -15,7 +15,7 @@ from PySide6.QtCore import QThread, Signal, Slot
 
 from simovia.agent.bridge import (content_text, extract_tool_calls,
                                     local_tools_manifest, system_prompt,
-                                    to_openai_tools)
+                                    to_openai_tools, tool_payload)
 from simovia.agent.config import AgentConfig
 from simovia.agent.local_tools import LocalFiles, dispatch_local
 
@@ -29,6 +29,10 @@ class AgentWorker(QThread):
     toolResult = Signal(str, object)        # (工具名, 结果 dict 或 错误字串)
     error = Signal(str)
     finishedRound = Signal()                # 一轮对话结束（无更多 tool_calls）
+
+    #: 长任务工具：耗时由仿真本身决定，等待不设 30s 上限（与 GUI 的 run
+    #: 一致，报告 F7）。取消时先下发 stop，再等这次调用的收尾响应。
+    _LONG_TOOLS = frozenset({"run", "teleop_start"})
 
     def __init__(self, client, parent=None):
         """client：McpClient（call_tool 异步发 MCP）。本地文件工具内置。"""
@@ -49,10 +53,15 @@ class AgentWorker(QThread):
         self._config = cfg
         self._tools_manifest = list(mcp_tools)
 
-    def set_world_dir(self, path) -> None:
-        """加载/切换世界时调（LocalFiles 根目录）。"""
+    def set_world_dir(self, path, extra_roots=None) -> None:
+        """加载/切换世界时调（LocalFiles 根目录）。
+
+        extra_roots：世界显式引用的控制器所在目录（worlds/ 与 controllers/
+        同级布局下，Agent 需要能读写 ../controllers/xxx.py，见报告 F4）。
+        """
         import pathlib
-        self._files.set_root(pathlib.Path(path) if path else None)
+        roots = [pathlib.Path(path)] if path else []
+        self._files.set_roots(roots, [pathlib.Path(p) for p in (extra_roots or [])])
 
     def set_history(self, world_name: str | None) -> None:
         """加载新世界后重置对话历史（system prompt 重注）。"""
@@ -128,21 +137,51 @@ class AgentWorker(QThread):
                 return
             # 把 tool_calls 也记进 assistant 消息（OpenAI 要求回灌 tool 角色）
             self._messages.append(self._assistant_with_tool_calls(resp, calls))
-            for c in calls:
-                if self._cancel:
-                    return
-                self.toolCall.emit(c["name"], c["arguments"])
-                result = self._dispatch_tool(c["name"], c["arguments"])
-                self.toolResult.emit(c["name"], result)
-                # tool 消息：role=tool，content=JSON 字符串，tool_call_id 关联。
-                # id 必须与模型下发的 tool_calls[].id 完全一致，否则模型服务
-                # 会拒绝（缺失时才退回工具名，兼容不规范端点）。
-                self._messages.append({
-                    "role": "tool",
-                    "tool_call_id": c.get("id") or c["name"],
-                    "content": (json.dumps(result, ensure_ascii=False)
-                                if isinstance(result, dict) else str(result)),
-                })
+            image_msgs: list[dict] = []
+            answered = 0
+            try:
+                for c in calls:
+                    if self._cancel:
+                        break
+                    self.toolCall.emit(c["name"], c["arguments"])
+                    result = self._dispatch_tool(c["name"], c["arguments"])
+                    self.toolResult.emit(c["name"], result)
+                    # tool 消息：role=tool，content 为文本，tool_call_id 关联。
+                    # 截图/相机帧的 bytes 在此转 base64 并另发图片消息（F3）。
+                    content, imgs = tool_payload(result)
+                    image_msgs.extend(imgs)
+                    self._messages.append({
+                        "role": "tool",
+                        "tool_call_id": c.get("id") or c["name"],
+                        "content": content,
+                    })
+                    answered += 1
+            except Exception:
+                # 工具抛异常也不能留下悬空 tool_call_id（F6）
+                self._fill_skipped(calls[answered:], "工具执行异常，未执行")
+                raise
+            # 取消/异常都会让部分 tool_call 没有回复：必须补齐占位 tool
+            # 消息，否则 assistant.tool_calls 与 tool 消息不配对（F6）
+            self._fill_skipped(calls[answered:])
+            # 图片消息必须排在同一轮的 tool 消息之后（视觉模型按此顺序读）
+            if image_msgs:
+                self._messages.extend(image_msgs)
+            if self._cancel:
+                return
+
+    def _fill_skipped(self, calls: list[dict],
+                      reason: str = "已取消（用户停止，未执行该工具调用）") -> None:
+        """给没有执行的 tool_call 补占位 tool 消息，避免悬空 tool_call_id。
+
+        OpenAI 消息协议要求 assistant 的每个 tool_calls 都有对应 role=tool
+        回复；中途取消时直接返回会留下缺口，严格校验的服务端会拒收（F6）。
+        """
+        for c in calls:
+            self._messages.append({
+                "role": "tool",
+                "tool_call_id": c.get("id") or c["name"],
+                "content": reason,
+            })
 
     def _assistant_with_tool_calls(self, resp: dict, calls: list[dict]) -> dict:
         """构造 OpenAI 期望的 assistant 消息（带 tool_calls 字段）。"""
@@ -171,40 +210,65 @@ class AgentWorker(QThread):
         McpClient.call_tool 的回调签名是 on_done(is_error, data)（与 GUI
         工具调用链同一套语义）；错误统一包成 {"error": ...}，让 LLM 能
         从工具结果里看到失败原因而不是拿到异常。
+
+        长任务工具（run/teleop_start）不设等待上限，与 GUI 的 run 一致
+        （报告 F7）：耗时由仿真本身决定，被 30s 提前判 timeout 而后台还
+        在跑会造成状态不一致。取消时先下发 stop，等这次调用的收尾响应
+        正常回灌，再用兜底定时器防后端卡死。
         """
         from PySide6.QtCore import QEventLoop, QTimer
         loop = QEventLoop()
         result_box: list = []
+        long_task = name in self._LONG_TOOLS
         timeout = QTimer()
         timeout.setSingleShot(True)
         # 取消轮询：stop()/shutdown() 从 GUI 线程置标志，这里在本线程的
         # 事件循环里轮询退出（跨线程直接 quit 其它线程的 loop 不可靠）
         cancel_poll = QTimer()
         cancel_poll.setInterval(50)
+        stop_sent = {"done": False}
 
         def finish(item):
             if not result_box:
                 result_box.append(item)
             loop.quit()
 
+        def on_cancel_tick():
+            if not self._cancel or result_box:
+                return
+            if not long_task:
+                loop.quit()
+                return
+            if stop_sent["done"]:
+                return
+            # 长任务不能一走了之：先让后端停下（stop 立即返回），run 的
+            # 收尾响应照常写回；15s 兜底防后端卡死
+            stop_sent["done"] = True
+            self._client.call_tool("stop", {}, lambda e, d: None)
+            timeout.start(15000)
+
         timeout.timeout.connect(lambda: finish({"error": "timeout"}))
-        cancel_poll.timeout.connect(lambda: loop.quit() if self._cancel else None)
+        cancel_poll.timeout.connect(on_cancel_tick)
 
         def cb(is_error: bool, data):
             finish({"error": str(data)} if is_error else data)
 
-        timeout.start(30000)         # 30s 超时（run 等长工具也够）
+        if not long_task:
+            timeout.start(30000)         # 普通工具 30s 等待上限
         cancel_poll.start()
         try:
-            self._client.call_tool(name, args, cb)
+            if long_task:
+                self._client.call_tool(name, args, cb, timeout_ms=None)
+            else:
+                self._client.call_tool(name, args, cb)
             if not result_box:       # 回调可能同步到达（测试/本地后端）
                 loop.exec()
         finally:
             cancel_poll.stop()
             timeout.stop()
-        if self._cancel:
-            return {"error": "已取消"}
-        return result_box[0] if result_box else {"error": "no response"}
+        if result_box:
+            return result_box[0]
+        return {"error": "已取消" if self._cancel else "no response"}
 
     def _post_chat(self) -> dict | None:
         """POST chat/completions；返回响应 JSON（出错发 error 返回 None）。"""

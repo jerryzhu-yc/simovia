@@ -94,9 +94,9 @@ _TOOLS = [
                        "缺省跑到终态（控制器退出/世界 max_ticks）；ticks=N 只推进 N 步。"
                        "run 在后台线程执行：期间可以继续 get_observation（返回实时快照，"
                        "GUI 实时可视化的基础）；本条响应会等 run 结束才返回。"
-                       "注意：run 返回时本轮控制器已收尾退出；下一段 run 会自动重新"
-                       "拉起控制器并从当前 tick/qpos 继续（ticks 累积），reset 才回到"
-                       "世界初态。同一时刻只允许一个 run。",
+                       "注意：run 返回时控制器进程保留（不通知退出），下一段 run 从"
+                       "同一控制器上下文继续（局部变量/相位机进度不丢，ticks 累积），"
+                       "分段运行与连续运行轨迹一致；reset 才回到世界初态并重启控制器。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -111,9 +111,10 @@ _TOOLS = [
     {
         "name": "stop",
         "description": "请求停止当前进行中的 run（GUI 停止按钮的同一路径）。"
-                       "立即返回；run 线程在下个控制 tick 提前收尾——控制器收 stop"
-                       " 正常退出（不算崩溃），已跑轨迹保持，run 的响应照常"
-                       " 写回且 stats 带 stopped=true。没有 run 在跑时无操作。",
+                       "立即返回；run 线程在下个控制 tick 提前收尾——控制器保留为"
+                       "暂停态（进程不退出，下一段 run 继续同一上下文），不算崩溃，"
+                       "已跑轨迹保持，run 的响应照常写回且 stats 带 stopped=true。"
+                       "没有 run 在跑时无操作。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -447,6 +448,10 @@ class SimoviaSession:
             "objects": [o.name for o in spec.scene.objects],
             "robots": [r.name for r in spec.robots],
             "task_max_ticks": spec.task.max_ticks,
+            # GUI 同步用（报告 F2）：Agent 换世界后界面按这两个字段重建
+            # spec/场景树/渲染模型；world_path 为 None 表示内存世界（yaml_text）
+            "base_dir": str(spec.base_dir),
+            "world_path": new_path,
         }
 
     def _tool_run(self, args: dict):
