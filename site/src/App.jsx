@@ -367,7 +367,7 @@ function Demos() {
         <SectionHead
           kicker="演示"
           title="真实仿真画面，实时录制"
-          desc="下面每一段都来自仓库里的世界与控制器：雷达建图导航、多机协同、VR 采集、视觉分拣、抓取与 VLA 闭环。"
+          desc="下面每一段都来自仓库里的世界与控制器：雷达建图导航、多机协同、G1 遥操作与数据回放、VR 采集、视觉分拣、抓取与 VLA 闭环。"
         />
 
         <div className="mt-10 grid gap-5 md:grid-cols-2">
@@ -380,7 +380,8 @@ function Demos() {
           <span className="text-slate-300">复现入口：</span>
           python -m demo.maintenance_relay · python -m demo.fruit_sorting ·
           python -m simovia run worlds/lidar_nav.yaml ·
-          python -m simovia run worlds/pick_cube.yaml · worlds/so101_policy_eval.yaml
+          python -m simovia run worlds/pick_cube.yaml ·
+          worlds/g1_cloth_teleop.yaml · worlds/so101_policy_eval.yaml
         </div>
       </div>
     </section>

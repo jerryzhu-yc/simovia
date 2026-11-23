@@ -146,20 +146,12 @@ export const ONBOARD = [
 
 export const DEMOS = [
   {
-    kind: "image",
-    src: "./assets/demos/lidar_nav_map.png",
-    tag: "雷达建图",
-    title: "2D 激光雷达实时占据栅格建图",
-    body: "差速小车绕房间巡逻一圈，车顶 60 束 2D 雷达每 tick 做 raycasting：穿越格打自由、命中格打占据，log-odds 累积成占据栅格。白为自由、灰为未知、黑为障碍；无回波按保守策略不更新，薄墙不会被“隧穿”。",
-    meta: "60 束 · ±180° · 5cm 栅格",
-  },
-  {
-    kind: "image",
-    src: "./assets/demos/lidar_nav_plan.png",
-    tag: "骨架规划",
-    title: "维诺骨架 + A* + 纯跟踪导航",
-    body: "对自由区做障碍膨胀与 Zhang-Suen 细化，得到障碍通道正中的 1px 中轴骨架（即广义维诺图），在骨架上按 A* 搜起点到目标的最短路，再由纯跟踪控制器沿线行驶。蓝为骨架、黄为 A* 路径、棕为巡逻框。",
-    meta: "维诺骨架 · A* · 纯跟踪",
+    kind: "video",
+    src: "./assets/demos/lidar_nav.mp4",
+    tag: "建图导航",
+    title: "雷达建图 → 维诺骨架 → A* → 自主导航",
+    body: "差速小车车顶 60 束 2D 雷达边巡逻边建图：log-odds 占据栅格逐帧填充，白为自由、灰为未知、黑为障碍。回到起点后对自由区做障碍膨胀与 Zhang-Suen 细化，得到障碍通道正中的 1px 维诺骨架（广义维诺图），在骨架上 A* 搜路，再由纯跟踪控制器沿线行驶到目标。蓝为骨架、黄为 A* 路径、棕为巡逻框、橙/绿为起终点。",
+    meta: "建图 + 规划 + 导航 · 31s · 1280×960",
   },
   {
     kind: "video",
@@ -169,6 +161,14 @@ export const DEMOS = [
     body: "UR5e 抓取维修模块装到 Go2 运输架，Go2 配送到维修工位，G1 取件放入导向槽并按下复位按钮。三机各自独立控制器、统一时钟调度，全程靠接触与摩擦完成交接。",
     meta: "三台机器人 · 65s · 1100×720",
     featured: true,
+  },
+  {
+    kind: "video",
+    src: "./assets/demos/g1_cloth.mp4",
+    tag: "遥操作 · 数据回放",
+    title: "宇树 G1 收拾毛毯：遥操作采集 + LeRobot 回放",
+    body: "PICO 手柄遥操作 G1 的 2F85 夹爪，把桌上的毛毯抓起放进盒子；第三人称与腕部两路相机同步采集，逐帧记录关节状态与动作，形成 LeRobot v2.1 数据集（148 集 / 51,728 帧 / 31.25 Hz）。视频按采集到的动作序列逐帧回放，左为 cam_high、右为 cam_left_wrist，底部进度条对应数据集内的时间轴。",
+    meta: "G1 + 2F85 · 148 集 · 31.25 Hz · 双相机",
   },
   {
     kind: "image",
