@@ -367,7 +367,7 @@ function Demos() {
         <SectionHead
           kicker="演示"
           title="真实仿真画面，实时录制"
-          desc="下面每一段都来自仓库里的世界与控制器：雷达建图导航、多机协同、G1 遥操作与数据回放、VR 采集、视觉分拣、抓取与 VLA 闭环。"
+          desc="下面每一段都来自仓库里的世界与控制器：3D 实车与雷达建图同步、多机协同、G1 遥操作与数据回放、视觉分拣、抓取与 VLA 闭环。"
         />
 
         <div className="mt-10 grid gap-5 md:grid-cols-2">
