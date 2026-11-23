@@ -54,8 +54,10 @@ robots: 机器人列表，字段：
        过低的 z 也会被抬到推荐值，避免穿地弹飞）
   quat: [w,x,y,z]（可选）
   controller: 控制器 .py 路径（可选；没有控制器机器人不动，纯场景摆放可不写）
-  sensors: 传感器列表（可选）[{name, type: encoder|imu|tactile|joint_torque|camera,
-            joint 或 body（写机器人内部短名，如 base、link7）， pos}]
+  sensors: 传感器列表（可选）[{name, type: encoder|imu|tactile|joint_torque|camera|lidar,
+            joint 或 body（写机器人内部短名，如 base、link7）， pos}；
+            lidar 为 2D 激光雷达，可加 rays/min_angle/max_angle/range，
+            读数 = 每束距离（米，-1 = 无回波/超量程）]
   end_effectors: 末端执行器列表（可选）[{model: 末端执行器 key，取下方清单,
             side: left|right（人形左右手可各挂一个，单臂可省略）}]
 

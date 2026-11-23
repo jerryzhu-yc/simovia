@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import pathlib
 import sys
@@ -37,6 +38,7 @@ from simovia import supervisor
 from simovia.errors import WorldError
 from simovia.grippers import END_EFFECTORS as _END_EFFECTORS
 from simovia.kernel.sim import Simulation
+from simovia.kernel.task import root_freejoint_qadr
 from simovia.render import depth_to_rgb, encode_png, render_offscreen
 from simovia.teleop import ArmTeleop
 from simovia.world.schema import load_world as _load_world_file
@@ -220,6 +222,15 @@ _TOOLS = [
                 "far": {"type": "number", "description": "深度远裁剪面（米）"},
             },
         },
+    },
+    {
+        "name": "lidar_map",
+        "description": "拉取雷达建图快照（GUI『雷达建图』面板 10Hz 轮询）：各带"
+                       "雷达机器人的占据栅格（zlib+base64 uint8：0 未知 1 自由 "
+                       "2 占据）+ 栅格元数据（res/ox/oy/nx/ny）+ 机器人位姿 + "
+                       "控制器 publish_overlay 发布的矢量叠加层。世界里没有"
+                       "雷达时返回 available=false。",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_observation",
@@ -635,6 +646,41 @@ class SimoviaSession:
             "mimeType": "image/png",
         }])
 
+    def _tool_lidar_map(self, args: dict):
+        """雷达建图快照：栅格 + 位姿 + 叠加层打包下发（GUI 面板轮询）。
+
+        写在推进线程、读在本协议线程：栅格整格读写撕裂最坏造成某格
+        瞬时新旧值，渲染无害；qpos 读数同理由下帧自愈。
+        """
+        import zlib
+        sim = self.sim
+        if sim is None or not sim.lidar_mappers:
+            return {"available": False}
+        maps, poses = {}, {}
+        for rname, mapper in sim.lidar_mappers.items():
+            meta = mapper.meta()
+            g = mapper.grid()
+            pr = mapper.prob()          # 连续概率：GUI 做平滑渐变渲染
+            maps[rname] = {**meta,
+                           "grid": base64.b64encode(
+                               zlib.compress(g.tobytes(), 1)).decode("ascii"),
+                           "prob": base64.b64encode(
+                               zlib.compress(pr.tobytes(), 1)).decode("ascii")}
+            ridx = sim.index.robots[rname]
+            qadr = root_freejoint_qadr(sim.model, ridx)
+            if qadr is None:
+                continue
+            x, y, _z, qw, qx, qy, qz = (float(v) for v in
+                                        sim.data.qpos[qadr:qadr + 7])
+            poses[rname] = [x, y, math.atan2(
+                2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))]
+        overlays = {r: {k: {"segments": [list(s) for s in v["segments"]],
+                             "points": [list(p) for p in v["points"]]}
+                         for k, v in d.items()}
+                    for r, d in sim.controller_overlays.items()}
+        return {"available": True, "maps": maps, "poses": poses,
+                "overlays": overlays}
+
     def _start_camera_stream(self, sim: Simulation, camera, width: int,
                              height: int, fps: int, depth: bool = False,
                              near=None, far=None) -> None:
@@ -889,12 +935,83 @@ class SimoviaSession:
                 "pos": [round(float(x), 4) for x in sim.data.xpos[bid]],
                 "quat": [round(float(x), 4) for x in sim.data.xquat[bid]],
             }
+        # flex 布料没有 freejoint：顶点位置不是刚体位姿，必须单独下发世界坐标。
+        # GUI 渲染端有自己的 MjData，只按 qpos 同步机器人和刚体；不发顶点坐标
+        # 的话布料会永远停在初始平铺状态，看起来像"没有物理属性"。
+        m = sim.model
+        for f in range(m.nflex):
+            adr, num = int(m.flex_vertadr[f]), int(m.flex_vertnum[f])
+            if num <= 0:
+                continue
+            host = int(m.body_parentid[int(m.flex_vertbodyid[adr])])
+            name = next((n for n, bid in sim.index.objects.items()
+                         if int(bid) == host), None)
+            if name is None:
+                continue
+            objects[name]["flex"] = [
+                [round(float(v), 4) for v in sim.data.flexvert_xpos[i]]
+                for i in range(adr, adr + num)]
+        # 外观（model 级属性）：控制器每集随机化布料颜色/摆放位姿与桌面颜色。
+        # GUI 渲染端是独立编译的 MjModel，只同步 qpos 的话主视口会停在 YAML
+        # 初始外观（内核里布已随机成粉色，画面还是橙色），必须把这些一并下发。
+        flex_hosts = set()
+        app_flex = []
+        for f in range(int(m.nflex)):
+            adr, num = int(m.flex_vertadr[f]), int(m.flex_vertnum[f])
+            fname = (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_FLEX, f)
+                     or f"flex{f}")
+            app_flex.append({
+                "name": fname,
+                "rgba": [round(float(v), 4) for v in m.flex_rgba[f]],
+            })
+            if num > 0:
+                flex_hosts.add(int(m.body_parentid[
+                    int(m.flex_vertbodyid[adr])]))
+        app_bodies, app_geoms = {}, {}
+        for oname, bid in sim.index.objects.items():
+            bid = int(bid)
+            if bid in flex_hosts:
+                # 布料 host body 的 pos/quat 也会被随机化（平移/偏航），
+                # 顶点局部系换算依赖它，必须先同步，否则布面有厘米级错位。
+                app_bodies[oname] = {
+                    "pos": [round(float(v), 4) for v in m.body_pos[bid]],
+                    "quat": [round(float(v), 4) for v in m.body_quat[bid]],
+                }
+                continue
+            for gid in range(int(m.ngeom)):
+                if int(m.geom_bodyid[gid]) != bid:
+                    continue
+                gname = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, gid)
+                if gname:
+                    app_geoms[gname] = [
+                        round(float(v), 4) for v in m.geom_rgba[gid]]
+        appearance = {"flex": app_flex, "bodies": app_bodies,
+                      "geoms": app_geoms}
+        # 灯光是 model 级属性：控制器每集随机化（位置/朝向/色温），GUI 渲染
+        # 端用独立编译的 MjModel，只同步 qpos 的话主视口永远停在初始灯光，
+        # 必须把当前灯光一并下发。
+        lights = {
+            "pos": [[round(float(v), 4) for v in m.light_pos[i]]
+                    for i in range(int(m.nlight))],
+            "dir": [[round(float(v), 4) for v in m.light_dir[i]]
+                    for i in range(int(m.nlight))],
+            "diffuse": [[round(float(v), 4) for v in m.light_diffuse[i]]
+                        for i in range(int(m.nlight))],
+        } if hasattr(m, "light_diffuse") else None
+        # 共享世界控制器（遥操作/采集）自报状态：GUI 状态栏用它显示
+        # 「录制中 ep3 42 帧 / 已保存 ep3」这类采集进度。子进程控制器没有
+        # 这条通道，返回 None 即可。
+        ctrl = getattr(sim, "_coordinator", None)
+        ctrl_status = dict(getattr(ctrl, "status", {})) if ctrl is not None else None
         return {
             "tick": sim.tick,
             "time": round(float(sim.data.time), 4),
             "running": self.is_running,
             "robots": robots,
             "objects": objects,
+            "lights": lights,
+            "appearance": appearance,
+            "controller": ctrl_status,
             "task": {"success": sim._task_success(),
                      "reward": round(sim._task_reward(), 4)},
         }

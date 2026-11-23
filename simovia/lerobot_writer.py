@@ -160,11 +160,14 @@ class LerobotWriter:
         if not removed and not renumbered:
             return {"removed": [], "renumbered": {}}
 
-        # 1) 先清掉被丢弃 episode 的残留（parquet + 还在的那几路视频）
+        # 1) 先清掉被丢弃 episode 的残留（parquet + 所有相机视频）。
+        # 视频要按目录扫，不能只遍历当前相机：换过相机配置（如单臂从右臂
+        # 换左臂）后，旧相机目录里还留着同编号的 mp4，只删当前相机会把它
+        # 们留成孤儿文件——数据集里看起来「不用的手臂还在录视频」。
         for old in removed:
-            for cam in self.cameras:
-                (self.root / "videos" / "chunk-000" / cam /
-                 f"episode_{old:06d}.mp4").unlink(missing_ok=True)
+            for p in (self.root / "videos").glob(
+                    f"chunk-*/*/episode_{old:06d}.mp4"):
+                p.unlink(missing_ok=True)
             (self.root / "data" / "chunk-000" /
              f"episode_{old:06d}.parquet").unlink(missing_ok=True)
 
@@ -182,9 +185,21 @@ class LerobotWriter:
                           for i, e in enumerate(kept)]
         self._next_index = offset
         self._write_meta()
+
+        # 3) 清掉不再使用的相机目录（换臂/换相机后遗留的空目录）
+        stale = []
+        for d in (self.root / "videos").glob("chunk-*/*"):
+            if d.is_dir() and d.name not in self.cameras:
+                try:
+                    d.rmdir()                  # 只有空目录才会成功
+                except OSError:
+                    stale.append(d.name)       # 还有文件：留给用户确认
         print(f"[data] 数据集同步：剔除 {len(removed)} 集 {removed}，"
               f"剩余 {len(kept)} 集已从 0 连续编号", flush=True)
-        return {"removed": removed, "renumbered": renumbered}
+        if stale:
+            print(f"[data] 警告：videos 下仍有与当前相机配置不符的目录 "
+                  f"{stale}（请确认是否要删除）", flush=True)
+        return {"removed": removed, "renumbered": renumbered, "stale": stale}
 
     def _renumber_episode(self, old: int, new: int, offset: int) -> None:
         """把一集从旧编号搬到新编号：parquet 改写三列后落新文件，视频改名。"""

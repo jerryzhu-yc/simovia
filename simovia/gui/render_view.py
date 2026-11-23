@@ -221,9 +221,38 @@ class RenderModel:
                 qadr = self.model.jnt_qposadr[jid]
                 self.data.qpos[qadr:qadr + w] = qpos[src:src + w]
                 src += w
+        # 外观同步（model 级属性）：控制器随机化了布料颜色/摆放位姿与桌面
+        # 颜色，渲染端是独立 MjModel，不跟着写就永远停在 YAML 初始外观。
+        # 必须在布料顶点换算前写回 body pos/quat 并刷新运动学。
+        appearance = obs.get("appearance") or {}
+        for f in (appearance.get("flex") or []):
+            fid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_FLEX,
+                                    str(f.get("name", "")))
+            if fid >= 0 and f.get("rgba"):
+                self.model.flex_rgba[fid] = np.asarray(f["rgba"], float)
+        for oname, binfo in (appearance.get("bodies") or {}).items():
+            bid = self.index.objects.get(oname)
+            if bid is None:
+                continue
+            if binfo.get("pos") is not None:
+                self.model.body_pos[bid] = np.asarray(binfo["pos"], float)
+            if binfo.get("quat") is not None:
+                self.model.body_quat[bid] = np.asarray(binfo["quat"], float)
+        for gname, rgba in (appearance.get("geoms") or {}).items():
+            gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM,
+                                    str(gname))
+            if gid >= 0:
+                self.model.geom_rgba[gid] = np.asarray(rgba, float)
+        # 让上面的 body_pos/quat 与机器人 qpos 反映到 xpos/xmat，布料顶点
+        # 局部系换算才用的是当前帧的宿主坐标系。
+        mujoco.mj_kinematics(self.model, self.data)
         for oname, oinfo in (obs.get("objects") or {}).items():
             bid = self.index.objects.get(oname)
             if bid is None:
+                continue
+            flex = oinfo.get("flex")
+            if flex:                          # 布料：顶点世界坐标 -> 局部滑块 qpos
+                self._apply_flex(bid, flex)
                 continue
             jid = self.model.body_jntadr[bid]
             if jid < 0:
@@ -234,7 +263,43 @@ class RenderModel:
                 self.data.qpos[qadr:qadr + 3] = pos
             if quat is not None:               # freejoint: [x y z qw qx qy qz]
                 self.data.qpos[qadr + 3:qadr + 7] = quat
+        # 灯光同步：控制器每集随机化灯光（model 级属性），渲染端 model 是
+        # 独立编译的，必须跟着写，否则主视口永远停在 YAML 里的初始灯光。
+        lights = obs.get("lights")
+        if lights:
+            nl = int(self.model.nlight)
+            for i in range(min(nl, len(lights.get("pos") or []))):
+                self.model.light_pos[i] = lights["pos"][i]
+                if i < len(lights.get("dir") or []):
+                    self.model.light_dir[i] = lights["dir"][i]
+                if hasattr(self.model, "light_diffuse") \
+                        and i < len(lights.get("diffuse") or []):
+                    self.model.light_diffuse[i] = lights["diffuse"][i]
         mujoco.mj_forward(self.model, self.data)
+
+    def _apply_flex(self, bid: int, verts: list) -> None:
+        """把布料顶点的世界坐标写回 flex 质点的滑块 qpos（布料 body 局部系）。
+
+        flexcomp 的每个网格点是一个带 3 个世界轴滑块的 body，qpos 就是它相对
+        布料 body 的坐标；渲染端只按 qpos 同步机器人/刚体，因此布料形变必须
+        单独写回，否则画面上布料永远停在初始平铺状态。
+        """
+        m = self.model
+        f = next((i for i in range(m.nflex)
+                  if int(m.body_parentid[int(m.flex_vertbodyid[
+                          int(m.flex_vertadr[i])])]) == bid
+                  and int(m.flex_vertnum[i]) == len(verts)), None)
+        if f is None:
+            return
+        adr = int(m.flex_vertadr[f])
+        p = np.asarray(self.data.xpos[bid], dtype=float)
+        rot = np.asarray(self.data.xmat[bid], dtype=float).reshape(3, 3)
+        for k, wp in enumerate(verts):
+            b = int(m.flex_vertbodyid[adr + k])
+            qadr = int(m.jnt_qposadr[int(m.body_jntadr[b])])
+            local = rot.T @ (np.asarray(wp, float) - p)
+            # 顶点 body 的参考位置就是网格初始坐标，滑块 qpos 是相对它位移
+            self.data.qpos[qadr:qadr + 3] = local - np.asarray(m.body_pos[b])
 
     # ------------------------------------------------------------ 相机
 

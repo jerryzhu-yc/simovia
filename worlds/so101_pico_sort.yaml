@@ -75,12 +75,21 @@ robots:
     controller: ../controllers/so101_pico_teleop.py
     args:
       # 两路图像是新的 features 结构，不能和旧的单路数据集混写（meta 会不一致）
-      dataset: ~/桌面/逆向工程/simovia_workspace/datasets/so101_smolvla_sort2
+      # 随机位置的新数据单独放桌面一个目录，和固定位置旧数据分开，便于对比
+      dataset: ~/桌面/so101_smolvla_sort3_random
       # 任务文本会作为语言条件写进每一集，必须与操作一致；
       # 旧的 so101_smolvla_dataset_2cam 只录过"红块进红盒"，指令不同，故换新目录
       task: pick up the red cube and put it into the red box, then pick up the blue cube and put it into the blue box
       port: 8090                              # PICO 浏览器访问 http://<PC IP>:8090
       cameras: wrist_cam,top                  # 数据集两路图像：腕部 + 固定俯视
+      # 每集开始录制前随机摆放方块（桌面可达区内），避免策略学到"固定位置"
+      # 先验；红/蓝各自都是位置随机 + 语言指令区分，才能学到颜色到目标的映射。
+      # 删掉 randomize 段即恢复固定初始位姿。
+      randomize:
+        min_sep: 0.06                         # 两方块最小水平间距 m（拒采样）
+        objects:
+          cube_red:  {x: [0.18, 0.26], y: [-0.06, 0.06], z: 0.18}
+          cube_blue: {x: [0.18, 0.26], y: [-0.06, 0.06], z: 0.18}
     sensors:
       # 腕部相机（官方参数：pos/euler/fovy 见 so101_sort.yaml 注释）
       - name: wrist_cam

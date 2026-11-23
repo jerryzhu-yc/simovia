@@ -12,6 +12,12 @@ scene:
     friction: 1.0
   lights:
     - {pos: [0, 0, 3]}
+  # 演示机位：整台 Panda + 桌面 + 方块同框（录制展示素材用，不影响物理）
+  cameras:
+    - name: showcase
+      pos: [1.72, -1.48, 1.30]
+      quat: [0.711901, 0.594968, 0.239265, 0.286289]
+      fovy: 40
   objects:
     # 工作台（顶面 z=0.68）：桌面 + 四条落地桌腿；桌面后沿覆盖 panda 基座 (0,0)
     - name: table

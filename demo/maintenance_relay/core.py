@@ -87,6 +87,8 @@ class Demo:
         self.ctrl=np.clip(self.ctrl,m.actuator_ctrlrange[:,0],m.actuator_ctrlrange[:,1])
         d.ctrl[:]=self.ctrl
         mujoco.mj_step(m,d,nstep=self.spec.ctrl_period)
+        # Read post-integration poses consistently, including without GUI snapshots.
+        mujoco.mj_kinematics(m,d)
         self.steps+=1
         if self.held_by is not None:
             error=np.linalg.norm(self.module_grasp()-d.site_xpos[self.held_by.sid])

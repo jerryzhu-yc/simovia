@@ -1412,7 +1412,8 @@ class GearPanel(QWidget):
         super().__init__(parent)
         self._base_dir = None
         self._manifest = None
-        self._sensor_types = ["encoder", "imu", "tactile", "joint_torque", "camera"]
+        self._sensor_types = ["encoder", "imu", "tactile", "joint_torque",
+                              "camera", "lidar"]
 
         lay = QVBoxLayout(self)
         # 机器人选择

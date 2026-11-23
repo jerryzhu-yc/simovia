@@ -169,6 +169,22 @@ class Robot:
         reply=self._rpc({"op":"camera_overlay","name":name,"width":rgb.shape[1],"height":rgb.shape[0],"rgb":base64.b64encode(rgb.tobytes()).decode('ascii')})
         if reply.get("op")=="error":raise RuntimeError(reply["msg"])
 
+    def publish_overlay(self,name,segments=None,points=None):
+        """发布矢量叠加层（世界系坐标）到平台的"雷达建图"面板。
+
+        name 是图层名（同名整体替换，如 "path"/"prm"/"goal"）；segments 是
+        [[x1,y1,x2,y2],...] 折线段集合，points 是 [[x,y],...] 点集合。控制
+        器把规划结果（路径、roadmap、目标点）发上来，GUI 在雷达地图上
+        叠加渲染——建图本身由内核自动累积，控制器无需自己画图发布。
+        """
+        # 只做数值化透传，不做长度过滤——坏数据交服务端校验拒绝，
+        # 控制器拿到 error 回复抛 RuntimeError，而不是被静默吞掉。
+        def _flat(v):
+            return [[float(x) for x in item] for item in (v or [])]
+        reply=self._rpc({"op":"map_overlay","name":str(name),
+                         "segments":_flat(segments),"points":_flat(points)})
+        if reply.get("op")=="error":raise RuntimeError(reply["msg"])
+
     def joint_state(self) -> dict:
         """便捷读取：{关节名: 位置}。
 

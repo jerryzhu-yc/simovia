@@ -4,3 +4,7 @@ __pycache__/
 *.egg-info/
 .venv/
 MUJOCO_LOG.TXT
+
+# 录制数据集与实验产物（大文件，不入库）
+episodes/
+experiments/

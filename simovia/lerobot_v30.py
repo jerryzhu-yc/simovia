@@ -136,28 +136,41 @@ def _stats_list(st: dict, key: str, *, is_count=False) -> list:
 # --------------------------------------------------------------- videos
 
 def _concat_videos(parts: list[pathlib.Path], out: pathlib.Path) -> None:
-    """无损拼接：concat demuxer + -c copy，失败则退回重编码。"""
+    """无损拼接：concat demuxer + -c copy，失败则退回重编码。
+
+    兼容老版 ffmpeg：不传 `-safe 0`（个别老版本/魔改版直接报
+    "Unrecognized option" 退出）。列表文件写进分段所在目录、只记文件名，
+    并把 ffmpeg 的工作目录切到那里——纯文件名在 concat 的 safe 模式下
+    天然合法，新旧版本行为一致。`-movflags +faststart` 同理按
+    带/不带 两档重试。
+    """
     if len(parts) == 1:
         shutil.copyfile(parts[0], out)
         return
-    listfile = out.with_suffix(".concat.txt")
+    d = parts[0].parent                  # 调用方保证所有分段在同一目录
+    listfile = d / ".v30_concat.txt"
     listfile.write_text(
-        "\n".join(f"file '{p.resolve()}'" for p in parts) + "\n",
+        "\n".join(f"file '{p.name}'" for p in parts) + "\n",
         encoding="utf-8")
+    out_abs = str(out.resolve())
+    last = ""
     try:
-        r = subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0",
-             "-i", str(listfile), "-c", "copy", "-movflags", "+faststart",
-             str(out)], capture_output=True, text=True)
-        if r.returncode == 0 and out.exists() and out.stat().st_size > 0:
-            return
-        print(f"[v30] 无损拼接失败，改重编码: {r.stderr.strip()[:200]}",
-              flush=True)
-        subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0",
-             "-i", str(listfile), "-c:v", "libx264", "-preset", "veryfast",
-             "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-             str(out)], check=True)
+        for i, codec in enumerate((
+                ["-c", "copy"],
+                ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                 "-pix_fmt", "yuv420p"])):
+            for tail in (["-movflags", "+faststart"], []):
+                r = subprocess.run(
+                    ["ffmpeg", "-v", "error", "-y", "-f", "concat",
+                     "-i", listfile.name, *codec, *tail, out_abs],
+                    cwd=d, capture_output=True, text=True)
+                if (r.returncode == 0 and out.exists()
+                        and out.stat().st_size > 0):
+                    return
+                last = r.stderr.strip()[:300]
+            if i == 0:
+                print(f"[v30] 无损拼接失败，改重编码: {last}", flush=True)
+        raise RuntimeError(f"ffmpeg 拼接失败: {last or '未知错误'}")
     finally:
         listfile.unlink(missing_ok=True)
 

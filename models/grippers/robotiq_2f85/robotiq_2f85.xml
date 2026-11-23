@@ -56,13 +56,19 @@
         <geom type="mesh" contype="0" conaffinity="0" group="2"/>
       </default>
       <default class="collision">
-        <geom type="mesh" group="3"/>
+        <!-- 布料抓持/松脱（实测依据）：flexcomp 布料本来就会与本 mesh 碰撞，但
+             默认摩擦 1.0 会把松爪后的布挂在指节凹槽与锐边里——布停在指尖下方
+             1~2cm、16 秒不落，随手臂被带走。指垫和指节统一取 0.2（priority=1
+             才能覆盖布料侧参数，见 MuJoCo 接触参数混合规则）：压深抓取时布会被
+             带过指垫/指节形成"搭挂"，0.7 的指垫摩擦会让它一直挂在手指上，0.2
+             时布料自己滑脱。抓持本身靠控制器的合规抓持力弹簧，不依赖指垫摩擦。 -->
+        <geom type="mesh" group="3" friction="0.2 0.02 0.002" priority="1"/>
         <default class="pad_box1">
-          <geom mass="0" type="box" pos="0 -0.0026 0.028125" size="0.011 0.004 0.009375" friction="0.7"
+          <geom mass="0" type="box" pos="0 -0.0026 0.028125" size="0.011 0.004 0.009375" friction="0.2"
             solimp="0.95 0.99 0.001" solref="0.004 1" priority="1" rgba="0.55 0.55 0.55 1"/>
         </default>
         <default class="pad_box2">
-          <geom mass="0" type="box" pos="0 -0.0026 0.009375" size="0.011 0.004 0.009375" friction="0.6"
+          <geom mass="0" type="box" pos="0 -0.0026 0.009375" size="0.011 0.004 0.009375" friction="0.2"
             solimp="0.95 0.99 0.001" solref="0.004 1" priority="1" rgba="0.45 0.45 0.45 1"/>
         </default>
       </default>

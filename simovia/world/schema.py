@@ -22,15 +22,18 @@ _COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _TIMEOUT_POLICIES = {"last_ctrl", "pause"}
 # 积分器名 -> mjtIntegrator 枚举值；implicitfast 是 MuJoCo 官方推荐的
 # 稳定默认（比 Euler 略慢），高刚度接触模型（solref 0.004 量级）必须用它
-_INTEGRATORS = {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3}
+_INTEGRATORS = {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3,
+                # MuJoCo 4.0 新增：flex 弹性力在 implicit/implicitfast 下不再
+                # 隐式积分，带 <elasticity> 的布料必须用 discrete（或 Euler 小步长）
+                "discrete": 4}
 # 摩擦锥类型 -> mjtCone 枚举值；pyramidal 是 MuJoCo 默认，elliptic 更贴近
 # 真实摩擦（menagerie 的 SO-101 等模型原生用 elliptic，世界不声明就会被
 # attach 覆盖成 pyramidal）
 _CONE_TYPES = {"pyramidal": 0, "elliptic": 1}
 # 传感器类型 -> 挂点要求：joint 系只引用关节，body 系只引用 body
-_SENSOR_TYPES = {"encoder", "imu", "tactile", "joint_torque", "camera"}
+_SENSOR_TYPES = {"encoder", "imu", "tactile", "joint_torque", "camera", "lidar"}
 _JOINT_SENSORS = {"encoder", "joint_torque"}
-_BODY_SENSORS = {"imu", "tactile", "camera"}
+_BODY_SENSORS = {"imu", "tactile", "camera", "lidar"}
 
 
 # ---------------------------------------------------------------- dataclass 定义
@@ -65,8 +68,13 @@ class CameraSpec:
 
 @dataclass
 class ObjectSpec:
+    """场景物体。type=cloth 时是柔性布料（flexcomp 网格，无刚体自由度）。
+
+    cloth 的 size 是 [半宽, 半深]（布面在 body 局部 z=0 平面），mass 是整张
+    布的总质量，cells 是网格分辨率（越大越软越慢），thickness 决定接触球半径。
+    """
     name: str
-    type: str                       # box | sphere | cylinder | model
+    type: str                       # box | sphere | cylinder | model | cloth
     size: tuple[float, ...]         # MJCF 半尺寸
     pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
     quat: tuple[float, float, float, float] | None = None
@@ -75,6 +83,12 @@ class ObjectSpec:
     static: bool = False            # true = 无 freejoint 的固定场景体（台/墙）
     friction: float = 1.0           # 滑动摩擦（MuJoCo 语义，接触对取 max）
     model: str | None = None        # Optional passive MJCF compound asset (type=model)
+    # ---- 仅 cloth ----
+    cells: tuple[int, int] = (20, 16)   # 网格分辨率（x, y 方向的格数）
+    thickness: float = 0.004            # 布厚（米），决定顶点接触球半径
+    young: float = 300000.0             # 杨氏模量（Pa），越大越挺
+    poisson: float = 0.3                # 泊松比
+    self_collide: bool | str = True     # 自碰撞：bool，或 none/narrow/bvh/sap
 
 
 @dataclass
@@ -90,15 +104,22 @@ class SensorSpec:
       按名渲染；不进 obs 数值流——每 tick 渲染图像太重）。fovy=视场角
       （度，缺省用 MuJoCo 默认 45）；depth=true 时实时画面/录制帧可输出
       深度伪彩；near/far 是深度渲染的裁剪面（米），只影响深度精度。
+    - lidar：引用 body（2D 激光雷达。builder 在 body 上生成实体外观——
+      支杆 + 圆柱机身 + 深色镜面环 + 状态 LED（纯视觉、无碰撞、零质量）；
+      读数由内核 mj_ray 射线投射计算，不编译 MuJoCo sensor）。每 tick 出
+      rays 个距离（米）：-1 = 无回波/超量程（MuJoCo rangefinder 惯例），
+      正值 = 沿射线到环境几何的距离（自身机器人的几何自动跳过）。
+      角度约定：扫描平面 = 挂载 body 的 xy 平面，0° 沿 body +x，逆时针为
+      正；min_angle/max_angle 为半开区间 [min, max)。
 
     tactile 的 radius：MuJoCo 3.x 的 touch 只统计接触点落在以挂点 site 为球心、
     site size 为半径的球内的接触力（site size 默认 0 → 恒 0 的坑由此而来）。
     radius 应覆盖挂点 body 的预期接触区，默认 0.06（罩住典型指尖/指板整面）。
     """
     name: str
-    type: str                       # encoder | imu | tactile | joint_torque | camera
+    type: str                       # encoder | imu | tactile | joint_torque | camera | lidar
     joint: str | None = None        # encoder/joint_torque 必填
-    body: str | None = None          # imu/tactile/camera 必填
+    body: str | None = None         # imu/tactile/camera/lidar 必填
     pos: tuple[float, float, float] = (0.0, 0.0, 0.0)   # body 局部系挂点偏移
     quat: tuple[float, float, float, float] | None = None  # 仅 camera
     radius: float | None = None     # 仅 tactile：touch 接触过滤球半径(米)
@@ -107,6 +128,11 @@ class SensorSpec:
     depth: bool = False             # 深度相机（实时画面可切伪彩）
     near: float = 0.01              # 深度渲染近裁剪面（米）
     far: float = 50.0               # 深度渲染远裁剪面（米）
+    # ---- 仅 lidar ----
+    rays: int | None = None         # 光束数（默认 36）
+    min_angle: float | None = None  # 起始角（度，默认 -180）
+    max_angle: float | None = None  # 终止角（度，默认 180；半开区间）
+    range: float | None = None      # 最大量程（米，默认 5.0）
 
 
 @dataclass
@@ -347,10 +373,12 @@ def _parse_scene(d, path: str) -> SceneSpec:
         p = f"{path}.objects[{i}]"
         name = _str(_req(od, "name", p), f"{p}.name")
         gtype = _str(_req(od, "type", p), f"{p}.type")
-        if gtype not in _GEOM_ARITY and gtype != 'model':
-            raise _err(f"{p}.type", f"未知几何类型 '{gtype}'，支持: {sorted(_GEOM_ARITY)}")
+        if gtype not in _GEOM_ARITY and gtype not in ("model", "cloth"):
+            raise _err(f"{p}.type", f"未知几何类型 '{gtype}'，支持: "
+                                    f"{sorted(_GEOM_ARITY) + ['cloth', 'model']}")
         model = _str(_req(od, 'model', p), f'{p}.model') if gtype == 'model' else None
-        size = () if gtype == 'model' else _vec(_req(od, "size", p), _GEOM_ARITY[gtype], f"{p}.size")
+        arity = 2 if gtype == "cloth" else _GEOM_ARITY.get(gtype, 0)
+        size = () if gtype == 'model' else _vec(_req(od, "size", p), arity, f"{p}.size")
         if any(s <= 0 for s in size):
             raise _err(f"{p}.size", f"半尺寸必须为正，实际是: {size}")
         pos = _vec(od.get("pos", [0, 0, 0]), 3, f"{p}.pos")
@@ -369,9 +397,33 @@ def _parse_scene(d, path: str) -> SceneSpec:
         friction = _num(od.get("friction", 1.0), f"{p}.friction")
         if friction <= 0:
             raise _err(f"{p}.friction", f"摩擦系数必须为正，实际是: {friction}")
+        cloth_kw = {}
+        if gtype == "cloth":
+            cells = _vec(od.get("cells", [20, 16]), 2, f"{p}.cells")
+            cells = tuple(_int(c, f"{p}.cells") for c in cells)
+            if min(cells) < 2:
+                raise _err(f"{p}.cells", f"网格每向至少 2 格，实际是: {cells}")
+            thickness = _num(od.get("thickness", 0.004), f"{p}.thickness")
+            if thickness <= 0:
+                raise _err(f"{p}.thickness", f"布厚必须为正，实际是: {thickness}")
+            young = _num(od.get("young", 300000.0), f"{p}.young")
+            if young <= 0:
+                raise _err(f"{p}.young", f"杨氏模量必须为正，实际是: {young}")
+            # true/false 走默认 narrow/none；也可显式指定 wide 相搜索算法：
+            # narrow 是 O(n²) 全对检测，实测比 bvh/sap 慢一个量级。
+            self_collide = od.get("self_collide", True)
+            if not isinstance(self_collide, bool) and not (
+                    isinstance(self_collide, str)
+                    and self_collide in ("none", "narrow", "bvh", "sap")):
+                raise _err(f"{p}.self_collide",
+                           f"需要 true/false 或 none/narrow/bvh/sap，"
+                           f"实际是: {self_collide!r}")
+            cloth_kw = dict(cells=cells, thickness=thickness, young=young,
+                            poisson=_num(od.get("poisson", 0.3), f"{p}.poisson"),
+                            self_collide=self_collide)
         objects.append(ObjectSpec(name=name, type=gtype, size=size, pos=pos,
                                   quat=quat, mass=mass, color=color, static=static,
-                                  friction=friction, model=model))
+                                  friction=friction, model=model, **cloth_kw))
     return SceneSpec(floor=floor, lights=lights, objects=objects,
                      cameras=cameras)
 
@@ -431,18 +483,35 @@ def _parse_sensors(rd: dict, p: str) -> list[SensorSpec]:
             if "fovy" in sd:
                 fovy = _num(sd["fovy"], f"{sp}.fovy")
                 if not 1.0 <= fovy <= 179.0:
-                    raise _err(f"{sp}.fovy", f"视场角需在 1..179 度内，实际是: {fovy}")
+                    raise _err(f"{sp}.fovy", f"视场角需在 1..179 度内，实际是 {fovy}")
             depth = sd.get("depth", False)
             if not isinstance(depth, bool):
-                raise _err(f"{sp}.depth", f"需要 true/false，实际是: {depth!r}")
+                raise _err(f"{sp}.depth", f"需要 true/false，实际是 {depth!r}")
             near = _num(sd.get("near", 0.01), f"{sp}.near")
             far = _num(sd.get("far", 50.0), f"{sp}.far")
             if near <= 0 or far <= near:
                 raise _err(f"{sp}.near/far",
                            f"深度裁剪面需要 0 < near < far，实际 near={near}, far={far}")
+        # ---- 仅 lidar：光束数 / 角度窗口 / 量程 ----
+        rays = min_angle = max_angle = rng = None
+        if stype == "lidar":
+            rays = _int(sd.get("rays", 36), f"{sp}.rays")
+            if not 2 <= rays <= 1024:
+                raise _err(f"{sp}.rays", f"光束数需在 2..1024 内，实际是 {rays}")
+            min_angle = _num(sd.get("min_angle", -180.0), f"{sp}.min_angle")
+            max_angle = _num(sd.get("max_angle", 180.0), f"{sp}.max_angle")
+            if not (-360.0 < min_angle < max_angle < 360.0):
+                raise _err(f"{sp}.min_angle/max_angle",
+                           f"需要 -360 < min_angle < max_angle < 360（度，半开区间），"
+                           f"实际 min={min_angle}, max={max_angle}")
+            rng = _num(sd.get("range", 5.0), f"{sp}.range")
+            if rng <= 0:
+                raise _err(f"{sp}.range", f"量程必须为正数(米)，实际是 {rng}")
         sensors.append(SensorSpec(name=name, type=stype, joint=joint, body=body,
                                   pos=pos, quat=quat, radius=radius,
-                                  fovy=fovy, depth=depth, near=near, far=far))
+                                  fovy=fovy, depth=depth, near=near, far=far,
+                                  rays=rays, min_angle=min_angle,
+                                  max_angle=max_angle, range=rng))
     return sensors
 
 

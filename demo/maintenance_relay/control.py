@@ -19,20 +19,25 @@ class Arm:
     def solve(self,p,R=DOWN,seed=None,tol=.001):
         q=self.q.copy() if seed is None else np.array(seed,dtype=float)
         self.ik.qpos[:]=self.d.qpos
-        for _ in range(200):
+        # Normalize position and rotation by their acceptance tolerances.
+        # A fixed .3 rotation weight over-constrained orientation near full reach.
+        rotation_tol=.01
+        rotation_weight=tol/rotation_tol
+        for iteration in range(201):
             self.ik.qpos[self.qa]=q
             mujoco.mj_kinematics(self.m,self.ik);mujoco.mj_comPos(self.m,self.ik)
             ep=np.asarray(p)-self.ik.site_xpos[self.sid]
             rot=R@self.ik.site_xmat[self.sid].reshape(3,3).T
             quat=np.empty(4);mujoco.mju_mat2Quat(quat,rot.ravel())
             er=np.empty(3);mujoco.mju_quat2Vel(er,quat,1.)
-            if np.linalg.norm(ep)<tol and np.linalg.norm(er)<.01:return q
+            if np.linalg.norm(ep)<tol and np.linalg.norm(er)<rotation_tol:return q
+            if iteration==200:break
             mujoco.mj_jacSite(self.m,self.ik,self.jp,self.jr,self.sid)
-            J=np.vstack([self.jp[:,self.va],.3*self.jr[:,self.va]])
-            dq=J.T@np.linalg.solve(J@J.T+1e-4*np.eye(6),np.r_[ep,.3*er])
+            J=np.vstack([self.jp[:,self.va],rotation_weight*self.jr[:,self.va]])
+            dq=J.T@np.linalg.solve(J@J.T+1e-4*np.eye(6),np.r_[ep,rotation_weight*er])
             q+=dq*min(1.,.15/max(np.linalg.norm(dq),1e-9))
             q=np.clip(q,self.m.jnt_range[self.jids,0]+.005,self.m.jnt_range[self.jids,1]-.005)
-        raise RuntimeError(f'{self.prefix} IK {np.round(p,3)}: pos={np.linalg.norm(ep):.3f} rot={np.linalg.norm(er):.3f}')
+        raise RuntimeError(f'{self.prefix} IK {np.round(p,3)}: pos={np.linalg.norm(ep)*1000:.3f}mm (limit {tol*1000:.3f}mm) rot={np.linalg.norm(er):.6f}rad (limit {rotation_tol:.3f}rad)')
     def hold(self,ctrl):
         bias=self.d.qfrc_bias[self.va]/self.m.actuator_gainprm[self.aids,0]
         ctrl[self.aids]=self.q+bias

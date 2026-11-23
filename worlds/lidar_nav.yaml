@@ -1,0 +1,101 @@
+name: lidar_nav
+timestep: 0.002
+integrator: implicitfast      # 速度伺服（kv x 小轮惯量）在 Euler 下会数值
+                              # 爆炸，implicitfast 把速度执行器纳入隐式积分才稳定
+ctrl_period: 16            # 32ms/tick：雷达采样 ~31Hz，建图/驾驶都够细
+scene:
+  floor:
+    size: [2.6, 2.1]       # 5.2m x 4.2m 的房间
+    texture: grid
+    friction: 0.02         # MuJoCo 摩擦按接触对逐项取 max：地面默认 1.0 会让
+                          # 低摩擦 castor（0.02）变成 μ=1.0 的巨大滚阻、车速
+                          # 只有标称 ~19%。地面降到 0.02 后 castor 真正低阻；
+                          # 驱动轮自带 1.0 取 max 后仍 1.0，牵引不受影响。
+  lights:
+  - pos: [0, 0, 3]
+  cameras:
+  - name: overview        # 俯视机位（GUI 相机下拉可切）
+    pos: [0, 0, 6.2]
+    fovy: 55
+  objects:
+  # ---- 四面外墙（0.3m 高：必须高过雷达扫描平面 z≈0.075 才有回波）----
+  - name: wall_w
+    type: box
+    size: [0.02, 2.12, 0.15]
+    pos: [-2.6, 0, 0.15]
+    color: '#6B7280'
+    static: true
+  - name: wall_e
+    type: box
+    size: [0.02, 2.12, 0.15]
+    pos: [2.6, 0, 0.15]
+    color: '#6B7280'
+    static: true
+  - name: wall_n
+    type: box
+    size: [2.62, 0.02, 0.15]
+    pos: [0, 2.1, 0.15]
+    color: '#6B7280'
+    static: true
+  - name: wall_s
+    type: box
+    size: [2.62, 0.02, 0.15]
+    pos: [0, -2.1, 0.15]
+    color: '#6B7280'
+    static: true
+  # ---- 房间内障碍（全部静态：建好的地图在导航阶段保持有效）----
+  - name: mid_wall          # 横在房间中央的长墙，迫使路径绕行
+    type: box
+    size: [0.5, 0.12, 0.15]
+    pos: [0.0, 0.0, 0.15]
+    color: '#F59E0B'
+    static: true
+  - name: block_b          # 大方块
+    type: box
+    size: [0.35, 0.35, 0.15]
+    pos: [1.0, 1.0, 0.15]
+    color: '#EF4444'
+    static: true
+  - name: block_c          # 小方块
+    type: box
+    size: [0.25, 0.25, 0.15]
+    pos: [-1.2, 0.8, 0.15]
+    color: '#8B5CF6'
+    static: true
+  - name: pillar_d         # 圆柱
+    type: cylinder
+    size: [0.25, 0.15]
+    pos: [-0.6, -0.9, 0.15]
+    color: '#10B981'
+    static: true
+  - name: block_e          # 竖条障碍
+    type: box
+    size: [0.2, 0.5, 0.15]
+    pos: [1.4, -0.5, 0.15]
+    color: '#3B82F6'
+    static: true
+robots:
+- name: car
+  model: ../models/diff_car.xml
+  pos: [-2.1, -1.6, 0.045]       # 轮子恰好触地的高度（z 过低会穿地弹飞）
+  quat: [0.7071, 0, 0, 0.7071]   # 出生朝北（+y）：巡逻第一段正对北墙，起步平顺
+  controller: ../controllers/lidar_nav.py
+  args: {goal: [2.1, 1.6]}
+  sensors:
+  - name: lidar            # 2D 激光雷达：机壳装在车顶中轴，60 束 360°
+                           # 占据栅格地图由平台内核自动累积，GUI"雷达建图"
+                           # 面板实时显示建图与控制器规划叠加层
+    type: lidar
+    body: car
+    pos: [0, 0, 0.075]
+    rays: 60
+    min_angle: -180
+    max_angle: 180
+    range: 3.0
+task:
+  success:
+    body: car
+    zone:
+      min: [1.85, 1.35, 0.0]
+      max: [2.4, 1.9, 0.3]
+  max_ticks: 30000

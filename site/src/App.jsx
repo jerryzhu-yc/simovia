@@ -20,6 +20,7 @@ const ICON_PATHS = {
   team: "M8 11a3 3 0 100-6 3 3 0 000 6zM17 12a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM2 20c0-3 2.7-5 6-5s6 2 6 5M15 20c0-2.2 1.6-3.6 3.5-3.6S22 17.8 22 20",
   vr: "M4 8h16v8h-5l-3-3-3 3H4zM8 12h.01M16 12h.01",
   eye: "M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6zM12 9.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z",
+  nav: "M3 11l18-8-8 18-2-8-8-2z",
   vla: "M4 17V7l5 4 5-6 6 8",
 };
 
@@ -366,7 +367,7 @@ function Demos() {
         <SectionHead
           kicker="演示"
           title="真实仿真画面，实时录制"
-          desc="下面每一段都来自仓库里的世界与控制器：多机协同、VR 采集、视觉分拣、抓取与 VLA 闭环。"
+          desc="下面每一段都来自仓库里的世界与控制器：雷达建图导航、多机协同、VR 采集、视觉分拣、抓取与 VLA 闭环。"
         />
 
         <div className="mt-10 grid gap-5 md:grid-cols-2">
@@ -378,6 +379,7 @@ function Demos() {
         <div className="mt-6 rounded-2xl border border-line bg-panel/40 px-5 py-4 font-mono text-xs leading-6 text-slate-500">
           <span className="text-slate-300">复现入口：</span>
           python -m demo.maintenance_relay · python -m demo.fruit_sorting ·
+          python -m simovia run worlds/lidar_nav.yaml ·
           python -m simovia run worlds/pick_cube.yaml · worlds/so101_policy_eval.yaml
         </div>
       </div>

@@ -50,6 +50,8 @@ from simovia.gui.render_view import (DEFAULT_QUALITY, RenderView,
 from simovia.gui.robot_builder import RobotBuilderDialog
 from simovia.gui.state import EditHistory, UiState, text_diff
 from simovia.gui.teleop_panel import TeleopPanel
+from simovia.gui.map_panel import RadarMapPanel
+from simovia.gui.sensor_panel import SensorWindow
 from simovia.world.schema import load_world as parse_world_file
 from simovia.world.schema import (absolutize_world_paths, parse_world,
                                   read_text_compat, resolve_zoo_models)
@@ -75,7 +77,7 @@ LAYOUT_PRESETS = {
                "console": True, "teleop": True},
 }
 DEFAULT_LAYOUT = {"scene": True, "right": True,
-                  "console": True, "teleop": False}
+                  "console": True, "teleop": False, "radar": False}
 
 
 def _yaml_kind(p) -> str:
@@ -847,6 +849,7 @@ class MainWindow(QMainWindow):
         self._spec = None
         self._base_dir = None
         self._manifest = None
+        self._sensor_dlg = None
         self._world_path = None          # 当前世界来源文件（保存/最近打开用；
                                          # 拖动/位姿提交的 yaml_text 重载不换它）
         self._welcome_dlg = None         # 首屏引导对话框（帮助菜单可重开）
@@ -914,6 +917,8 @@ class MainWindow(QMainWindow):
         self.teleop.stopRequested.connect(self._on_teleop_stop)
         self.teleop.previewToggled.connect(self._on_preview_toggled)
         self.teleop.floatRequested.connect(self._on_teleop_float)
+        # 雷达建图面板：占据栅格由内核自动累积，这里只做轮询渲染
+        self.radar_map = RadarMapPanel()
 
         self.tabs = QTabWidget()
 
@@ -968,6 +973,11 @@ class MainWindow(QMainWindow):
             "遥操作 / 实时画面", self.teleop,
             Qt.DockWidgetArea.RightDockWidgetArea, "dock_teleop")
         self.dock_teleop.setMinimumWidth(200)
+        # 雷达建图：与遥操作 dock 纵向切分右栏，只在有 lidar 的世界显示
+        self.dock_radar = self._make_dock(
+            "雷达建图", self.radar_map,
+            Qt.DockWidgetArea.RightDockWidgetArea, "dock_radar")
+        self.dock_radar.setMinimumWidth(220)
         self.dock_right.setMinimumWidth(240)   # 可拖更窄（内容出滚动条）
         self._dock_areas = {
             "scene": (self.dock_scene, Qt.DockWidgetArea.LeftDockWidgetArea),
@@ -975,6 +985,7 @@ class MainWindow(QMainWindow):
             "console": (self.dock_console,
                         Qt.DockWidgetArea.BottomDockWidgetArea),
             "teleop": (self.dock_teleop, Qt.DockWidgetArea.RightDockWidgetArea),
+            "radar": (self.dock_radar, Qt.DockWidgetArea.RightDockWidgetArea),
         }
         self._apply_default_layout()
 
@@ -1007,6 +1018,15 @@ class MainWindow(QMainWindow):
         self._cam_timer.setInterval(66)
         self._cam_timer.timeout.connect(self._fetch_camera_frame)
 
+        # ---- 雷达建图轮询：10Hz 取 lidar_map（栅格 + 位姿 + 叠加层），
+        # 面板 repaint 走主线程 paintEvent；无雷达世界不启动
+        self._map_timer = QTimer(self)
+        self._map_timer.setInterval(100)
+        self._map_timer.timeout.connect(self._fetch_lidar_map)
+        self._map_pending = False
+        self._plan_popup_shown = False   # 规划完成弹窗：每次加载世界只弹一次
+        self._plan_dialog = None
+
         # ---- 启动即加载纯空场景（只有地面的默认工作台）
         empty_world = (pathlib.Path(__file__).resolve().parents[2]
                        / "worlds" / "empty.yaml")
@@ -1038,6 +1058,8 @@ class MainWindow(QMainWindow):
     def _apply_default_layout(self) -> None:
         """默认布局：左场景树 + 右属性/观测 + 底部控制台，遥操作收起。"""
         self.splitDockWidget(self.dock_right, self.dock_teleop,
+                             Qt.Orientation.Vertical)
+        self.splitDockWidget(self.dock_teleop, self.dock_radar,
                              Qt.Orientation.Vertical)
         self.resizeDocks([self.dock_scene, self.dock_right], [280, 340],
                          Qt.Orientation.Horizontal)
@@ -1145,6 +1167,11 @@ class MainWindow(QMainWindow):
                              "——SolidWorks 经 sw2urdf 插件导出的 "
                              "URDF 直接可用；造机器人保存的 YAML 也能直接导入")
         self.act_import.triggered.connect(self._on_import_model)
+        self.act_sensor_lab = mk(
+            "传感器工作台…", "Ctrl+Shift+N",
+            "平台全部传感器类型一览：选择后直接挂载到机器人、调整参数、"
+            "实时查看读数（数值 / 雷达条形图 / 相机画面）")
+        self.act_sensor_lab.triggered.connect(self._on_sensor_lab)
         self.act_scene_agent = mk("AI 生成场景…", "Ctrl+G",
                                   "自然语言描述需求，AI 直接生成世界 YAML"
                                   "（本地校验 + 失败自动重试）")
@@ -1305,6 +1332,7 @@ class MainWindow(QMainWindow):
         m_edit.addAction(self.act_history)
         m_edit.addSeparator()
         m_edit.addAction(self.act_add_object)
+        m_edit.addAction(self.act_sensor_lab)
         m_edit.addAction(self.act_delete)
         m_edit.addSeparator()
         m_edit.addAction(self.act_preview)
@@ -1363,6 +1391,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self.act_open)
         tb.addAction(self.act_zoo)
         tb.addAction(self.act_robot_builder)
+        tb.addAction(self.act_sensor_lab)
         tb.addSeparator()
         tb.addAction(self.act_reset)
         tb.addAction(self.act_run)
@@ -1428,6 +1457,9 @@ class MainWindow(QMainWindow):
         sb.addWidget(self.lbl_state)
         sb.addWidget(self._vline())
         sb.addWidget(self.lbl_world, stretch=1)
+        self.lbl_rec = QLabel("")
+        sb.addPermanentWidget(self.lbl_rec)
+        sb.addPermanentWidget(self._vline())
         sb.addPermanentWidget(self.lbl_entities)
         sb.addPermanentWidget(self._vline())
         sb.addPermanentWidget(self.lbl_time)
@@ -1914,6 +1946,24 @@ class MainWindow(QMainWindow):
         self._builder_dlg.show()
         self._builder_dlg.raise_()
         self._builder_dlg.activateWindow()
+
+    def _on_sensor_lab(self):
+        """非模态「传感器工作台」：传感器库 + 挂载 + 参数 + 实时读数。
+
+        信号与装备面板同签名直连 _on_gear_* 槽，复用 YAML 写回链
+        （read_world -> 改 dict -> load_world 重载，运行中自动拦截）。
+        """
+        if self._sensor_dlg is None:
+            self._sensor_dlg = SensorWindow(self)
+            self._sensor_dlg.add_sensor.connect(self._on_gear_add_sensor)
+            self._sensor_dlg.remove_sensor.connect(
+                self._on_gear_remove_sensor)
+            self._sensor_dlg.update_sensor.connect(
+                self._on_gear_update_sensor)
+            self._sensor_dlg.set_context(self._spec, self._manifest)
+        self._sensor_dlg.show()
+        self._sensor_dlg.raise_()
+        self._sensor_dlg.activateWindow()
 
     def _on_zoo(self):
         """非模态模型库：可拖条目到 3D 视口放置，或选中后生成/添加。"""
@@ -2744,6 +2794,7 @@ class MainWindow(QMainWindow):
             return
         self._spec = spec                        # 编辑基准（拖动提交 YAML 用）
         self._base_dir = spec.base_dir
+        self._update_radar_dock(spec)            # 雷达建图面板条件显隐
         if path:                                 # 新来源文件：记录 + 最近打开
             self._world_path = path
             self._push_recent(path)
@@ -2830,6 +2881,8 @@ class MainWindow(QMainWindow):
                                     sa.horizontalScrollBar().value()))
             self.gear.set_manifest(data, str(self._base_dir))
             self.teleop.set_manifest(data)
+            if self._sensor_dlg is not None:
+                self._sensor_dlg.set_context(self._spec, data)
             for sa, v, h in scrolls:
                 sa.verticalScrollBar().setValue(v)
                 sa.horizontalScrollBar().setValue(h)
@@ -2904,6 +2957,14 @@ class MainWindow(QMainWindow):
                     if idx is None:
                         ees.append(entry)
                     else:
+                        # pos/quat 是手工标定的安装位姿（面板里改不了）：同型号
+                        # 重新应用时保留。丢掉它就会退回库里的默认 mount——G1
+                        # 的自动挂点落在手指根部均值处，夹爪会悬空约 5cm。
+                        old = ees[idx]
+                        if old.get("model") == entry.get("model"):
+                            for k in ("pos", "quat"):
+                                if k not in entry and k in old:
+                                    entry[k] = old[k]
                         ees[idx] = entry
                     model = entry.get("model", "?")
                     msg = (f"{robot_name} 已装配{side_label}末端执行器 {model}")
@@ -3425,6 +3486,86 @@ class MainWindow(QMainWindow):
 
         self.client.call_tool("camera_frame", self.teleop.camera_args(), done)
 
+    # ============================================================ 雷达建图
+
+    def _update_radar_dock(self, spec) -> None:
+        """有 lidar 传感器的世界才开雷达建图面板（新世界加载后调用）。"""
+        has_lidar = any(s.type == "lidar"
+                        for r in spec.robots for s in r.sensors)
+        if has_lidar:
+            self.dock_radar.show()
+            self._map_timer.start()
+            self._plan_popup_shown = False   # 新世界重新规划时允许再弹
+        else:
+            self._map_timer.stop()
+            self.dock_radar.hide()
+            self.radar_map.update_map(None)
+
+    def _fetch_lidar_map(self):
+        """10Hz 拉 lidar_map 快照；在途去重，失败静默等下一拍。"""
+        if self._map_pending:
+            return
+        self._map_pending = True
+
+        def done(err, data):
+            self._map_pending = False
+            if err or not isinstance(data, dict):
+                return
+            self.radar_map.update_map(data)
+            self._maybe_popup_plan(data)
+
+        self.client.call_tool("lidar_map", {}, done)
+
+    def _maybe_popup_plan(self, data: dict) -> None:
+        """建图规划完成（overlays 同时出现骨架+path 层）时弹窗出快照图。
+
+        控制器巡逻建图 -> 维诺骨架+A* 规划完成后才发布骨架/path 两层，
+        此帧即"建图好了"的瞬间：弹非模态窗口显示骨架图（蓝）与 A* 选定
+        路径（半透明黄），快照静态不再刷新（主面板继续 10Hz 实时动）。
+        """
+        if self._plan_popup_shown:
+            return
+        overlays = data.get("overlays") or {}
+
+        def has_plan(layers: dict) -> bool:
+            names = {k.lower() for k in layers}
+            graph = any(any(t in n for t in ("skeleton", "voronoi", "prm"))
+                        for n in names)
+            return graph and "path" in names
+
+        if not any(has_plan(layers) for layers in overlays.values()):
+            return
+        self._plan_popup_shown = True
+        self._show_plan_dialog(data)
+
+    def _show_plan_dialog(self, data: dict) -> None:
+        from PySide6.QtWidgets import QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("维诺骨架图与 A* 路径")
+        dlg.setModal(False)                      # 非模态：不挡仿真运行
+        dlg.resize(760, 660)
+        lay = QVBoxLayout(dlg)
+        tip = QLabel("建图完成：蓝色为维诺骨架图（可通行空间广义维诺图），"
+                     "半透明黄色为 A* 在骨架上选定并沿其行驶的路径，"
+                     "橙点为起点、绿点为目标，青色三角为机器人当前位姿")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        panel = RadarMapPanel(dlg)
+        panel.update_map(data)                   # 规划完成瞬间的静态快照
+        lay.addWidget(panel, 1)
+        btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Save)
+        btn.clicked.connect(lambda: self._save_map_snapshot(panel))
+        lay.addWidget(btn)
+        self._plan_dialog = dlg                  # 持引用防 GC
+        dlg.show()
+
+    def _save_map_snapshot(self, panel: RadarMapPanel) -> None:
+        """把弹窗里的地图快照存成 png 图片。"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存地图快照", "roadmap_path.png", "PNG 图片 (*.png)")
+        if path:
+            panel.grab().save(path)
+
     def keyPressEvent(self, e):
         if self._teleop_active and not self._text_input_focused():
             if e.key() == Qt.Key.Key_Space:
@@ -3515,8 +3656,26 @@ class MainWindow(QMainWindow):
             t = obs.get("time")
             if t is not None:
                 self.lbl_time.setText(f"仿真 {float(t):.2f}s")
+            self._apply_rec_status(obs.get("controller"))
 
         self.client.call_tool("get_observation", {}, done)
+
+    def _apply_rec_status(self, st) -> None:
+        """状态栏采集提示：录制中显示红色计数，空闲显示最近一次事件。"""
+        if not isinstance(st, dict):
+            return
+        if st.get("recording"):
+            text = (f"● 录制中 ep{st.get('episode', '?')} · "
+                    f"{int(st.get('frames') or 0)} 帧")
+            color = theme.C_ERR
+        else:
+            text = str(st.get("msg") or "")
+            color = theme.C_TEXT_DIM
+        if text == getattr(self, "_rec_text", None):
+            return
+        self._rec_text = text
+        self.lbl_rec.setText(text)
+        self.lbl_rec.setStyleSheet(f"color:{color}; font-weight:600;")
 
     # ============================================================ 兜底
 

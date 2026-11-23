@@ -50,6 +50,12 @@ export const FEATURES = [
     body: "独立标定场景生成结果文件，水果分拣场景直接复用；换机械臂、夹爪或相机后旧标定会被拒绝，避免静默错抓。",
   },
   {
+    icon: "nav",
+    title: "雷达建图与自主导航",
+    en: "LiDAR → 栅格 → 骨架 → A*",
+    body: "2D 激光雷达实时 log-odds 占据栅格建图；对自由区做障碍膨胀与 Zhang-Suen 细化得到维诺骨架（广义维诺图），在骨架上 A* 搜路、纯跟踪导航到目标。建图、骨架、路径全部经 MCP 叠加到 GUI 建图面板实时呈现。",
+  },
+  {
     icon: "vla",
     title: "VLA 闭环部署",
     en: "SmolVLA @ 31.25 Hz",
@@ -139,6 +145,22 @@ export const ONBOARD = [
 ];
 
 export const DEMOS = [
+  {
+    kind: "image",
+    src: "./assets/demos/lidar_nav_map.png",
+    tag: "雷达建图",
+    title: "2D 激光雷达实时占据栅格建图",
+    body: "差速小车绕房间巡逻一圈，车顶 60 束 2D 雷达每 tick 做 raycasting：穿越格打自由、命中格打占据，log-odds 累积成占据栅格。白为自由、灰为未知、黑为障碍；无回波按保守策略不更新，薄墙不会被“隧穿”。",
+    meta: "60 束 · ±180° · 5cm 栅格",
+  },
+  {
+    kind: "image",
+    src: "./assets/demos/lidar_nav_plan.png",
+    tag: "骨架规划",
+    title: "维诺骨架 + A* + 纯跟踪导航",
+    body: "对自由区做障碍膨胀与 Zhang-Suen 细化，得到障碍通道正中的 1px 中轴骨架（即广义维诺图），在骨架上按 A* 搜起点到目标的最短路，再由纯跟踪控制器沿线行驶。蓝为骨架、黄为 A* 路径、棕为巡逻框。",
+    meta: "维诺骨架 · A* · 纯跟踪",
+  },
   {
     kind: "video",
     src: "./assets/demos/maintenance_relay.mp4",

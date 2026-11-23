@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import math
+
 import mujoco
 import numpy as np
 
@@ -115,14 +117,74 @@ def task_reward(task: ResolvedTask, model: mujoco.MjModel,
     return total
 
 
-def sensors_obs(ridx: RobotIndex, data: mujoco.MjData) -> dict:
+def lidar_scan(model: mujoco.MjModel, data: mujoco.MjData,
+               six: "SensorIndex") -> list[float]:
+    """雷达一次全束扫描：内核 mj_ray 射线投射，返回 rays 个距离（米）。
+
+    - 原点 = 挂载 body 世界位姿 + pos 偏移；扫描平面 = body xy 平面，
+      0° 沿 body +x，逆时针为正（真实 2D 雷达习惯，body 随机器人转向）
+    - 实测语义（mujoco 4.0）：flg_static=True 才含静态墙体，geomgroup=None
+      含全部 group（视觉机壳也在内），起点位于几何内部时命中内表面
+      ——因此自体几何用「命中后前移 1mm 续投」迭代穿过（机壳外环、
+      底盘/轮子遮挡都会被跳过），最多跳 16 个
+    - 无回波或超出 range 返回 -1.0（MuJoCo rangefinder 惯例，真实雷达的 inf）
+    - 只读派生量：不调 mj_forward、不写 data，物理轨迹零影响
+      （bit 级守护见 tests/test_lidar.py）
+    """
+    li = six.lidar
+    bid = int(li["body"])
+    rot = data.xmat[bid].reshape(3, 3)
+    origin = (np.asarray(data.xpos[bid], dtype=float)
+              + rot @ np.asarray(li["pos"], dtype=float))
+    own = li["robot_bodies"]
+    rng = float(li["range"])
+    gid = np.zeros(1, dtype=np.int32)
+    out: list[float] = []
+    for ang in li["angles"]:
+        vec = rot @ np.array([math.cos(ang), math.sin(ang), 0.0])
+        base, d = 0.0, -1.0
+        for _ in range(16):
+            dist = mujoco.mj_ray(model, data, origin + base * vec, vec,
+                                 None, True, -1, gid)
+            if dist < 0.0 or base + dist > rng:
+                break                      # 无回波 / 超量程
+            if int(model.geom_bodyid[gid[0]]) not in own:
+                d = base + dist            # 命中环境
+                break
+            base += dist + 1e-3            # 命中自体：穿过外壳续投
+        out.append(float(d))
+    return out
+
+
+def lidar_pose(data: mujoco.MjData,
+               six: "SensorIndex") -> tuple[float, float, float]:
+    """雷达挂点世界坐标 + 扫描平面航向（kernel/mapping.py 的建图输入）。
+
+    yaw = 挂载 body 的 +x 轴在世界 xy 平面上的朝向（2D SLAM 平面假设，
+    与 lidar_scan 的 0° 沿 body +x 约定一致）。只读不写 data。
+    """
+    li = six.lidar
+    bid = int(li["body"])
+    rot = data.xmat[bid].reshape(3, 3)
+    origin = (np.asarray(data.xpos[bid], dtype=float)
+              + rot @ np.asarray(li["pos"], dtype=float))
+    return float(origin[0]), float(origin[1]), float(math.atan2(
+        float(rot[1, 0]), float(rot[0, 0])))
+
+
+def sensors_obs(ridx: RobotIndex, model: mujoco.MjModel,
+                data: mujoco.MjData) -> dict:
     """单机器人全部传感器读数 {名: 标量 or 列表}。
 
     dim=1 出标量（encoder/joint_torque/tactile），多维出列表
     （imu 按 gyro+accel 两个 part 顺序拼接成 6 维）。
+    lidar 按 SensorIndex.lidar 配置逐束射线计算（parts 为空、dim=rays）。
     """
     sensors = {}
     for sname, six in ridx.sensors.items():
+        if six.lidar is not None:
+            sensors[sname] = lidar_scan(model, data, six)
+            continue
         vals = []
         for adr, dim in six.parts:
             vals += list(map(float, data.sensordata[adr:adr + dim]))

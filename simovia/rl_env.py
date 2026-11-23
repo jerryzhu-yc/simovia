@@ -137,7 +137,7 @@ class SimoviaEnv(gym.Env):
             ridx = self.index.robots[rd.name]
             qpos, qvel = robot_obs(ridx, self.model, self.data)
             vec += qpos + qvel
-            sn = sensors_obs(ridx, self.data)
+            sn = sensors_obs(ridx, self.model, self.data)
             for six in ridx.sensors.values():       # 按声明顺序拼接
                 vals = sn[six.name]
                 vec += [vals] if isinstance(vals, float) else list(vals)
@@ -154,6 +154,6 @@ class SimoviaEnv(gym.Env):
                 "qpos": qpos, "qvel": qvel,
                 "ctrl": list(map(float, self.data.ctrl[
                     list(ridx.actuators.values())])),
-                "sensors": sensors_obs(ridx, self.data),
+                "sensors": sensors_obs(ridx, self.model, self.data),
             }
         return {"tick": self._tick, "time": float(self.data.time), "raw": raw}

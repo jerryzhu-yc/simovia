@@ -12,6 +12,7 @@ REQ/REP 严格锁步保证：每个 step 请求有且只有一个回复（obs �
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 import subprocess
@@ -26,7 +27,9 @@ import zmq
 from simovia import supervisor
 from simovia.errors import WorldError
 from simovia.kernel.task import (obs_layout, robot_obs, root_freejoint_qadr,
-                                  sensors_obs, task_reward, task_success)
+                                  sensors_obs, task_reward, task_success,
+                                  lidar_scan, lidar_pose)
+from simovia.kernel.mapping import LidarMapper
 from simovia.world.builder import build_world, resolve_task
 from simovia.world.schema import WorldSpec, world_to_dict
 
@@ -93,6 +96,16 @@ class Simulation:
 
         self.controller_frames = {}
         self.controller_results = {}
+        # 平台级雷达建图：声明过 lidar 的机器人各一张融合图，推进时喂帧；
+        # controller_overlays: {robot: {label: {"segments": [[x1,y1,x2,y2]...],
+        #                                        "points": [[x,y]...]}}}
+        # 控制器经 publish_overlay 发布的矢量叠加层（路径/roadmap/目标点），
+        # GUI"雷达建图"面板随地图一起拉取渲染
+        self.lidar_mappers = {
+            rd.name: LidarMapper(spec.scene.floor.size)
+            for rd in spec.robots
+            if any(s.type == "lidar" for s in rd.sensors)}
+        self.controller_overlays: dict[str, dict[str, dict]] = {}
         self._vision_renderers = {}
         self.tick = 0
         self._ran = False               # 是否已跑过一轮 run（暂停续跑判断用）
@@ -220,8 +233,8 @@ class Simulation:
                 self._st[rname]["active"] = False
             # REQ/REP 必须回复，否则控制器 close() 里的 recv 会挂死
             self._send(ident, {"op": "bye_ack"})
-        elif op in ("observe", "camera", "contacts", "camera_overlay", "result",
-                    "reset_objects"):
+        elif op in ("observe", "camera", "contacts", "camera_overlay",
+                    "map_overlay", "result", "reset_objects"):
             self._device_request(ident, msg)
         elif op == "supervise":
             self._supervise(ident, msg)
@@ -243,6 +256,25 @@ class Simulation:
                 self._send(ident,{"op":"ok"});return
             if op=="observe":
                 self._send(ident,self._obs_msg(name));return
+            if op=="map_overlay":
+                # 控制器向"雷达建图"面板发布矢量叠加层（同名整体替换）。
+                # 必须在相机查找之前处理——overlay 的 name 是图层名不是相机名
+                label=str(msg.get("name","overlay"))[:40] or "overlay"
+                segs_in=msg.get("segments") or []
+                pts_in=msg.get("points") or []
+                if len(segs_in)>1500 or len(pts_in)>500:
+                    raise WorldError("叠加层超限：最多 1500 线段 / 500 点")
+                def _flat(v,w):
+                    out=[]
+                    for item in v:
+                        item=[float(x) for x in item]
+                        if len(item)!=w or not all(math.isfinite(x) for x in item):
+                            raise WorldError(f"叠加层数值必须是 {w} 个有限数")
+                        out.append(item)
+                    return out
+                self.controller_overlays.setdefault(name,{})[label]={
+                    "segments":_flat(segs_in,4),"points":_flat(pts_in,2)}
+                self._send(ident,{"op":"ok"});return
             if op=="reset_objects":
                 self._reset_objects()
                 self._send(ident,{"op":"ok"});return
@@ -453,6 +485,25 @@ class Simulation:
             return False
         return all(self._st[n]["pending"] > 0 for n in parts)
 
+    def _feed_lidar_mappers(self) -> None:
+        """平台级雷达建图：每个 lidar 机器人喂一帧（所有雷达融合进同一张图）。
+
+        读数现算（_obs_msg 里那份是控制器的），纯 mj_ray 只读、轨迹零影响；
+        只在推进线程写栅格，MCP 协议线程只读 grid()——无锁安全。
+        控制器栅栏与无控制器空跑两条推进路径都调它，保证任何世界每 tick 一帧。
+        """
+        for rname, ridx in self.index.robots.items():
+            mapper = self.lidar_mappers.get(rname)
+            if mapper is None:
+                continue
+            for six in ridx.sensors.values():
+                if six.lidar is None:
+                    continue
+                px, py, yaw = lidar_pose(self.data, six)
+                mapper.update(px, py, yaw, six.lidar["angles"],
+                              lidar_scan(self.model, self.data, six),
+                              float(six.lidar["range"]))
+
     def _advance(self, budget: int | None = None,
                  on_sample: "callable | None" = None,
                  sample_stride: int | None = None,
@@ -482,6 +533,7 @@ class Simulation:
                     pace()
                 on_sample()
         self.tick += n
+        self._feed_lidar_mappers()
         # 回观测（REQ/REP：每个已归零 pending 的请求恰好一个回复）
         for name in parts:
             st = self._st[name]
@@ -539,7 +591,7 @@ class Simulation:
         # 传感器读数（声明过的机器人才有这个键；sensordata 在 mj_step 末尾已就绪；
         # 拼接语义见 kernel/task.py，与 RL env 共用）
         if ridx.sensors:
-            msg["sensors"] = sensors_obs(ridx, self.data)
+            msg["sensors"] = sensors_obs(ridx, self.model, self.data)
         return msg
 
     def _check_crashes(self) -> None:
@@ -651,6 +703,7 @@ class Simulation:
                         _pace()
                         on_sample()
                 self.tick += 1
+                self._feed_lidar_mappers()
                 if on_tick is not None:
                     on_tick()
                 _pace()

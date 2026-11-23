@@ -109,7 +109,7 @@ class EpisodeRecorder:
                 row["root_quat"] = list(map(float, data.qpos[qadr + 3:qadr + 7]))
                 row["root_lin_vel"] = list(map(float, data.qvel[vadr:vadr + 3]))
                 row["root_ang_vel"] = list(map(float, data.qvel[vadr + 3:vadr + 6]))
-            for sname, values in sensors_obs(ridx, data).items():
+            for sname, values in sensors_obs(ridx, self.model, data).items():
                 row[f"sensor:{sname}"] = (
                     list(values) if isinstance(values, list) else [values])
             for field_name, values in row.items():

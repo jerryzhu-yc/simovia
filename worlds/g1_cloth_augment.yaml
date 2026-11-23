@@ -1,0 +1,91 @@
+name: g1_cloth_augment           # 独立场景：读已有数据集 action 回放，在随机化场景里重新采集
+timestep: 0.004                  # 与遥操作采集场景保持一致（回放轨迹才能复现）
+ctrl_period: 8                   # 32ms / tick，与源数据集 fps 对齐
+gravity: [0, 0, -9.81]
+integrator: discrete             # flex 的 <elasticity> 在 implicit/implicitfast 下不隐式积分
+impratio: 20
+cone: elliptic
+
+scene:
+  floor:
+    size: [3.0, 3.0]
+    texture: grid
+    friction: 1.0
+  lights:
+    - {pos: [0, 0, 3]}
+    - {pos: [1.2, -1.0, 2.2]}
+  cameras:
+    # 与遥操作场景同一个第三人称机位（增强时在其附近做微扰）
+    - name: showcase
+      pos: [0.95, -1.10, 1.25]
+      quat: [0.7752, 0.5710, 0.1602, 0.2175]
+      fovy: 48
+  objects:
+    - name: table
+      type: box
+      size: [0.25, 0.44, 0.02]
+      pos: [0.47, 0, 0.73]
+      color: "#6B7280"
+      static: true
+    - {name: table_leg_0, type: box, size: [0.02, 0.02, 0.365], pos: [0.27, -0.36, 0.365], color: "#4B5563", static: true}
+    - {name: table_leg_1, type: box, size: [0.02, 0.02, 0.365], pos: [0.67, -0.36, 0.365], color: "#4B5563", static: true}
+    - {name: table_leg_2, type: box, size: [0.02, 0.02, 0.365], pos: [0.27, 0.36, 0.365], color: "#4B5563", static: true}
+    - {name: table_leg_3, type: box, size: [0.02, 0.02, 0.365], pos: [0.67, 0.36, 0.365], color: "#4B5563", static: true}
+    - {name: bin_wall_x0, type: box, size: [0.010, 0.144, 0.0375], pos: [0.275, 0.26, 0.7875], color: "#4B5563", static: true}
+    - {name: bin_wall_x1, type: box, size: [0.010, 0.144, 0.0375], pos: [0.485, 0.26, 0.7875], color: "#4B5563", static: true}
+    - {name: bin_wall_y0, type: box, size: [0.099, 0.010, 0.0375], pos: [0.38, 0.110, 0.7875], color: "#4B5563", static: true}
+    - {name: bin_wall_y1, type: box, size: [0.099, 0.010, 0.0375], pos: [0.38, 0.410, 0.7875], color: "#4B5563", static: true}
+    - name: blanket
+      type: cloth
+      size: [0.065, 0.11]
+      pos: [0.40, -0.02, 0.756]
+      cells: [10, 16]
+      mass: 0.08
+      thickness: 0.004
+      young: 20000
+      poisson: 0.3
+      friction: 0.5
+      self_collide: bvh
+      color: "#D97757"
+
+robots:
+  - name: g1
+    model: ../models/zoo/unitree_g1/g1_with_hands.xml
+    pos: [0, 0, 0.79]
+    end_effectors:
+      - {model: robotiq_2f85, side: left, pos: [0, 0, -0.089]}
+      - {model: robotiq_2f85, side: right, pos: [0, 0, -0.089]}
+    # 共享世界控制器：跑在内核进程里才能逐物理步推进布料、逐 tick 渲染写帧
+    controller: ../controllers/g1_cloth_augment.py
+    args:
+      shared_world_controller: true
+      dataset: ~/桌面/g1_cloth_teleop_dataset   # 源数据集 = 输出数据集（追加）
+      task: put the blanket in the box
+      port: 8092                                # 基类初始化用，随即关闭；避开遥操作 8091
+      cam_size: 256
+      arms: left
+      control: osc
+      scale: 0.45
+      replays_per_episode: 3                    # 每个源 episode 回放几次（0 = 只扫数据集）
+      augment_seed: 20261117
+    sensors:
+      - name: cam_left_wrist
+        type: camera
+        body: gripper_left/base
+        pos: [-0.062, 0.02, 0.0]
+        quat: [-0.14573, 0.703, 0.69193, -0.07611]
+        fovy: 85
+      - name: cam_right_wrist
+        type: camera
+        body: gripper_right/base
+        pos: [0.06197, 0.0203, -0.00029]
+        quat: [-0.14192, 0.70389, -0.69141, 0.07972]
+        fovy: 85
+
+task:
+  max_ticks: 1000000             # 回放任务量由数据集集数决定
+
+runtime:
+  realtime: false                # 批量回放不需要墙钟同步，全速跑完
+  controller_timeout: 600        # 三路渲染 + 写帧可能超过默认 100ms
+  timeout_policy: last_ctrl

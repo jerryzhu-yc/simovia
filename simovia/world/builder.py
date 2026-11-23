@@ -30,6 +30,8 @@ from simovia.world.schema import (
     ContactReward, hex_to_rgba, read_text_compat,
 )
 
+import numpy as np
+
 _GEOM_TYPE_MAP = {
     "box": mujoco.mjtGeom.mjGEOM_BOX,
     "sphere": mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -47,13 +49,18 @@ class SensorIndex:
     """单个传感器的读数定位：obs 按顺序拼接 parts 得到该传感器全量读数。
 
     encoder/joint_torque/tactile 为单 part；imu 为 [gyro(3), accel(3)] 两个 part。
+    lidar 不编译 MuJoCo sensor（parts 为空），读数由内核 mj_ray 计算，
+    配置存 lidar 字段：{body, pos, angles, range, robot_bodies}。
     """
     name: str
     kind: str                       # YAML 类型
     parts: list[tuple[int, int]] = field(default_factory=list)  # (sensor_adr, dim)
+    lidar: dict | None = None       # 仅 kind=lidar：内核射线计算配置
 
     @property
     def dim(self) -> int:
+        if self.lidar is not None:
+            return len(self.lidar["angles"])
         return sum(d for _, d in self.parts)
 
 
@@ -204,6 +211,9 @@ def _build_scene(spec: WorldSpec, mj: mujoco.MjSpec):
         mj.worldbody.add_camera(**kwargs)
     # 物体：独立 body + freejoint（可被抓取/瞬移）；static 物体无 freejoint
     for od in sc.objects:
+        if od.type == "cloth":
+            _build_cloth(od, mj)
+            continue
         if od.type == "model":
             path = _resolve_path(spec.base_dir, od.model, "场景模型")
             child = mujoco.MjSpec.from_file(str(path))
@@ -235,6 +245,49 @@ def _build_scene(spec: WorldSpec, mj: mujoco.MjSpec):
         body.add_geom(**kwargs)
 
 
+def _build_cloth(od, mj: mujoco.MjSpec) -> None:
+    """布料物体：flexcomp 二维网格，编译后每个网格点是一个带 3 个滑块的质点。
+
+    为什么套一层 body 再 attach：MjSpec 没有暴露 flexcomp 的构造接口，只能
+    用子 spec 从 XML 注入；flexcomp 的顶点坐标是相对其父 body 的，因此必须
+    放在 body 里，否则 attach 到世界 frame 时会因参考系错乱而数值发散。
+
+    布料不做刚体 freejoint：质量全部落在网格质点上，抓取/折叠由外力或显式
+    钉扎顶点驱动（见 demo/cloth_folding）。
+    """
+    nx, ny = od.cells
+    hx, hy = od.size
+    sx, sy = 2.0 * hx / (nx - 1), 2.0 * hy / (ny - 1)
+    # 2D 网格的 z 向间距不参与布面拓扑，只是 flexcomp 要求每轴 spacing 大于
+    # 顶点几何半径。厚毛毯（radius=thickness/2）会超过固定 1cm，必须跟着放大。
+    sz = max(0.01, 4.0 * od.thickness)
+    r, g, b, a = hex_to_rgba(od.color)
+    mass = od.mass if od.mass is not None else 0.6
+    # true/false -> narrow/none；也可显式给 wide 相算法（bvh/sap 比 narrow 快
+    # 一个量级：narrow 每步做顶点全对检测，平铺时根本没有自碰撞对也照样付钱）
+    sc_mode = od.self_collide
+    if isinstance(sc_mode, bool):
+        sc_mode = "narrow" if sc_mode else "none"
+    frag = f"""
+<mujoco><worldbody><body name="root">
+  <flexcomp name="cloth" type="grid" dim="2" count="{nx} {ny} 1"
+            spacing="{sx!r} {sy!r} {sz!r}" radius="{od.thickness / 2!r}"
+            mass="{mass!r}" pos="0 0 0" rgba="{r} {g} {b} {a}">
+    <elasticity young="{od.young!r}" poisson="{od.poisson!r}"
+                thickness="{od.thickness!r}" elastic2d="both"
+                damping="0.02"/>
+    <contact selfcollide="{sc_mode}"
+             condim="3" friction="{od.friction!r} 0.02 0.002"/>
+  </flexcomp>
+</body></worldbody></mujoco>"""
+    child = mujoco.MjSpec.from_string(frag)
+    frame = mj.worldbody.add_frame(pos=list(od.pos),
+                                   quat=list(od.quat) if od.quat else [1, 0, 0, 0])
+    mj.attach(child, prefix=od.name + "/", frame=frame)
+    # 根 body 改用物体名，NameIndex/GUI 场景树照常按名索引这张布
+    mj.body(od.name + "/root").name = od.name
+
+
 def _add_camera_visuals(body, s: SensorSpec) -> None:
     """相机实体外观：镜头（圆柱）+ 机身（方块）。
 
@@ -258,6 +311,42 @@ def _add_camera_visuals(body, s: SensorSpec) -> None:
                   size=[0.007, 0.005],
                   pos=[s.pos[i] + lens_off[i] for i in range(3)],
                   quat=q, rgba=[0.04, 0.16, 0.28, 1.0],
+                  contype=0, conaffinity=0, density=0.0, group=2)
+
+
+def _add_lidar_visuals(body, s: SensorSpec) -> None:
+    """雷达实体外观：支杆 + 圆柱机身 + 深色镜面环 + 状态 LED。
+
+    造型对齐真实 2D 激光雷达（Hokuyo/RPLidar 的圆饼机身 + 暗色发射窗）。
+    纯视觉（无碰撞、零质量、group 2），与相机外观同一约定；读数由内核
+    mj_ray 按 body 世界位姿 + pos 偏移计算，起点位于机壳中心——机壳会
+    先被命中，内核按「跳过自体几何」迭代穿过（见 kernel/task.lidar_scan）。
+    """
+    p = list(s.pos)
+    shell_h = 0.013
+    # 支杆：从 body 原点平面撑到机壳底部（pos.z 太低时不生成，直接坐底）
+    if p[2] > shell_h * 2:
+        mast_half = (p[2] - shell_h) / 2
+        body.add_geom(name=f"{s.name}_mast",
+                      type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                      size=[0.005, mast_half], pos=[p[0], p[1], mast_half],
+                      rgba=[0.15, 0.16, 0.18, 1.0],
+                      contype=0, conaffinity=0, density=0.0, group=2)
+    body.add_geom(name=f"{s.name}_puck",
+                  type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                  size=[0.022, shell_h], pos=p,
+                  rgba=[0.12, 0.13, 0.15, 1.0],
+                  contype=0, conaffinity=0, density=0.0, group=2)
+    # 镜面环：比机身略大一圈的窄环带，从外面看是环绕机身的暗色发射窗
+    body.add_geom(name=f"{s.name}_lens",
+                  type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                  size=[0.0225, 0.004], pos=p,
+                  rgba=[0.02, 0.02, 0.03, 1.0],
+                  contype=0, conaffinity=0, density=0.0, group=2)
+    body.add_geom(name=f"{s.name}_led",
+                  type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                  size=[0.0025], pos=[p[0], p[1], p[2] + shell_h],
+                  rgba=[0.95, 0.12, 0.12, 1.0],
                   contype=0, conaffinity=0, density=0.0, group=2)
 
 
@@ -353,6 +442,10 @@ def _add_child_sensors(robot: RobotSpec, child: mujoco.MjSpec) -> None:
                 kwargs["fovy"] = float(s.fovy)
             body.add_camera(**kwargs)
             _add_camera_visuals(body, s)
+        elif s.type == "lidar":
+            # 不编译 MuJoCo sensor（读数由内核 mj_ray 计算），只补实体外观；
+            # 射线计算配置（body/角度/量程）在 _build_index 编译后解析成 id
+            _add_lidar_visuals(_find_body(s), s)
 
 
 def _ensure_actuator_names(child: mujoco.MjSpec) -> list[str]:
@@ -1190,7 +1283,8 @@ def _build_index(model: mujoco.MjModel, spec: WorldSpec) -> NameIndex:
                     f"编译后找不到机器人 '{rd.name}' 的关节 '{jnt_name}'"
                     f"（期望全名 '{prefix}{jnt_name}'）")
             ridx.joints[jnt_name] = jid
-        # 传感器（imu 拆成 gyro/accel 两个 MuJoCo sensor，按 part 记录读数区间）
+        # 传感器（imu 拆成 gyro/accel 两个 MuJoCo sensor，按 part 记录读数区间；
+        # lidar 不编译 sensor，只记录内核射线计算配置）
         for s in rd.sensors:
             if s.type == "camera":
                 cid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA,
@@ -1200,6 +1294,22 @@ def _build_index(model: mujoco.MjModel, spec: WorldSpec) -> NameIndex:
                         f"编译后找不到机器人 '{rd.name}' 的相机 '{s.name}'"
                         f"（期望全名 '{prefix}{s.name}'）")
                 ridx.cameras[s.name] = cid
+                continue
+            if s.type == "lidar":
+                bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY,
+                                         f"{prefix}{s.body}")
+                if bid < 0:
+                    raise WorldError(
+                        f"编译后找不到机器人 '{rd.name}' 的雷达 '{s.name}' 挂载"
+                        f" body '{s.body}'（期望全名 '{prefix}{s.body}'）")
+                angles = np.radians(np.linspace(float(s.min_angle),
+                                                float(s.max_angle),
+                                                int(s.rays), endpoint=False))
+                ridx.sensors[s.name] = SensorIndex(
+                    name=s.name, kind="lidar",
+                    lidar={"body": bid, "pos": tuple(s.pos),
+                           "angles": angles, "range": float(s.range),
+                           "robot_bodies": frozenset()})
                 continue
             mj_names = ([f"{prefix}{s.name}"] if s.type != "imu"
                         else [f"{prefix}{s.name}_gyro", f"{prefix}{s.name}_accel"])
@@ -1223,6 +1333,12 @@ def _build_index(model: mujoco.MjModel, spec: WorldSpec) -> NameIndex:
         for rd in spec.robots:
             if name.startswith(f"{rd.name}/"):
                 index.robots[rd.name].bodies[name[len(rd.name) + 1:]] = i
+    # 雷达自体排除集合：该机器人全部 body id（射线命中自身几何时跳过续投）
+    for rd in spec.robots:
+        ridx = index.robots[rd.name]
+        for six in ridx.sensors.values():
+            if six.lidar is not None:
+                six.lidar["robot_bodies"] = frozenset(ridx.bodies.values())
     return index
 
 

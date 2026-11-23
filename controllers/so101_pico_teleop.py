@@ -19,6 +19,15 @@ T = [[0,0,-1],[-1,0,0],[0,1,0]]（真旋转，det=+1）。
     task:    任务描述文本（语言条件）
     port:    HTTP/WS 端口（默认 8090）
     cameras: 逗号分隔的多路相机名（默认 wrist_cam；可写 wrist_cam,top 录两路）
+    randomize: 每集开始前物体随机摆放的区间（见下）；缺省不随机
+
+randomize 结构（全部可选，只写要随机的物体）：
+
+    randomize:
+      min_sep: 0.06                 # 物体间最小水平间距 m（拒采样）
+      objects:
+        cube_red:  {x: [0.18, 0.26], y: [-0.06, 0.06], z: 0.18}
+        cube_blue: {x: [0.18, 0.26], y: [-0.06, 0.06], z: 0.18}
 """
 from __future__ import annotations
 
@@ -26,6 +35,7 @@ import asyncio
 import json
 import os
 import pathlib
+import random
 import socket
 import threading
 import time
@@ -409,6 +419,65 @@ def _resolve_model(world_spec: dict) -> tuple[pathlib.Path, np.ndarray]:
     raise RuntimeError(f"无法解析机器人模型: {model_ref!r}")
 
 
+def _parse_randomize(args: dict) -> tuple[dict[str, dict], float]:
+    """解析 args.randomize -> ({物体名: {x,y,z 区间}}, 最小间距)。"""
+    raw = args.get("randomize")
+    if not raw:
+        return {}, 0.0
+    if not isinstance(raw, dict):
+        raise SystemExit("args.randomize 需要字典，见模块文档")
+    min_sep = float(raw.get("min_sep", 0.0))
+    objects = raw.get("objects") or {}
+    if not isinstance(objects, dict):
+        raise SystemExit("args.randomize.objects 需要字典")
+    spec: dict[str, dict] = {}
+    for name, item in objects.items():
+        if not isinstance(item, dict):
+            raise SystemExit(f"args.randomize.objects.{name} 需要字典")
+        try:
+            box = {ax: (float(item[ax][0]), float(item[ax][1]))
+                   for ax in ("x", "y")}
+            z = float(item["z"])
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            raise SystemExit(
+                f"args.randomize.objects.{name} 需要 x/y 各两个数字、z 一个数字"
+                f"（{e}）")
+        for ax, (lo, hi) in box.items():
+            if lo > hi:
+                raise SystemExit(
+                    f"args.randomize.objects.{name}.{ax} 区间下限大于上限")
+        spec[str(name)] = {"x": box["x"], "y": box["y"], "z": z}
+    return spec, max(0.0, min_sep)
+
+
+def _sample_positions(spec: dict[str, dict], min_sep: float,
+                      rng: random.Random | None = None) -> dict[str, list[float]]:
+    """在各自区间内采点，并按最小间距拒采样（采不出来就退化为最后一次）。"""
+    rng = rng or random.Random()
+    out: dict[str, list[float]] = {}
+    for name, box in spec.items():
+        pos = None
+        for _ in range(200):
+            x = rng.uniform(*box["x"])
+            y = rng.uniform(*box["y"])
+            pos = [x, y, box["z"]]
+            if all((x - p[0]) ** 2 + (y - p[1]) ** 2 >= min_sep ** 2
+                   for p in out.values()):
+                break
+        out[name] = pos
+    return out
+
+
+def _randomize_objects(robot, spec: dict[str, dict], min_sep: float) -> None:
+    """复位全部物体到 YAML 初始位姿，再把 spec 里的物体搬到随机位置。"""
+    poses = _sample_positions(spec, min_sep)
+    robot.reset_objects()
+    for name, pos in poses.items():
+        robot.supervise("teleport", body=name, pos=pos)
+    shown = ", ".join(f"{n}=({p[0]:.3f},{p[1]:.3f})" for n, p in poses.items())
+    print(f"[pico] 随机初始位姿: {shown}", flush=True)
+
+
 def main() -> None:
     quat_axes_ok()
     robot = Robot()
@@ -421,6 +490,7 @@ def main() -> None:
                  str(args.get("cameras", args.get("camera", "wrist_cam"))).split(",")
                  if c.strip()]
     cam_wh = (int(args.get("cam_height", 480)), int(args.get("cam_width", 640)))
+    rand_spec, rand_sep = _parse_randomize(args)
 
     model_path, base_pos = _resolve_model(robot.world_spec or {})
     osc = ArmOSC(model_path, base_pos)
@@ -516,6 +586,14 @@ def main() -> None:
             tracker.press_a -= 1
             try:
                 if not recording:
+                    # 每集开录前随机摆放物体，避免策略学到固定位置先验；
+                    # 失败不阻塞采集（用当前位姿继续录）
+                    if rand_spec:
+                        try:
+                            _randomize_objects(robot, rand_spec, rand_sep)
+                        except Exception as e:
+                            print(f"[pico] 随机化失败（沿用当前位姿）: {e}",
+                                  flush=True)
                     writer.start_episode()
                     recording = True
                     print(f"[pico] ▶ 开始录制 episode "

@@ -1,0 +1,104 @@
+name: so101_policy_eval_sim2sim   # 同一策略、同一机器人与相机，换物理/渲染条件的 sim2sim 链路验证
+# 与 so101_policy_eval.yaml 的差异集中在"物理与外观"，几何与相机严格一致：
+#   - timestep 0.002/16 -> 0.004/8（控制周期同为 32ms，但求解步数减半）
+#   - integrator implicitfast -> implicit；cone elliptic -> pyramidal；impratio 10 -> 1
+#   - 地面 grid -> solid、摩擦 1.0 -> 0.8；灯光改成两盏、位置不同
+#   - 桌面色、方块色、质量 0.03->0.035、摩擦 1.2->0.9
+# 目的：验证策略在"不同仿真条件"下仍能被正确驱动（链路通、画面可看），
+# 不以成功率为验收标准——视觉零样本跨域成功率天然很低。
+timestep: 0.004
+ctrl_period: 8                # 0.004 x 8 = 0.032s -> 31.25Hz，与训练数据集一致
+gravity: [0, 0, -9.81]
+integrator: implicit
+impratio: 1
+cone: pyramidal
+
+scene:
+  floor:
+    size: [2.0, 2.0]
+    texture: solid
+    friction: 0.8
+  lights:
+    - {pos: [0.6, -0.5, 1.4]}
+    - {pos: [-0.4, 0.6, 1.0]}
+
+  # 相机位姿必须与训练采集时一致，否则策略输入直接分布外，链路验证没有意义
+  cameras:
+    - name: top
+      pos: [0.419, 0.0, 0.430]
+      euler: [0, 40, 90]
+      fovy: 60
+
+  objects:
+    - name: table
+      type: box
+      size: [0.30, 0.20, 0.02]
+      pos: [0.20, 0, 0.14]
+      color: "#8A7A66"
+      static: true
+    - {name: table_leg_0, type: box, size: [0.025, 0.025, 0.06], pos: [-0.08, -0.17, 0.06], color: "#8A7A66", static: true}
+    - {name: table_leg_1, type: box, size: [0.025, 0.025, 0.06], pos: [0.48, -0.17, 0.06], color: "#8A7A66", static: true}
+    - {name: table_leg_2, type: box, size: [0.025, 0.025, 0.06], pos: [-0.08, 0.17, 0.06], color: "#8A7A66", static: true}
+    - {name: table_leg_3, type: box, size: [0.025, 0.025, 0.06], pos: [0.48, 0.17, 0.06], color: "#8A7A66", static: true}
+
+    - name: cube_red
+      type: box
+      size: [0.02, 0.02, 0.02]
+      pos: [0.22, -0.04, 0.18]
+      color: "#E05A5A"
+      mass: 0.035
+      friction: 0.9
+    - name: cube_blue
+      type: box
+      size: [0.02, 0.02, 0.02]
+      pos: [0.22, 0.04, 0.18]
+      color: "#5A86D8"
+      mass: 0.035
+      friction: 0.9
+
+    - {name: box_red_floor, type: box, size: [0.055, 0.055, 0.002], pos: [0.178, -0.13, 0.162], color: "#E05A5A", static: true}
+    - {name: box_red_wall_x0, type: box, size: [0.06, 0.005, 0.015], pos: [0.178, -0.185, 0.175], color: "#E05A5A", static: true}
+    - {name: box_red_wall_x1, type: box, size: [0.06, 0.005, 0.015], pos: [0.178, -0.075, 0.175], color: "#E05A5A", static: true}
+    - {name: box_red_wall_y0, type: box, size: [0.005, 0.06, 0.015], pos: [0.123, -0.13, 0.175], color: "#E05A5A", static: true}
+    - {name: box_red_wall_y1, type: box, size: [0.005, 0.06, 0.015], pos: [0.233, -0.13, 0.175], color: "#E05A5A", static: true}
+
+    - {name: box_blue_floor, type: box, size: [0.055, 0.055, 0.002], pos: [0.178, 0.13, 0.162], color: "#5A86D8", static: true}
+    - {name: box_blue_wall_x0, type: box, size: [0.06, 0.005, 0.015], pos: [0.178, 0.075, 0.175], color: "#5A86D8", static: true}
+    - {name: box_blue_wall_x1, type: box, size: [0.06, 0.005, 0.015], pos: [0.178, 0.185, 0.175], color: "#5A86D8", static: true}
+    - {name: box_blue_wall_y0, type: box, size: [0.005, 0.06, 0.015], pos: [0.123, 0.13, 0.175], color: "#5A86D8", static: true}
+    - {name: box_blue_wall_y1, type: box, size: [0.005, 0.06, 0.015], pos: [0.233, 0.13, 0.175], color: "#5A86D8", static: true}
+
+robots:
+  - name: arm
+    model: zoo://so101_lerobot
+    pos: [0, 0, 0.16]
+    end_effectors: []
+    controller: ../controllers/so101_policy_eval.py
+    args:
+      model: ~/桌面/逆向工程/simovia_workspace/models/so101_sort2_20k
+      task: pick up the red cube and put it into the red box, then pick up the blue cube and put it into the blue box
+      cameras: camera1=wrist_cam,camera2=top
+      max_seconds: 60
+      success_zones:
+        cube_red: {min: [0.148, -0.160, 0.178], max: [0.208, -0.100, 0.198]}
+        cube_blue: {min: [0.148, 0.100, 0.178], max: [0.208, 0.160, 0.198]}
+      success_hold_seconds: 0.5
+      success_max_speed: 0.02
+      success_gripper_open: 0.6
+    sensors:
+      - name: wrist_cam
+        type: camera
+        body: camera_mount
+        pos: [0.0, 0.055, -0.045]
+        quat: [0.959662, -0.281157, 0.0, 0.0]
+        fovy: 48.455
+
+task:
+  reward:
+    - distance: {a: cube_red, b: arm/gripper, weight: -0.01}
+  max_ticks: 4000
+
+runtime:
+  realtime: true
+  controller_timeout: 400
+  timeout_policy: last_ctrl

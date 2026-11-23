@@ -11,12 +11,12 @@
       <geom name="car_geom" type="box" size="0.09 0.05 0.017" rgba="0.2 0.6 0.6 1"/>
 
       <body name="wheel_l" pos="0 0.06 -0.013">
-        <joint name="wl" type="hinge" axis="0 1 0"/>
+        <joint name="wl" type="hinge" axis="0 1 0" armature="0.004"/>
         <geom name="wheel_l_geom" type="cylinder" size="0.032 0.008"
               euler="1.5708 0 0" rgba="0.3 0.3 0.35 1"/>
       </body>
       <body name="wheel_r" pos="0 -0.06 -0.013">
-        <joint name="wr" type="hinge" axis="0 1 0"/>
+        <joint name="wr" type="hinge" axis="0 1 0" armature="0.004"/>
         <geom name="wheel_r_geom" type="cylinder" size="0.032 0.008"
               euler="1.5708 0 0" rgba="0.3 0.3 0.35 1"/>
       </body>
@@ -32,7 +32,10 @@
   </worldbody>
 
   <actuator>
-    <velocity name="w_l" joint="wl" kv="6" ctrlrange="-10 10"/>
-    <velocity name="w_r" joint="wr" kv="6" ctrlrange="-10 10"/>
+    <!-- kv=0.1：速度伺服增益。小轮（~26g）配大 kv（旧值 6）单步冲量可达
+         24 N·m，直接把车打飞；0.1 + 轮 armature 0.004 + implicitfast 积分
+         下稳定跟踪目标轮速（台架实测直线/原地转向均 ~92-94% 标称值）。 -->
+    <velocity name="w_l" joint="wl" kv="0.1" ctrlrange="-10 10"/>
+    <velocity name="w_r" joint="wr" kv="0.1" ctrlrange="-10 10"/>
   </actuator>
 </mujoco>

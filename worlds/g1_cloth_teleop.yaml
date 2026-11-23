@@ -1,0 +1,128 @@
+name: g1_cloth_teleop            # 宇树 G1 双手抓布入盒遥操作 + π0.5 (openpi) 数据采集
+timestep: 0.004                  # 大步长：物理步数减半（抓布入盒全流程已验证稳定）
+ctrl_period: 8                   # 控制周期 32ms -> 31.25Hz：遥操作跟手，数据集 fps 31.25
+gravity: [0, 0, -9.81]
+integrator: discrete            # flex 的 <elasticity> 在 implicit/implicitfast 下不隐式积分
+impratio: 20
+cone: elliptic
+
+scene:
+  floor:
+    size: [3.0, 3.0]
+    texture: grid
+    friction: 1.0
+  lights:
+    - {pos: [0, 0, 3]}
+    - {pos: [1.2, -1.0, 2.2]}
+  cameras:
+    # 数据集第一视角（第三人称）：站在桌子右前方看机器人身前的前沿。
+    # 折叠动作发生在桌子靠机器人一侧（x≈0.12~0.36，z 0.75~1.0），
+    # 机位必须能同时看到双手与布面，不能放桌子外侧（会被桌面挡住）。
+    - name: showcase
+      pos: [0.95, -1.10, 1.25]
+      quat: [0.7752, 0.5710, 0.1602, 0.2175]
+      fovy: 48
+  objects:
+    # 折叠台：顶面 z=0.75，前沿 x=0.22（桌板悬在脚趾上方，腿在 x≥0.27）
+    - name: table
+      type: box
+      size: [0.25, 0.44, 0.02]
+      pos: [0.47, 0, 0.73]
+      color: "#6B7280"
+      static: true
+    - {name: table_leg_0, type: box, size: [0.02, 0.02, 0.365], pos: [0.27, -0.36, 0.365], color: "#4B5563", static: true}
+    - {name: table_leg_1, type: box, size: [0.02, 0.02, 0.365], pos: [0.67, -0.36, 0.365], color: "#4B5563", static: true}
+    - {name: table_leg_2, type: box, size: [0.02, 0.02, 0.365], pos: [0.27, 0.36, 0.365], color: "#4B5563", static: true}
+    - {name: table_leg_3, type: box, size: [0.02, 0.02, 0.365], pos: [0.67, 0.36, 0.365], color: "#4B5563", static: true}
+    # 放置盒（镜像到左臂侧）：内径 0.19 (x) × 0.28 (y)、壁高 7.5cm，内区
+    # x [0.285, 0.475]、y [0.12, 0.40]，落在单臂可达域（x ≤ 0.44、y ≤ 0.34）
+    # 内，落点取盒心 (0.38, 0.26, 0.80)。布料 0.13 × 0.22 抓取误差 ±1cm
+    # 也不会压壁。底就是桌面（z=0.75），不建与桌面共面的底板。
+    # 壁厚 20mm 且只向外加厚（内腔尺寸不变）：原来 8mm 的薄壁会被张开的
+    # 夹爪和布料顶点压穿（实测夹爪嵌进壁面 7mm），加厚后同一条压测路径只剩
+    # 0.2mm。外表面也因此更靠近布料，所以控制器把布料 y 向随机化收到 ±1cm。
+    - {name: bin_wall_x0, type: box, size: [0.010, 0.144, 0.0375], pos: [0.275, 0.26, 0.7875], color: "#4B5563", static: true}
+    - {name: bin_wall_x1, type: box, size: [0.010, 0.144, 0.0375], pos: [0.485, 0.26, 0.7875], color: "#4B5563", static: true}
+    - {name: bin_wall_y0, type: box, size: [0.099, 0.010, 0.0375], pos: [0.38, 0.110, 0.7875], color: "#4B5563", static: true}
+    - {name: bin_wall_y1, type: box, size: [0.099, 0.010, 0.0375], pos: [0.38, 0.410, 0.7875], color: "#4B5563", static: true}
+    # 毛毯：0.13 × 0.22 m 柔性网格，平铺在桌面上、盒子旁边（布 x [0.335,
+    # 0.465]、y [-0.13, 0.09]，与盒内壁 y=0.116 留 26mm 余量；控制器随机化
+    # 为 ±6mm(x) / ±10mm(y)，布近边最多到 y=0.10，正好贴住加厚后的盒壁外表面
+    # 而不插入）。约 14mm 网格 + 4mm 厚度 + 0.08kg 质量；
+    # 分辨率与自碰撞模式是按帧率实测选定的：16×28 + narrow 时每 tick 物理
+    # 要 97ms（10fps，narrow 是 O(n²) 全对检测，比 bvh/sap 慢一个量级）；
+    # 10×16 + bvh 降到 ~18ms（56fps），保住了 31.25Hz 控制频率。
+    # 网格不能再密：flex 自碰撞的栈内存随顶点数增长，24×40 会直接
+    # mj_stackAlloc 溢出（默认 arena 98MB）。
+    - name: blanket
+      type: cloth
+      size: [0.065, 0.11]
+      pos: [0.40, -0.02, 0.756]
+      cells: [10, 16]
+      mass: 0.08
+      thickness: 0.004
+      young: 20000
+      poisson: 0.3
+      # 与桌面（默认 1.0，双方 priority=0）同优先级取 max，实际布-桌接触
+      # 摩擦是 1.0；改这里的值不会降低桌面摩擦。
+      friction: 0.5
+      self_collide: bvh              # true=narrow（慢 10 倍）；可选 none/narrow/bvh/sap
+      color: "#D97757"
+
+robots:
+  - name: g1
+    model: ../models/zoo/unitree_g1/g1_with_hands.xml
+    # 浮动基座：pos 的 z 就是 freejoint 的初始出生高度（qpos0 由根 body 位姿
+    # 决定）。填 0 会让机器人加载瞬间就瘫在原点，GUI 一打开就是"躺地上"。
+    pos: [0, 0, 0.79]
+    # 左右手都换成 Robotiq 2F-85（触发 auto-strip 删掉自带灵巧手，
+    # 并在两侧腕部生成挂点；GUI「装备」页显示的即这两条）。
+    # pos 覆盖默认安装变换：自动挂点落在「手指根部均值」处（腕局部
+    # x≈0.102），而腕部连杆本体只到 x≈0.012~0.015——夹爪默认装在那里会
+    # 悬空约 5cm。沿挂点 +z（工具轴）回退 0.089m，让 2F85 法兰盘后表面
+    # 正好压在腕部连杆末端面（实测间隙 0.4mm，视觉上完全贴死）。
+    end_effectors:
+      - {model: robotiq_2f85, side: left, pos: [0, 0, -0.089]}
+      - {model: robotiq_2f85, side: right, pos: [0, 0, -0.089]}
+    # 共享世界控制器：跑在内核进程里，才能锁浮动基座、逐物理步给布料
+    # 顶点施加合规抓持力、逐 tick 渲染并把帧写进 LeRobot 数据集。
+    controller: ../controllers/g1_cloth_teleop.py
+    args:
+      shared_world_controller: true
+      dataset: ~/桌面/g1_cloth_teleop_dataset   # LeRobot v2.1（openpi 可直接读）
+      task: put the blanket in the box
+      port: 8091                                # PICO 浏览器访问 http://<PC IP>:8091
+      cam_size: 256                             # 相机正方形分辨率
+      arms: left                                # 单臂：both / left / right（右臂工作空间小，改左臂）
+      control: osc                              # 操作空间控制（ik 可退回绝对 IK）
+      scale: 0.45                               # 手柄 1cm -> TCP 4.5mm，细活更好控
+      # 可选覆盖：home（预备 TCP 位置 [x, y, z]，默认 [0.42, 0.09, 0.86]）、
+      # grasp（是否启用合规抓持力，默认 true）
+    sensors:
+      # 腕部相机：贴装在 2F85 前脸外侧 2.4cm 处（base 局部 -x 为工具前方、
+      # +z 为指尖方向），从指前方回望指尖与布面。滚转按夹爪开合轴（base y）
+      # 对齐，画面里两指左右对称、桌沿水平；不能用世界 +z 定滚转，俯视时
+      # 那样会把画面拧斜约 24°。瞄准点取指尖前方 4.5cm 的布面，指尖落在
+      # 画面中部、布料与桌面占下半屏。fovy 85 才同时装得下两指和布。
+      # 左右 base body 之间存在绕工具轴的 180° 滚转，pos/quat 不能照抄：
+      # 这组值由「左机位取 y 镜面 → 分别换算到各自 base 局部系」得到。
+      - name: cam_left_wrist
+        type: camera
+        body: gripper_left/base
+        pos: [-0.062, 0.02, 0.0]
+        quat: [-0.14573, 0.703, 0.69193, -0.07611]
+        fovy: 85
+      - name: cam_right_wrist
+        type: camera
+        body: gripper_right/base
+        pos: [0.06197, 0.0203, -0.00029]
+        quat: [-0.14192, 0.70389, -0.69141, 0.07972]
+        fovy: 85
+
+task:
+  max_ticks: 1000000             # 遥操作长会话；时长由 GUI/命令行控制
+
+runtime:
+  realtime: true                 # 遥操作必须按墙钟实时推进，手柄动作才跟手
+  controller_timeout: 600        # 三路渲染 + 写帧可能超过默认 100ms
+  timeout_policy: last_ctrl

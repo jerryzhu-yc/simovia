@@ -50,8 +50,8 @@ class TestSensorSchema:                        # ------------------------------ 
         assert arm.sensors[4].quat == (0.7071, 0.7071, 0.0, 0.0)
 
     def test_unknown_type(self):
-        w = _arm_world([{"name": "s", "type": "lidar", "joint": "j1"}])
-        with pytest.raises(WorldError, match="未知传感器类型 'lidar'"):
+        w = _arm_world([{"name": "s", "type": "sonar", "joint": "j1"}])
+        with pytest.raises(WorldError, match="未知传感器类型 'sonar'"):
             parse_world(w)
 
     def test_encoder_requires_joint(self):

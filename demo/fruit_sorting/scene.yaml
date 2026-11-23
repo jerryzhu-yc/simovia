@@ -14,6 +14,18 @@ scene:
     - 0.3
     - 0
     - 3
+  cameras:
+  - name: showcase
+    pos:
+    - 1.75
+    - -1.45
+    - 1.4
+    quat:
+    - 0.736363
+    - 0.564546
+    - 0.226887
+    - 0.295939
+    fovy: 45
   objects:
   - name: table
     type: box
