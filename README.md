@@ -11,7 +11,7 @@ Simovia 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿
         └───────────────┬──────────────────────────────┘
                         │ stdio JSON-RPC (MCP)
         ┌───────────────▼──────────────────────────────┐
-        │           MCP 工具层（12 个工具）             │
+        │           MCP 工具层（17 个工具）             │
         │  load_world / run / get_observation / ...    │
         └───────────────┬──────────────────────────────┘
                         │
@@ -25,6 +25,14 @@ Simovia 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿
    │ while robot.step│            │  （独立 OS 进程） │
    └─────────────────┘            └──────────────────┘
 ```
+
+## 目录
+
+- [特性](#特性) · [安装](#安装) · [快速开始](#快速开始)
+- [世界文件格式](#世界文件格式) · [末端夹爪装配](#末端夹爪装配4-款2fg7--2f-85--umi--leap) · [控制器 API](#控制器-apiwebots-风格) · [RL 训练接口](#rl-训练接口gymnasium)
+- [机器人模型库](#机器人模型库mujoco-menagerie) · [导入 URDF](#导入-urdf含-solidworks) · [从零造机器人](#从零造机器人连杆树--旋转矩阵) · [AI 场景生成](#ai-场景生成-agent) · [桌面 GUI](#桌面-gui-智能工作台m5)
+- [演示合集](#演示合集) · [视觉水果分拣与手眼标定](#视觉水果分拣与独立手眼标定) · [PICO 遥操作](#pico-遥操作vr-采集-lerobot-数据集smolvla-微调链路)
+- [测试](#测试) · [项目结构](#项目结构) · [Roadmap](#roadmap) · [已知取舍](#已知取舍)
 
 ## 特性
 
@@ -62,7 +70,7 @@ python -m simovia doctor
 python -m simovia gui
 ```
 
-> 仓库自带 34 个机器人模型资产（`models/zoo/`，约 600MB）。依赖安装完成且资产齐全后，模型库和本地 demo 可离线运行；AI 功能按所配置的服务连接。
+> 仓库自带 35 个机器人模型资产（`models/zoo/`，约 600MB）。依赖安装完成且资产齐全后，模型库和本地 demo 可离线运行；AI 功能按所配置的服务连接。
 
 `requirements.txt` 包含核心、GUI、RL 和 pytest，**不包含视觉 demo 的 OpenCV**。按需安装时，拆分文件是各自能力的依赖清单，需要显式组合：
 
@@ -173,7 +181,7 @@ start.bat                      # 双击即启动 GUI（快捷方式即指向它�
 | 首次运行弹 Windows 防火墙提示 | 点"允许"——内核 ZMQ 只绑 `127.0.0.1` 本机回环，不对外通信 |
 | 远程桌面（RDP）中渲染失败或断开后异常 | 在本机桌面会话验证，并检查远程会话的图形驱动支持；无 GUI 的 `run` 若使用相机仍需可用的离屏渲染上下文 |
 | 渲染报 `wgl` 相关错误 | 安装或更新显卡厂商的 OpenGL 驱动，检查远程会话的图形支持，再运行 `doctor`；不要将 Linux 的 `MUJOCO_GL=osmesa` 设置直接套用到 Windows |
-| `mujoco-menagerie` 模型下载慢/失败 | 正常不需要联网：34 个模型资产已随仓库自带（`models/zoo/`，约 600MB）。仅当该目录被删时才回退 `mujoco-menagerie` 下载——重新 clone 仓库即可恢复，无需任何网络处理 |
+| `mujoco-menagerie` 模型下载慢/失败 | 正常不需要联网：35 个模型资产已随仓库自带（`models/zoo/`，约 600MB）。仅当该目录被删时才回退 `mujoco-menagerie` 下载——重新 clone 仓库即可恢复，无需任何网络处理 |
 | 中文/空格路径 | 完全支持（pathlib 全程处理），但建议路径不含空格避免个别工具链问题 |
 | sw2urdf 导出的 URDF 导入后 mesh 报错 | mesh 路径按 urdf 所在目录解析（`package://` 前缀自动剥除）；编码兼容 UTF-8 与 GBK（中文 Windows 导出常见），确认 mesh 是 STL/OBJ 且 `<collision>` 里有几何 |
 
@@ -300,7 +308,7 @@ python -m simovia inspect worlds/pick_cube.yaml
 python -m simovia mcp
 ```
 
-在支持 MCP 的客户端里把它注册为 stdio 服务器，Agent 即可使用 12 个工具完成闭环：
+在支持 MCP 的客户端里把它注册为 stdio 服务器，Agent 即可使用 17 个工具完成闭环：
 
 | 工具 | 说明 |
 |---|---|
@@ -535,7 +543,7 @@ obs, reward, terminated, truncated, info = env.step(action)
 
 ## 机器人模型库（MuJoCo Menagerie）
 
-预配置 34 个著名机器人（`simovia/zoo.py`），覆盖八大类：
+预配置 35 个著名机器人（`simovia/zoo.py`），覆盖八大类：
 
 - **四足（6）**：Unitree Go1 / Go2 / A1、ANYmal C、Boston Dynamics Spot、Google Barkour VB
 - **人形（6）**：Unitree H1 / G1、ROBOTIS OP3、PAL TALOS、Booster T1、Berkeley Humanoid
@@ -560,7 +568,7 @@ tools.load_world(yaml_path=r["world"])
 tools.run(ticks=200)
 ```
 
-生成的 `controller.py` 模板带完整执行器清单与 API 注释——AI Agent 可以直接读清单后改写控制律，人类用户用任意编辑器改写。**模型资产随仓库自带**：34 个模型完整目录（XML + mesh + LICENSE，约 600MB）在 `models/zoo/<key>/`，clone 完即可离线使用，首次点模型库不联网；仅当该目录缺失时才回退可选包 `mujoco-menagerie` 的下载能力。
+生成的 `controller.py` 模板带完整执行器清单与 API 注释——AI Agent 可以直接读清单后改写控制律，人类用户用任意编辑器改写。**模型资产随仓库自带**：35 个模型完整目录（XML + mesh + LICENSE，约 600MB）在 `models/zoo/<key>/`，clone 完即可离线使用，首次点模型库不联网；仅当该目录缺失时才回退可选包 `mujoco-menagerie` 的下载能力。
 
 > 已知语义：attach 时子模型的 MuJoCo option（impratio / cone 等）被父世界值覆盖——接触求解参数以世界 YAML 为准（`worlds/zoo` 生成模板已按各模型类目调好 floor 摩擦）。
 
@@ -711,7 +719,7 @@ GUI（`python -m simovia gui`）从可视化扩展为完整的机器人编程工
 
 ### 1. 运动演示一键播放
 
-模型库窗口选中任意机器人 → "生成演示并运行"按钮，自动生成内置运动演示并加载世界 → 自动 Run。34 个模型全部预配置运动（见 `simovia/zoo.py`）：
+模型库窗口选中任意机器人 → "生成演示并运行"按钮，自动生成内置运动演示并加载世界 → 自动 Run。35 个模型全部预配置运动（见 `simovia/zoo.py`）：
 
 - **四足小跑（trot）**：Unitree Go1 / Go2 / A1、ANYmal C、Boston Dynamics Spot——按对角腿相位（FL-RR / FR-RL）交替摆动；CPG 控制律 `freq`/`amp`/`lag` 在 `zoo.py` 顶部 `_trot` 工厂生成，落地即稳定行走
 - **机械臂扫掠**：Franka Panda / FR3、KUKA iiwa 14、Kinova Gen3、UR5e / UR10e、xArm7、Lite 6、WidowX 250s、SO-ARM100、ARX L5、AgileX Piper 等——多关节正弦相位机，base 绕 z 旋转 + 末端周期摆动
@@ -758,7 +766,7 @@ GUI 右侧第五个 tab"Agent"：聊天式下达任务给 AI（OpenAI 兼容 cha
 
 配置保存到 `~/.simovia/agent.json`，`chmod 0600` 保护 api_key。配好后聊天下达任务（Enter 发送，Shift+Enter 换行）：
 
-- Agent 拿到的是 OpenAI function calling 格式工具清单（`bridge.to_openai_tools`）——MCP 的 12 个工具（含 `stop` 停止仿真）+ 3 个本地工具（`write_file`/`read_file` 限定在世界目录内防越界；`read_mujoco_doc` 按需读 MuJoCo 4.0 随包自带的官方手册与 agent skills，避免凭记忆写模型参数）
+- Agent 拿到的是 OpenAI function calling 格式工具清单（`bridge.to_openai_tools`）——MCP 的 17 个工具（含 `stop` 停止仿真）+ 3 个本地工具（`write_file`/`read_file` 限定在世界目录内防越界；`read_mujoco_doc` 按需读 MuJoCo 4.0 随包自带的官方手册与 agent skills，避免凭记忆写模型参数）
 - 工具循环：Agent 返回文本 → 显示在聊天框；返回 tool_calls → MCP 同步等回复（QEventLoop + 30s QTimer 兜底）→ 显示工具调用与结果 → 继续下一轮直到 Agent 不再调工具
 - 系统提示词包含：身份（机器人仿真助手）、当前世界名、所有工具清单（MCP + 本地）、建议工作流（read_world → load_world → run → get_observation）
 
@@ -784,6 +792,38 @@ python examples/train_ppo_go2.py
 ```
 
 奖励设计：`forward（5× dz_root）+ 高度罚（-3 × |z - 0.30|）+ 能耗正则（-0.01 × Σ a²）+ 跌倒终止（rootz < 0.15）`。世界用 `zoo.generate("unitree_go2")` 生成 + 删 controller（env 直驱）+ 保留 `integrator=implicitfast` / `impratio=100` / `ctrl_period=8`——四足稳定的关键参数。
+
+## 演示合集
+
+所有场景都在仓库内，可直接加载运行；演示视频与最新画面见[展示站](https://jerryzhu-yc.github.io/simovia/)。
+
+| 演示 | 内容 | 入口 |
+|---|---|---|
+| 雷达建图与自主导航 | 差速小车绕圈建图 → 维诺骨架 → A* → 纯跟踪 | `worlds/lidar_nav.yaml` |
+| G1 收拾毛毯 · 脚本叠毯 | 双臂离线 IK 关键帧把柔性毛毯对折 | `python -m demo.cloth_folding.run` |
+| G1 收拾毛毯 · 遥操作采集 | PICO 双手柄 + 2F85 采集 LeRobot 数据集 | `worlds/g1_cloth_teleop.yaml` |
+| G1 收拾毛毯 · 数据回放 | 读数据集 action 在随机化场景重渲染增强 | `worlds/g1_cloth_augment.yaml` |
+| Go2 × G1 × UR5e 联合维修 | 三机接触交接完成维修任务 | [demo/maintenance_relay](demo/maintenance_relay/README.md) |
+| 视觉水果分拣 | 腕部 RGB → HSV → 2.5D 抓取入框 | [demo/fruit_sorting](demo/fruit_sorting/README.md) |
+| 腕部相机手眼标定 | Panda / UR5e 眼在手上标定 | [demo/hand_eye](demo/hand_eye/README.md) |
+| SmolVLA 策略闭环 | SO-101 遥操作采集 → 微调 → 推理 | [so101-smolvla-demo](https://github.com/jerryzhu-yc/so101-smolvla-demo) |
+
+### 雷达建图与自主导航
+
+`worlds/lidar_nav.yaml`：5.2m × 4.2m 房间、五处静态障碍，差速小车车顶装 60 束 2D 激光雷达。控制器 `controllers/lidar_nav.py` 分三步：外圈巡逻建图（log-odds 占据栅格实时更新）→ 对可通行区做障碍膨胀与 Zhang-Suen 细化得到 1px 维诺骨架，在骨架上 A* 搜路 → 纯跟踪沿路径行驶到目标。建图、骨架、A* 路径经叠加层实时显示在 GUI「雷达建图」面板，AI Agent 也可用 MCP 工具 `lidar_map` 直接读取。
+
+### G1 收拾毛毯：脚本叠毯 / 遥操作 / 数据回放
+
+三套世界共用 G1 双臂 + 2F85 夹爪 + 桌面毛毯，分别覆盖「自动演示 / 采集 / 增强」：
+
+- **脚本叠毯**（`worlds/g1_cloth_fold.yaml`）：毛毯是 flexcomp 二维网格柔体（膜/弯刚度 + 自碰撞）。启动时把每个关键帧目标解成 7 关节角，运行中余弦插值；抓取用有限刚度的合规抓持力锁定指间布顶点，布料本体仍是完整柔体仿真。命令行可录视频：
+  ```bash
+  python -m demo.cloth_folding.run                  # 跑一遍并打印折叠指标
+  python -m demo.cloth_folding.run --video out.mp4  # 同时录制视频
+  ```
+  也可在 GUI 里加载世界，由 `demo/cloth_folding/controller.py` 作内核内共享控制器预览。
+- **遥操作采集**（`worlds/g1_cloth_teleop.yaml`）：PICO 头显自带浏览器连控制器，左右手柄增量映射到双臂 TCP，扳机控制夹爪，A 键开关录制；每控制 tick 采 cam_high + 腕部相机，落成 LeRobot v2.1（16 维双臂 state/action，openpi π0.5 loader 可直接读）。
+- **数据回放**（`worlds/g1_cloth_augment.yaml`）：读取已有 episode 的 action 在重新随机化（布料颜色/摆放、桌面、灯光、机位、后处理）的场景里重放同一段关节轨迹，并把新帧追加回数据集。**会写回源数据集**，先复制一份再跑。
 
 ## 视觉水果分拣与独立手眼标定
 
@@ -885,32 +925,40 @@ python -m pytest tests/ -q
 simovia/
 ├── simovia/
 │   ├── kernel/sim.py      # 仿真内核：ZMQ ROUTER + 栅栏同步推进
-│   ├── kernel/task.py    # 任务评估 + 观测组装纯函数（内核与 RL env 共用）
+│   ├── kernel/mapping.py  # 雷达建图：log-odds 占据栅格（内核实时累积）
+│   ├── kernel/task.py     # 任务评估 + 观测组装纯函数（内核与 RL env 共用）
 │   ├── rl_env.py          # gymnasium.Env 包装（RL 训练接口）
-│   ├── zoo.py              # 机器人模型库（Menagerie 34 个预配置模型 + 运动演示生成器）
-│   ├── robot_spec.py       # 连杆树描述 → MjSpec（造机器人面板的数据层/矩阵教学）
-│   ├── grippers.py         # 夹爪库（4 款：2FG7/2F-85/UMI/LEAP 灵巧手，四臂 mount 标定）
+│   ├── zoo.py             # 机器人模型库（Menagerie 35 个预配置模型 + 运动演示生成器）
+│   ├── robot_spec.py      # 连杆树描述 → MjSpec（造机器人面板的数据层/矩阵教学）
+│   ├── grippers.py        # 夹爪库（4 款：2FG7/2F-85/UMI/LEAP 灵巧手，四臂 mount 标定）
 │   ├── controller.py      # 控制器侧 Robot 客户端（用户唯一 API）
+│   ├── teleop.py          # 遥操作：OSC 操作空间控制与手柄输入桥接
+│   ├── recorder.py        # episode 录制（观测 → 落盘）
+│   ├── lerobot_writer.py  # LeRobot v2.1 增量写（每集 mp4 + parquet）
+│   ├── lerobot_v30.py     # v2.1 → v3.0 就地升级（lerobot >= 0.6 直接训练）
 │   ├── world/schema.py    # YAML → dataclass，前置校验（含 gripper/integrator/quat）
 │   ├── world/builder.py   # spec → MjSpec → MuJoCo 模型编译（机器人+夹爪统一装配）
 │   ├── supervisor.py      # 快照/teleport（逐位可复现）
-│   ├── mcp_server.py      # MCP stdio 服务器（零依赖 JSON-RPC）
+│   ├── mcp_server.py      # MCP stdio 服务器（17 个工具，零依赖 JSON-RPC）
 │   ├── render.py          # 离屏渲染 + 手写 PNG 编码（screenshot 实现层）
 │   ├── agent/             # GUI Agent 控制台后端（config/bridge/local_tools/
 │   │                        # worker）+ scene_agent（AI 场景生成闭环）
 │   ├── gui/               # PySide6 桌面工作台（app/render_view/panels[含装备页]/
-│   │                        # robot_builder[造机器人面板]/mcp_client）
+│   │                        # robot_builder[造机器人]/map_panel[雷达建图]/mcp_client）
 │   ├── scene_gen.py       # 6 个确定性场景模板（含码垛分区 pallet）
 │   └── cli.py             # run / inspect / mcp / gui / scenegen 命令行
-├── models/                # 机器人 MJCF（demo_arm 三指臂、diff_car）
-│                          # + grippers/{onrobot_2fg7,robotiq_2f85,umi_gripper,leap_hand}
-│                          # + zoo/<key>/：34 个 Menagerie 模型资产随仓库自带（离线即用）
-├── controllers/           # 示例控制器（pick_place 桌面抓取相位机等）
-├── worlds/                # 示例世界（pick_cube、twin_arms、empty——GUI 启动默认加载）
-├── examples/             # PPO 训练示例（train_ppo_go2.py，sb3 可选依赖）
-├── start.bat / create_desktop_shortcut.bat / simovia.ico
-│                            # Windows 双击启动 + 桌面快捷方式（项目图标）
-└── tests/                 # 自动化回归测试（含 URDF 导入/AI 场景生成/夹爪/码垛/造机器人）
+├── models/                # 机器人 MJCF（demo_arm、diff_car）+ 4 款夹爪
+│                          # + zoo/<key>/：35 个 Menagerie 模型资产随仓库自带（离线即用）
+├── worlds/                # 17 个示例世界（pick_cube / twin_arms / lidar_nav /
+│                          #   g1_cloth_{fold,teleop,augment} / so101_{pico_sort,policy_eval} 等）
+├── controllers/           # 示例控制器（pick_place / lidar_nav / g1_cloth_* / so101_*）
+├── demo/                  # 场景 demo（cloth_folding / fruit_sorting / hand_eye / maintenance_relay）
+├── examples/              # PPO 训练示例（train_ppo_go2.py，sb3 可选依赖）
+├── site/                  # 展示站（Vite + React，CI 自动部署 GitHub Pages）
+├── docs/                  # 设计文档与里程碑实施计划
+├── start.bat / start.sh / create_desktop_shortcut.bat / simovia.ico
+│                          # Windows / Linux 启动脚本 + 桌面快捷方式（项目图标）
+└── tests/                 # 自动化回归测试（URDF/AI 场景/夹爪/码垛/造机器人/导航/遥操作）
 ```
 
 ## Roadmap
@@ -920,11 +968,11 @@ simovia/
 - [x] M2 传感器系统 + MCP screenshot —— 五类传感器（encoder / IMU / 触觉 / 关节力矩 / 相机）YAML 声明进观测流，bit 级守护保证不改变物理轨迹；`screenshot` 工具让 Agent 截取仿真画面（自由机位或声明的相机机位）
 - [x] M3 RL 训练接口 —— `SimoviaEnv`（gymnasium.Env）：YAML 世界即确定性环境，动作/观测/奖励语义与内核一处实现（`kernel/task.py`），同 YAML 两遍轨迹逐位一致
 - [x] M1 心跳机制 —— 控制器 `_recv` 100ms poller 轮询 + `getppid` 孤儿检测：内核进程一死控制器必被 init/subreaper 收养（父 pid 变化），随即 `RuntimeError("内核已退出")` 退出；思考时间无限等待语义不变
-- [x] M4 机器人模型库 —— MuJoCo Menagerie 官方模型一键接入（34 个预配置著名机器人，覆盖四足/人形/机械臂/灵巧手/双臂/无人机/移动操作），`zoo_create` 生成世界 + 控制器模板，GUI 点击-打开-编程闭环
-- [x] M5 运动演示与智能工作台 —— 34 个模型一键运动演示（四足 trot / 机械臂扫掠 / 人形摆臂 / 无人机振荡）+ GUI 位姿编辑面板（xyz+欧拉角）+ 内置 Python 代码编辑器（保存并运行）+ Agent 控制台（OpenAI 兼容 chat API 调用，AI 直接生成场景/写代码/运行验证）+ PPO 训练示例（`examples/train_ppo_go2.py`）
+- [x] M4 机器人模型库 —— MuJoCo Menagerie 官方模型一键接入（35 个预配置著名机器人，覆盖四足/人形/机械臂/灵巧手/双臂/无人机/移动操作），`zoo_create` 生成世界 + 控制器模板，GUI 点击-打开-编程闭环
+- [x] M5 运动演示与智能工作台 —— 35 个模型一键运动演示（四足 trot / 机械臂扫掠 / 人形摆臂 / 无人机振荡）+ GUI 位姿编辑面板（xyz+欧拉角）+ 内置 Python 代码编辑器（保存并运行）+ Agent 控制台（OpenAI 兼容 chat API 调用，AI 直接生成场景/写代码/运行验证）+ PPO 训练示例（`examples/train_ppo_go2.py`）
 - [x] M6 夹具/传感器装配工作台 —— OnRobot 2FG7 夹爪入库（site-attach 到 UR5e/UR10e/xArm7/Panda，mount 按四臂腕部几何逐臂标定，夹爪与法兰同轴贴合）+ GUI"装备"页一键挂爪/拆爪与五类传感器表单式增删（自动改 YAML 重载）+ 码垛分区场景模板 pallet（UR5e+2FG7，A 区取料→B 区码放，IK 验证全部取放点可达）+ GUI"新建场景"对话框 + UR10e 入库
 - [x] M7 URDF/SolidWorks 导入 + AI 场景生成 —— `robots[].model` 直读 URDF（mesh 路径重写 / package:// 剥除 / 逐关节补 motor，SolidWorks sw2urdf 导出即用）+ GUI 导入模型入口（贴地出生自动计算）+ AI 场景生成 Agent（自然语言 → 世界 YAML，本地双重校验失败回喂重试，`zoo://key` 模型引用）+ GUI 分栏自由拖动（面板滚动条化，视口可放大）
-- [x] M8 模型库扩容 + 从零造机器人 —— 模型库 14 → 34 个（新增 9 机械臂 / 2 四足 / 4 人形 / 1 双足 / 2 无人机 / 2 移动操作，全部资产自带离线可用），夹爪库 1 → 4 款（新增 Robotiq 2F-85 / UMI Gripper / LEAP Hand 16 自由度灵巧手，四臂 mount 逐臂标定，灵巧手 `actuators`+`poses` 多执行器开合）；连杆树 YAML + `robots[].spec` 内联定义 + GUI「造机器人」面板（连杆树编辑 / 实时预览 / R_rel + R_world 旋转矩阵 / RGB 轴标 / 保存 YAML）
+- [x] M8 模型库扩容 + 从零造机器人 —— 模型库 14 → 34 个（新增 9 机械臂 / 2 四足 / 4 人形 / 1 双足 / 2 无人机 / 2 移动操作，全部资产自带离线可用），后续随 SO-101 遥操作采集追加 `so101_lerobot` 共 35 个，夹爪库 1 → 4 款（新增 Robotiq 2F-85 / UMI Gripper / LEAP Hand 16 自由度灵巧手，四臂 mount 逐臂标定，灵巧手 `actuators`+`poses` 多执行器开合）；连杆树 YAML + `robots[].spec` 内联定义 + GUI「造机器人」面板（连杆树编辑 / 实时预览 / R_rel + R_world 旋转矩阵 / RGB 轴标 / 保存 YAML）
 
 ## 已知取舍
 

@@ -185,7 +185,7 @@ function Hero() {
         </div>
 
         <p className="mt-5 font-mono text-[11px] text-slate-500">
-          35 个机器人模型 · 13 个示例世界 · 16 个 MCP 工具 · 31.25 Hz 策略闭环
+          35 个机器人模型 · 17 个示例世界 · 17 个 MCP 工具 · 31.25 Hz 策略闭环
         </p>
       </div>
     </section>
@@ -256,7 +256,7 @@ function AgentCoding() {
         <SectionHead
           kicker="Agent Coding"
           title="一句话改世界，Agent 和 GUI 走同一条链路"
-          desc="零依赖 stdio JSON-RPC MCP 服务器，16 个工具覆盖读世界、改 YAML、跑仿真、截图观察。下面是一次真实的改机位过程：Agent 不碰内部 id，只改 YAML，改完立刻重跑验证。"
+          desc="零依赖 stdio JSON-RPC MCP 服务器，17 个工具覆盖读世界、改 YAML、跑仿真、截图观察。下面是一次真实的改机位过程：Agent 不碰内部 id，只改 YAML，改完立刻重跑验证。"
         />
 
         <div className="mt-10 grid gap-5 lg:grid-cols-[1.05fr_0.95fr]">
@@ -265,7 +265,7 @@ function AgentCoding() {
               <span className="font-mono text-xs text-slate-500">
                 agent · mcp stdio
               </span>
-              <span className="font-mono text-[11px] text-mint">16 tools</span>
+              <span className="font-mono text-[11px] text-mint">17 tools</span>
             </div>
             <div className="space-y-2.5 px-4 py-4 font-mono text-[12px] leading-6">
               {AGENT_LOG.map((l, i) =>

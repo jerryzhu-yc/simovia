@@ -22,7 +22,7 @@ export const FEATURES = [
   {
     icon: "agent",
     title: "MCP 原生 Agent 接入",
-    en: "16 tools · screenshot",
+    en: "17 tools · screenshot",
     body: "零依赖自实现的 stdio JSON-RPC MCP 服务器，任何支持 MCP 的 Agent 都能读世界、改 YAML、重跑、截图观察结果，形成感知—决策闭环。",
   },
   {
@@ -97,6 +97,7 @@ export const MCP_TOOLS = [
   ["get_robot_manifest", "查机器人能力清单"],
   ["camera_frame", "抓取相机 RGB"],
   ["camera_stream", "实时画面推流"],
+  ["lidar_map", "读雷达建图与叠加层"],
   ["screenshot", "整场景截图"],
   ["save_state", "保存仿真状态"],
   ["load_state", "恢复仿真状态"],
