@@ -123,7 +123,7 @@ function Hero() {
           ))}
         </div>
 
-        <div className="mt-7 grid items-end gap-8 lg:grid-cols-[1.15fr_0.85fr]">
+        <div className="mt-7 grid items-start gap-8 lg:grid-cols-[1.15fr_0.85fr]">
           <div>
             <h1 className="max-w-3xl text-4xl font-semibold leading-tight tracking-tight text-slate-50 md:text-6xl">
               把机器人世界
@@ -201,11 +201,13 @@ function Features() {
         desc="不依赖商业仿真器，核心只要求 mujoco / numpy / pyyaml / pyzmq；模型资产随仓库自带，clone 完离线可用。"
       />
 
-      <div className="mt-10 grid auto-rows-fr gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {FEATURES.map((f) => (
+      <div className="mt-10 grid auto-rows-fr gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {FEATURES.map((f, i) => (
           <article
             key={f.title}
-            className="group flex flex-col rounded-2xl border border-line bg-panel/70 p-5 transition hover:-translate-y-0.5 hover:border-mint/40 hover:shadow-lg hover:shadow-mint/5"
+            className={`group flex flex-col rounded-2xl border border-line bg-panel/70 p-5 transition hover:-translate-y-0.5 hover:border-mint/40 hover:shadow-lg hover:shadow-mint/5 ${
+              i === FEATURES.length - 1 ? "md:col-span-2 lg:col-span-1" : ""
+            }`}
           >
             <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-line bg-ink text-mint">
               <Icon name={f.icon} />
@@ -294,8 +296,13 @@ function AgentCoding() {
                 MCP 工具面
               </p>
               <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5">
-                {MCP_TOOLS.map(([name, desc]) => (
-                  <div key={name} className="flex items-baseline gap-2">
+                {MCP_TOOLS.map(([name, desc], i) => (
+                  <div
+                    key={name}
+                    className={`flex items-baseline gap-2 ${
+                      i === MCP_TOOLS.length - 1 ? "col-span-2" : ""
+                    }`}
+                  >
                     <span className="font-mono text-[11px] text-mint/90">
                       {name}
                     </span>
@@ -339,11 +346,40 @@ function DemoMedia({ demo }) {
 }
 
 function DemoCard({ demo }) {
+  const wide = demo.featured ? "md:col-span-2" : "";
+  if (demo.kind === "link") {
+    return (
+      <a
+        href={demo.href}
+        target="_blank"
+        rel="noreferrer"
+        className={`group flex flex-col items-center justify-center gap-3 rounded-2xl border border-line bg-panel px-8 py-10 text-center transition hover:border-mint/40 ${wide}`}
+      >
+        <span className="flex h-12 w-12 items-center justify-center rounded-xl border border-line bg-ink text-mint">
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M7 17L17 7M8 7h9v9" />
+          </svg>
+        </span>
+        <p className="text-sm font-semibold text-slate-100">{demo.title}</p>
+        <p className="max-w-xs text-xs leading-5 text-slate-400">{demo.body}</p>
+        <span className="font-mono text-[11px] text-slate-500 transition group-hover:text-mint">
+          ↗ {demo.meta}
+        </span>
+      </a>
+    );
+  }
   return (
     <figure
-      className={`group overflow-hidden rounded-2xl border border-line bg-panel transition hover:border-mint/40 ${
-        demo.featured ? "md:col-span-2" : ""
-      }`}
+      className={`group overflow-hidden rounded-2xl border border-line bg-panel transition hover:border-mint/40 ${wide}`}
     >
       <DemoMedia demo={demo} />
       <figcaption className="px-5 py-4">
@@ -367,17 +403,18 @@ function Demos() {
         <SectionHead
           kicker="演示"
           title="真实仿真画面，实时录制"
-          desc="下面每一段都来自仓库里的世界与控制器：3D 实车与雷达建图同步、多机协同、G1 遥操作与数据回放、视觉分拣、抓取与 VLA 闭环。"
+          desc="下面每一段都来自仓库里的世界与控制器：AI 一句话生成世界并跑通抓取、3D 实车与雷达建图同步、多机协同、G1 遥操作与数据回放、视觉分拣、抓取与 VLA 闭环。"
         />
 
-        <div className="mt-10 grid gap-5 md:grid-cols-2">
+        <div className="mt-10 grid grid-flow-dense gap-5 md:grid-cols-2">
           {DEMOS.map((demo) => (
-            <DemoCard key={demo.src} demo={demo} />
+            <DemoCard key={demo.src || demo.href} demo={demo} />
           ))}
         </div>
 
         <div className="mt-6 rounded-2xl border border-line bg-panel/40 px-5 py-4 font-mono text-xs leading-6 text-slate-500">
           <span className="text-slate-300">复现入口：</span>
+          GUI Ctrl+G「AI 生成场景」/ python scripts/make_agent_video.py ·
           python -m simovia run worlds/lidar_nav3d.yaml ·
           python -m simovia run worlds/lidar_nav.yaml ·
           python -m demo.maintenance_relay · python -m demo.fruit_sorting ·
@@ -416,7 +453,7 @@ function Onboarding() {
               <video
                 src={o.video}
                 poster={o.img}
-                className="w-full bg-ink object-cover"
+                className="aspect-video w-full bg-ink object-cover"
                 autoPlay
                 loop
                 muted
@@ -427,7 +464,7 @@ function Onboarding() {
               <img
                 src={o.img}
                 alt={o.title}
-                className="w-full bg-ink object-cover"
+                className="aspect-video w-full bg-ink object-cover"
                 loading="lazy"
               />
             )}

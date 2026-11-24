@@ -148,6 +148,15 @@ export const ONBOARD = [
 export const DEMOS = [
   {
     kind: "video",
+    src: "./assets/demos/agent_scene_gen.mp4",
+    tag: "AI 生成",
+    title: "一句话需求，Agent 生成世界并跑通抓取",
+    body: "右侧是 Agent 会话实录：本地 Ollama qwen2.5-coder 微调模型接到一句自然语言需求，直接产出平台原生世界 YAML——工作台、三色方块、Panda+2FG7、空中成功区一应俱全；生成的方块半尺寸写错时自动回喂错误让模型修正，parse+编译校验通过后 save_world / load_world / run / screenshot 逐个工具调用，返回值全部真实。左侧 MuJoCo 视口就是被生成出来的世界本体：Panda 从高位接近、直线下探、闭合夹起红色方块，抬进空中成功区并保持。",
+    meta: "Ollama qwen2.5-coder:7b · 生成-校验-回喂闭环",
+    featured: true,
+  },
+  {
+    kind: "video",
     src: "./assets/demos/lidar_nav3d.mp4",
     tag: "3D 雷达 · 全屋清扫",
     title: "3D 点云建图 × 2D 覆盖导航 × 实车行驶（三视图同步）",
@@ -165,20 +174,20 @@ export const DEMOS = [
   },
   {
     kind: "video",
+    src: "./assets/demos/g1_cloth.mp4",
+    tag: "遥操作 · 数据回放",
+    title: "宇树 G1 收拾毛毯：遥操作采集 + LeRobot 回放",
+    body: "PICO 手柄遥操作 G1 的 2F85 夹爪，把桌上的毛毯抓起放进盒子；第三人称与腕部两路相机同步采集，逐帧记录关节状态与动作，形成 LeRobot v2.1 数据集（148 集 / 51,728 帧 / 31.25 Hz）。视频按采集到的动作序列逐帧回放，左为 cam_high、右为 cam_left_wrist，底部进度条对应数据集内的时间轴。",
+    meta: "G1 + 2F85 · 148 集 · 31.25 Hz · 双相机",
+  },
+  {
+    kind: "video",
     src: "./assets/demos/maintenance_relay.mp4",
     tag: "多机器人协同",
     title: "Go2 × G1 × UR5e 联合维修",
     body: "UR5e 抓取维修模块装到 Go2 运输架，Go2 配送到维修工位，G1 取件放入导向槽并按下复位按钮。三机各自独立控制器、统一时钟调度，全程靠接触与摩擦完成交接。",
     meta: "三台机器人 · 65s · 1100×720",
     featured: true,
-  },
-  {
-    kind: "video",
-    src: "./assets/demos/g1_cloth.mp4",
-    tag: "遥操作 · 数据回放",
-    title: "宇树 G1 收拾毛毯：遥操作采集 + LeRobot 回放",
-    body: "PICO 手柄遥操作 G1 的 2F85 夹爪，把桌上的毛毯抓起放进盒子；第三人称与腕部两路相机同步采集，逐帧记录关节状态与动作，形成 LeRobot v2.1 数据集（148 集 / 51,728 帧 / 31.25 Hz）。视频按采集到的动作序列逐帧回放，左为 cam_high、右为 cam_left_wrist，底部进度条对应数据集内的时间轴。",
-    meta: "G1 + 2F85 · 148 集 · 31.25 Hz · 双相机",
   },
   {
     kind: "video",
@@ -203,5 +212,13 @@ export const DEMOS = [
     title: "SmolVLA 驱动 SO-101（成功片段）",
     body: "这段是策略真正跑通的完整片段：两路相机 + 语言指令输入，按 chunk 输出关节目标，31.25Hz 闭环；红、蓝方块依次入盒，夹爪释放后方块稳定保持，控制器判定 success=true。",
     meta: "SmolVLA · 31.25 Hz · 成功片段",
+  },
+  {
+    kind: "link",
+    href: "https://github.com/jerryzhu-yc/simovia-playground",
+    tag: "Playground",
+    title: "13 个 demo 分支，逐个可复现",
+    body: "每个 demo 独立分支 + README 复现流程：环境、命令、世界文件齐备，clone 即跑。",
+    meta: "simovia-playground",
   },
 ];
