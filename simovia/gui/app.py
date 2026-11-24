@@ -51,6 +51,7 @@ from simovia.gui.robot_builder import RobotBuilderDialog
 from simovia.gui.state import EditHistory, UiState, text_diff
 from simovia.gui.teleop_panel import TeleopPanel
 from simovia.gui.map_panel import RadarMapPanel
+from simovia.gui.pointcloud_panel import PointCloudView
 from simovia.gui.sensor_panel import SensorWindow
 from simovia.world.schema import load_world as parse_world_file
 from simovia.world.schema import (absolutize_world_paths, parse_world,
@@ -919,6 +920,11 @@ class MainWindow(QMainWindow):
         self.teleop.floatRequested.connect(self._on_teleop_float)
         # 雷达建图面板：占据栅格由内核自动累积，这里只做轮询渲染
         self.radar_map = RadarMapPanel()
+        # 3D 点云视图：黑底彩虹高度着色，点云按体素累积；与俯视图同一 dock 分页
+        self.pc_view = PointCloudView()
+        self.radar_tabs = QTabWidget()
+        self.radar_tabs.addTab(self.radar_map, "俯视建图")
+        self.radar_tabs.addTab(self.pc_view, "3D 点云")
 
         self.tabs = QTabWidget()
 
@@ -975,7 +981,7 @@ class MainWindow(QMainWindow):
         self.dock_teleop.setMinimumWidth(200)
         # 雷达建图：与遥操作 dock 纵向切分右栏，只在有 lidar 的世界显示
         self.dock_radar = self._make_dock(
-            "雷达建图", self.radar_map,
+            "雷达建图 / 3D 点云", self.radar_tabs,
             Qt.DockWidgetArea.RightDockWidgetArea, "dock_radar")
         self.dock_radar.setMinimumWidth(220)
         self.dock_right.setMinimumWidth(240)   # 可拖更窄（内容出滚动条）
@@ -3492,6 +3498,7 @@ class MainWindow(QMainWindow):
         """有 lidar 传感器的世界才开雷达建图面板（新世界加载后调用）。"""
         has_lidar = any(s.type == "lidar"
                         for r in spec.robots for s in r.sensors)
+        self.pc_view.reset()                 # 新世界：点云累积从零开始
         if has_lidar:
             self.dock_radar.show()
             self._map_timer.start()
@@ -3513,6 +3520,12 @@ class MainWindow(QMainWindow):
                 return
             self.radar_map.update_map(data)
             self._maybe_popup_plan(data)
+            # 3D 点云喂独立点云视图（黑底彩虹着色，按体素累积变密）；
+            # 立体点云展示归它专管，俯视建图面板/主视口不再叠加点云
+            pcs = data.get("pc")
+            if pcs:
+                pc0 = next(iter(pcs.values()))
+                self.pc_view.update_pc(pc0)
 
         self.client.call_tool("lidar_map", {}, done)
 

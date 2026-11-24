@@ -28,8 +28,8 @@ from simovia import supervisor
 from simovia.errors import WorldError
 from simovia.kernel.task import (obs_layout, robot_obs, root_freejoint_qadr,
                                   sensors_obs, task_reward, task_success,
-                                  lidar_scan, lidar_pose)
-from simovia.kernel.mapping import LidarMapper
+                                  lidar_scan, lidar_pose, lidar_frame)
+from simovia.kernel.mapping import LidarMapper, PointCloudMapper
 from simovia.world.builder import build_world, resolve_task
 from simovia.world.schema import WorldSpec, world_to_dict
 
@@ -101,10 +101,18 @@ class Simulation:
         #                                        "points": [[x,y]...]}}}
         # 控制器经 publish_overlay 发布的矢量叠加层（路径/roadmap/目标点），
         # GUI"雷达建图"面板随地图一起拉取渲染
-        self.lidar_mappers = {
-            rd.name: LidarMapper(spec.scene.floor.size)
-            for rd in spec.robots
-            if any(s.type == "lidar" for s in rd.sensors)}
+        self.lidar_mappers: dict[str, object] = {}
+        for rd in spec.robots:
+            if not any(s.type == "lidar" for s in rd.sensors):
+                continue
+            if any(s.type == "lidar" and s.channels > 1 for s in rd.sensors):
+                # 3D 多线雷达：点云建图（体素 + 俯视投影栅格 + 槽位镜像）
+                m = PointCloudMapper(spec.scene.floor.size)
+                if self.index.pointcloud:
+                    m.bind_slots(self.model, self.index.pointcloud["geoms"])
+                self.lidar_mappers[rd.name] = m
+            else:
+                self.lidar_mappers[rd.name] = LidarMapper(spec.scene.floor.size)
         self.controller_overlays: dict[str, dict[str, dict]] = {}
         self._vision_renderers = {}
         self.tick = 0
@@ -491,6 +499,9 @@ class Simulation:
         读数现算（_obs_msg 里那份是控制器的），纯 mj_ray 只读、轨迹零影响；
         只在推进线程写栅格，MCP 协议线程只读 grid()——无锁安全。
         控制器栅栏与无控制器空跑两条推进路径都调它，保证任何世界每 tick 一帧。
+        3D 多线雷达（480 束/帧）降频到每 2 控制tick 一帧（~15.6Hz 建图输入
+        足够），喂完同步槽位镜像（写 geom_pos/rgba + geom_xpos，静态 body
+        恒等关系不碰 warmstart）。
         """
         for rname, ridx in self.index.robots.items():
             mapper = self.lidar_mappers.get(rname)
@@ -499,10 +510,23 @@ class Simulation:
             for six in ridx.sensors.values():
                 if six.lidar is None:
                     continue
-                px, py, yaw = lidar_pose(self.data, six)
-                mapper.update(px, py, yaw, six.lidar["angles"],
-                              lidar_scan(self.model, self.data, six),
-                              float(six.lidar["range"]))
+                if isinstance(mapper, PointCloudMapper):
+                    if self.tick % 2:
+                        continue              # 3D 降频：每 2 控制tick 一帧
+                    origin, rot = lidar_frame(self.data, six)
+                    mapper.update(origin, rot, six.lidar["dirs"],
+                                  lidar_scan(self.model, self.data, six),
+                                  float(six.lidar["range"]))
+                    # 槽位镜像更降频（每 8 tick）：纯 python 循环，槽位数大
+                    # （4000）时每帧全量重写会拖慢推进；GUI 点云走 MCP pc 段
+                    # （拉取时列表化），内核镜像只是位姿直读路径，低频足够
+                    if self.tick % 8 == 0:
+                        mapper.sync_slots(self.data)
+                else:
+                    px, py, yaw = lidar_pose(self.data, six)
+                    mapper.update(px, py, yaw, six.lidar["angles"],
+                                  lidar_scan(self.model, self.data, six),
+                                  float(six.lidar["range"]))
 
     def _advance(self, budget: int | None = None,
                  on_sample: "callable | None" = None,

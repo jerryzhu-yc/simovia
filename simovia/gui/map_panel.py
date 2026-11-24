@@ -32,6 +32,7 @@ _GRID_RGB = np.array([_C_UNKNOWN, _C_FREE, _C_OCC], dtype=np.uint8)
 # 叠加层色表（label 前缀匹配，未匹配走默认紫）
 _OVERLAY_COLORS = [
     ("path", QColor(255, 190, 0)),
+    ("cover", QColor(0, 210, 170)),
     ("patrol", QColor(190, 140, 40)),
     ("goal", QColor(0, 200, 80)),
     ("start", QColor(255, 110, 40)),
@@ -45,14 +46,14 @@ _C_ROBOT = QColor(0, 230, 230)
 
 # 需要半透明的图层：A* 路径盖在骨架图上，必须能透出底下骨架才能判断
 # 它是否贴着骨架走；骨架本身作为背景参考也降透明度
-_LAYER_ALPHA = {"path": 130, "skeleton": 120, "voronoi": 120,
+_LAYER_ALPHA = {"path": 130, "cover": 165, "skeleton": 120, "voronoi": 120,
                 "prm": 120, "roadmap": 120}
 
 _PAD = 6.0        # 画布四周留白（像素）
 
 # 叠加层绘制顺序：数值越小越先画（被后画的压在上面）
 _LAYER_ORDER = ("patrol", "skeleton", "voronoi", "prm", "roadmap",
-                "path", "goal", "start")
+                "cover", "path", "goal", "start")
 
 
 def _ordered_layers(overlays: dict):

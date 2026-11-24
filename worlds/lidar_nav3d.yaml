@@ -1,0 +1,463 @@
+name: lidar_nav3d
+timestep: 0.002
+integrator: implicitfast      # 速度伺服（kv x 小轮惯量）在 Euler 下会数值
+                              # 爆炸，implicitfast 把速度执行器纳入隐式积分才稳定
+ctrl_period: 16            # 32ms/tick：3D 雷达 480 束/帧，内核每 2 tick 喂一帧
+scene:
+  floor:
+    size: [3.2, 2.4]       # 6.4m x 4.8m 的居家房间（卧室 + 客厅一体）
+    texture: grid
+    friction: 0.02         # 与 lidar_nav 同款：castor 低阻、驱动轮牵引不受影响
+  lights:
+  - pos: [0.5, 0, 3.2]
+  cameras:
+  - name: overview        # 俯视机位（GUI 相机下拉可切）
+    pos: [0, 0, 7.2]
+    fovy: 55
+  pointcloud_slots: 8192  # 3D 点云渲染槽位（builder 预置隐藏 geom，内核填充；
+                          #  8192 个 0.016m 渲染点，超量时按全局均匀抽样铺满
+                          #  整间房 -> 16 线雷达把家具轮廓、桌面底面、桌下地面
+                          #  建成成片的 3D 点云（RViz 风格），便于判断桌下净空
+  # ---- 家具尺寸约定：MuJoCo/MjSpec 的 box/cylinder/sphere size 一律是
+  #      半尺寸（box 为半边长、cylinder 为 [半径, 半高]）。下面每件家具的
+  #      部件都按此严格计算并互相插接：腿顶 = 座面/桌面底、横撑两端插进
+  #      腿芯、靠背底 = 座面顶、床头板贴床垫北缘、床裙从床垫底往下垂。----
+  objects:
+  # ---- 四面外墙（2.4m 真实层高：16 线 -25°..+30° 雷达把近处墙身扫成
+  #       z 0.16~1.9m 的高耸立体点云墙面，3D 视口/点云视图里像真房间；
+  #       2D 雷达只会给一条线）----
+  - name: wall_w
+    type: box
+    size: [0.02, 2.4, 1.2]
+    pos: [-3.2, 0, 1.2]
+    color: '#D6CFC4'
+    static: true
+  - name: wall_e
+    type: box
+    size: [0.02, 2.4, 1.2]
+    pos: [3.2, 0, 1.2]
+    color: '#D6CFC4'
+    static: true
+  - name: wall_n
+    type: box
+    size: [3.2, 0.02, 1.2]
+    pos: [0, 2.4, 1.2]
+    color: '#E8E4D8'
+    static: true
+  - name: wall_s
+    type: box
+    size: [3.2, 0.02, 1.2]
+    pos: [0, -2.4, 1.2]
+    color: '#E8E4D8'
+    static: true
+
+  # ---- 门（南墙、沙发西侧）：门板贴墙，高 1.1m ----
+  - name: door
+    type: box
+    size: [0.42, 0.03, 0.55]
+    pos: [-1.45, -2.365, 0.55]
+    color: '#8B5A2B'
+    static: true
+
+  # ---- 窗（北墙、床与衣柜之间）：窗台 + 玻璃 + 四边框（2.4m 墙上的
+  #      普通窗，窗台 0.43m）----
+  - name: windowsill
+    type: box
+    size: [0.6, 0.06, 0.025]
+    pos: [-0.6, 2.33, 0.43]
+    color: '#E8E4D8'
+    static: true
+  - name: window_glass
+    type: box
+    size: [0.58, 0.015, 0.3]
+    pos: [-0.6, 2.365, 0.76]
+    color: '#BFD7EA'
+    static: true
+  - name: window_frame_l
+    type: box
+    size: [0.015, 0.03, 0.32]
+    pos: [-1.18, 2.365, 0.755]
+    color: '#F5F2EA'
+    static: true
+  - name: window_frame_r
+    type: box
+    size: [0.015, 0.03, 0.32]
+    pos: [-0.02, 2.365, 0.755]
+    color: '#F5F2EA'
+    static: true
+  - name: window_frame_t
+    type: box
+    size: [0.58, 0.03, 0.015]
+    pos: [-0.6, 2.365, 1.075]
+    color: '#F5F2EA'
+    static: true
+
+  # ---- 双人床（西北角，床头贴北墙）：床垫顶 0.48、床底净空 0.28；
+  #      4 腿顶 = 床垫底 0.28、床头板落地并贴床垫北缘、双枕压床垫顶。
+  #      床裙（红色醒目，z 0.10~0.28、从床垫底往下垂、底离地 0.10 露出
+  #      床腿）是本 demo 的核心叙事：扫地机顶盖 0.14m > 裙底 0.10m 必撞；
+  #      2D 平面激光挂点 ~0.07m 恒低于裙底永远扫不到（几何盲区）；只有
+  #      3D 雷达低仰角下行通道（挂点 0.165m）在 ~0.94m 处命中裙板进占据
+  #      栅格，导航才会绕行 ----
+  - name: bed_head             # 床头板：落地、贴床垫北缘
+    type: box
+    size: [0.7, 0.03, 0.5]
+    pos: [-2.4, 2.07, 0.5]
+    color: '#8B5A2B'
+    static: true
+  - name: bed_mattress
+    type: box
+    size: [0.75, 1.0, 0.10]
+    pos: [-2.4, 1.05, 0.38]
+    color: '#F1EDE3'
+    static: true
+  - name: bed_pillow_a         # 枕头：压在床垫顶（0.48）上
+    type: box
+    size: [0.28, 0.15, 0.05]
+    pos: [-2.65, 1.83, 0.53]
+    color: '#F7F4EC'
+    static: true
+  - name: bed_pillow_b
+    type: box
+    size: [0.28, 0.15, 0.05]
+    pos: [-2.15, 1.83, 0.53]
+    color: '#F7F4EC'
+    static: true
+  - name: bed_leg_a            # 4 腿：高 0.28 顶到床垫底，位于床垫角内侧
+    type: box
+    size: [0.04, 0.04, 0.14]
+    pos: [-3.07, 0.13, 0.14]
+    color: '#6B4226'
+    static: true
+  - name: bed_leg_b
+    type: box
+    size: [0.04, 0.04, 0.14]
+    pos: [-1.73, 0.13, 0.14]
+    color: '#6B4226'
+    static: true
+  - name: bed_leg_c
+    type: box
+    size: [0.04, 0.04, 0.14]
+    pos: [-3.07, 1.97, 0.14]
+    color: '#6B4226'
+    static: true
+  - name: bed_leg_d
+    type: box
+    size: [0.04, 0.04, 0.14]
+    pos: [-1.73, 1.97, 0.14]
+    color: '#6B4226'
+    static: true
+  - name: bed_skirt_s          # 南裙：贴床垫南缘（y0.05）往下垂，z 0.10~0.28
+    type: box
+    size: [0.75, 0.01, 0.09]
+    pos: [-2.4, 0.04, 0.19]
+    color: '#DC2626'
+    static: true
+  - name: bed_skirt_e          # 东裙：贴床垫东缘（x-1.65）往下垂
+    type: box
+    size: [0.01, 1.0, 0.09]
+    pos: [-1.66, 1.05, 0.19]
+    color: '#DC2626'
+    static: true
+
+  # ---- 衣柜（北墙中部，床与餐桌之间）：落地，后部贴北墙 ----
+  - name: wardrobe
+    type: box
+    size: [0.5, 0.175, 0.5]
+    pos: [0.65, 2.225, 0.5]
+    color: '#7C5A3A'
+    static: true
+
+  # ---- 落地灯（床头与窗之间，贴北墙）：底座 / 细杆 / 灯罩，三段插接 ----
+  - name: lamp_base
+    type: cylinder
+    size: [0.12, 0.01]
+    pos: [-1.42, 2.15, 0.01]
+    color: '#374151'
+    static: true
+  - name: lamp_pole
+    type: cylinder
+    size: [0.015, 0.375]
+    pos: [-1.42, 2.15, 0.395]
+    color: '#374151'
+    static: true
+  - name: lamp_shade
+    type: cylinder
+    size: [0.13, 0.12]
+    pos: [-1.42, 2.15, 0.83]
+    color: '#E3B23C'
+    static: true
+
+  # ---- 餐桌 + 两把餐椅（东北角）：圆桌单柱腿（顶到桌面底 0.725，
+  #      扫地机可绕柱）；椅子 4 腿顶到座面底、横撑两端插进腿芯、
+  #      靠背底接座面顶。椅腿间红色横撑（z 0.1225~0.1475）与床裙
+  #      同款 2D 盲区叙事 ----
+  - name: table_top
+    type: cylinder
+    size: [0.38, 0.02]
+    pos: [2.3, 2.0, 0.745]
+    color: '#A16207'
+    static: true
+  - name: table_leg
+    type: cylinder
+    size: [0.035, 0.3625]
+    pos: [2.3, 2.0, 0.3625]
+    color: '#92400E'
+    static: true
+  # 椅 A（桌西侧，朝东）
+  - name: chair_a_seat
+    type: box
+    size: [0.19, 0.19, 0.015]
+    pos: [1.7, 1.95, 0.42]
+    color: '#C8A272'
+    static: true
+  - name: chair_a_leg_a
+    type: box
+    size: [0.02, 0.02, 0.2025]
+    pos: [1.55, 1.80, 0.2025]
+    color: '#8B5A2B'
+    static: true
+  - name: chair_a_leg_b
+    type: box
+    size: [0.02, 0.02, 0.2025]
+    pos: [1.85, 1.80, 0.2025]
+    color: '#8B5A2B'
+    static: true
+  - name: chair_a_leg_c
+    type: box
+    size: [0.02, 0.02, 0.2025]
+    pos: [1.55, 2.10, 0.2025]
+    color: '#8B5A2B'
+    static: true
+  - name: chair_a_leg_d
+    type: box
+    size: [0.02, 0.02, 0.2025]
+    pos: [1.85, 2.10, 0.2025]
+    color: '#8B5A2B'
+    static: true
+  - name: chair_a_rail_s       # 南侧横撑：两端插进前后腿芯（x1.55~1.85）
+    type: box
+    size: [0.15, 0.012, 0.0125]
+    pos: [1.70, 1.80, 0.135]
+    color: '#DC2626'
+    static: true
+  - name: chair_a_rail_n
+    type: box
+    size: [0.15, 0.012, 0.0125]
+    pos: [1.70, 2.10, 0.135]
+    color: '#DC2626'
+    static: true
+  - name: chair_a_back        # 靠背：贴座面西缘、底接座面顶 0.435
+    type: box
+    size: [0.015, 0.19, 0.095]
+    pos: [1.5175, 1.95, 0.53]
+    color: '#C8A272'
+    static: true
+  # 椅 B（桌东侧，朝西）
+  - name: chair_b_seat
+    type: box
+    size: [0.19, 0.19, 0.015]
+    pos: [2.9, 1.95, 0.42]
+    color: '#C8A272'
+    static: true
+  - name: chair_b_leg_a
+    type: box
+    size: [0.02, 0.02, 0.2025]
+    pos: [2.75, 1.80, 0.2025]
+    color: '#8B5A2B'
+    static: true
+  - name: chair_b_leg_b
+    type: box
+    size: [0.02, 0.02, 0.2025]
+    pos: [3.05, 1.80, 0.2025]
+    color: '#8B5A2B'
+    static: true
+  - name: chair_b_leg_c
+    type: box
+    size: [0.02, 0.02, 0.2025]
+    pos: [2.75, 2.10, 0.2025]
+    color: '#8B5A2B'
+    static: true
+  - name: chair_b_leg_d
+    type: box
+    size: [0.02, 0.02, 0.2025]
+    pos: [3.05, 2.10, 0.2025]
+    color: '#8B5A2B'
+    static: true
+  - name: chair_b_rail_s
+    type: box
+    size: [0.15, 0.012, 0.0125]
+    pos: [2.90, 1.80, 0.135]
+    color: '#DC2626'
+    static: true
+  - name: chair_b_rail_n
+    type: box
+    size: [0.15, 0.012, 0.0125]
+    pos: [2.90, 2.10, 0.135]
+    color: '#DC2626'
+    static: true
+  - name: chair_b_back        # 靠背：贴座面东缘
+    type: box
+    size: [0.015, 0.19, 0.095]
+    pos: [3.0825, 1.95, 0.53]
+    color: '#C8A272'
+    static: true
+
+  # ---- 沙发（南墙中部，朝北）：底座全宽 1.6 / 深 0.86；双坐垫并排坐
+  #      在底座顶上、靠背贴南墙从底座顶升到 0.6、双扶手与底座两端齐平 ----
+  - name: sofa_base
+    type: box
+    size: [0.8, 0.42, 0.09]
+    pos: [0.2, -1.93, 0.09]
+    color: '#4A5568'
+    static: true
+  - name: sofa_cushion_a
+    type: box
+    size: [0.38, 0.38, 0.06]
+    pos: [-0.19, -1.89, 0.24]
+    color: '#5B6B7F'
+    static: true
+  - name: sofa_cushion_b
+    type: box
+    size: [0.38, 0.38, 0.06]
+    pos: [0.59, -1.89, 0.24]
+    color: '#5B6B7F'
+    static: true
+  - name: sofa_back
+    type: box
+    size: [0.8, 0.10, 0.21]
+    pos: [0.2, -2.30, 0.39]
+    color: '#4A5568'
+    static: true
+  - name: sofa_arm_a
+    type: box
+    size: [0.09, 0.42, 0.20]
+    pos: [-0.51, -1.93, 0.38]
+    color: '#4A5568'
+    static: true
+  - name: sofa_arm_b
+    type: box
+    size: [0.09, 0.42, 0.20]
+    pos: [0.91, -1.93, 0.38]
+    color: '#4A5568'
+    static: true
+
+  # ---- 茶几（沙发北侧）：4 腿顶到桌面底 0.38（净空足够扫地机钻底），
+  #      南北两排腿（y -1.41 / -0.89）之间 0.52m 门洞，巡航线 y=-1.1 穿过 ----
+  - name: coffee_top
+    type: box
+    size: [0.5, 0.3, 0.02]
+    pos: [0.2, -1.15, 0.40]
+    color: '#8B5A2B'
+    static: true
+  - name: coffee_leg_a
+    type: box
+    size: [0.025, 0.025, 0.19]
+    pos: [-0.26, -1.41, 0.19]
+    color: '#6B4226'
+    static: true
+  - name: coffee_leg_b
+    type: box
+    size: [0.025, 0.025, 0.19]
+    pos: [0.66, -1.41, 0.19]
+    color: '#6B4226'
+    static: true
+  - name: coffee_leg_c
+    type: box
+    size: [0.025, 0.025, 0.19]
+    pos: [-0.26, -0.89, 0.19]
+    color: '#6B4226'
+    static: true
+  - name: coffee_leg_d
+    type: box
+    size: [0.025, 0.025, 0.19]
+    pos: [0.66, -0.89, 0.19]
+    color: '#6B4226'
+    static: true
+
+  # ---- 地毯（沙发脚下、茶几南腿压毯上）：顶面 z 0.025 落进雷达高度带
+  #      (0.02,0.18)——低仰角通道近距扫毯顶进占据栅格，A* 规划自动绕毯。
+  #      不做成"扫地机直接驶上"的薄毯：低摩擦 castor 无法攀爬毯缘直角
+  #      棱边（物理实测原地打滑），毯顶抬过带下界让它成为"可感知软障碍"。
+  #      毯北缘 -1.35 在巡航线 y=-1.1 南侧 0.25m，扫地机不爬毯 ----
+  - name: rug
+    type: box
+    size: [0.75, 0.5125, 0.0125]
+    pos: [0.2, -1.8625, 0.0125]
+    color: '#9F1239'
+    friction: 0.02
+    static: true
+
+  # ---- 电视柜 + 挂墙电视（东墙）：柜体后背贴东墙、落地扫地机绕行；
+  #      屏幕挂在柜上方、完全落在 1.2m 墙内 ----
+  - name: tv_stand
+    type: box
+    size: [0.35, 0.9, 0.22]
+    pos: [2.85, -0.2, 0.22]
+    color: '#5C4033'
+    static: true
+  - name: tv_screen
+    type: box
+    size: [0.02, 0.85, 0.28]
+    pos: [3.17, -0.2, 0.88]
+    color: '#111827'
+    static: true
+
+  # ---- 绿植（东南角、电视柜南侧）：花盆落地 + 杆插盆 + 球冠接杆顶 ----
+  - name: plant_pot
+    type: cylinder
+    size: [0.13, 0.12]
+    pos: [2.85, -2.0, 0.12]
+    color: '#B45309'
+    static: true
+  - name: plant_trunk
+    type: cylinder
+    size: [0.02, 0.4]
+    pos: [2.85, -2.0, 0.44]
+    color: '#7C5A3A'
+    static: true
+  - name: plant_crown
+    type: sphere
+    size: [0.28]
+    pos: [2.85, -2.0, 0.9]
+    color: '#15803D'
+    static: true
+robots:
+- name: sweeper
+  model: ../models/sweeper.xml
+  pos: [-2.5, -1.7, 0.045]       # 轮子恰好触地的高度（西南角开阔区）
+  quat: [0.7071, 0, 0, 0.7071]   # 出生朝北（+y）
+  controller: ../controllers/lidar_nav3d.py
+  args: {goal: [2.05, -1.0]}       # 电视柜前走廊（柜膨胀带西侧）
+  sensors:
+  - name: lidar            # 3D 多线雷达：16 线（-25°..+30°）x 60 束 = 960 束/帧，
+                           # 挂点在车顶 z=0.12（罩顶 0.14 = 机身最高点）。
+                           # 垂直覆盖放宽到 -25°~+30° 的目的：让近处（0.3~1m）
+                           # 的射线能仰打到桌面底面（茶几 0.38 / 餐桌 0.725）、
+                           # 俯打到桌下地面，中间净空清晰可读——扫地机据此判断
+                           # "能否钻进桌下、高度够不够"。3.7°/线的垂直分辨率
+                           # 足以把桌面底与地面分成两层点云。
+                           # 每帧 960 个距离（channel-major：先最低仰角一整圈）；
+                           # 内核 PointCloudMapper 累积 3D 点云（voxel 0.04，
+                           # 渲染点 0.016 留缝 -> RViz 风格点云观感），
+                           # 俯视投影进占据栅格（高度带 0.02~0.18：地面不成
+                           # 障碍、桌面/床面带外不挡路、床裙/椅横撑 0.10~
+                           # 0.147 带内必进图——2D 雷达（挂 ~0.07 平面束）
+                           # 恒低于裙底 0.10 扫不到它们，这正是 3D 雷达的价值）
+    type: lidar
+    body: sweeper
+    pos: [0, 0, 0.12]
+    rays: 60
+    min_angle: -180
+    max_angle: 180
+    range: 3.5
+    channels: 16
+    vmin: -25
+    vmax: 30
+task:
+  success:
+    body: sweeper
+    zone:
+      min: [1.8, -1.25, 0.0]
+      max: [2.3, -0.75, 0.3]
+  max_ticks: 20000

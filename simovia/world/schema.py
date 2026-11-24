@@ -111,6 +111,10 @@ class SensorSpec:
       正值 = 沿射线到环境几何的距离（自身机器人的几何自动跳过）。
       角度约定：扫描平面 = 挂载 body 的 xy 平面，0° 沿 body +x，逆时针为
       正；min_angle/max_angle 为半开区间 [min, max)。
+      channels > 1 时是 3D 多线雷达：每条线一个仰角（vmin..vmax 均匀
+      channels 线），每 tick 出 channels×rays 个距离（channel-major 平铺，
+      即先最低仰角的一整圈，再下一条线）；命中点的 3D 坐标由内核
+      PointCloudMapper 累积成点云（voxel 俯视投影进占据栅格 + 可视化槽位）。
 
     tactile 的 radius：MuJoCo 3.x 的 touch 只统计接触点落在以挂点 site 为球心、
     site size 为半径的球内的接触力（site size 默认 0 → 恒 0 的坑由此而来）。
@@ -133,6 +137,10 @@ class SensorSpec:
     min_angle: float | None = None  # 起始角（度，默认 -180）
     max_angle: float | None = None  # 终止角（度，默认 180；半开区间）
     range: float | None = None      # 最大量程（米，默认 5.0）
+    channels: int = 1               # 垂直线数：1 = 2D 平面雷达（老语义），
+                                    # >1 = 3D 多线雷达（每线一个仰角）
+    vmin: float | None = None       # 最低仰角（度，仅 channels>1；默认 -10）
+    vmax: float | None = None       # 最高仰角（度，仅 channels>1；默认 +14）
 
 
 @dataclass
@@ -243,6 +251,9 @@ class SceneSpec:
     lights: list[LightSpec] = field(default_factory=list)
     objects: list[ObjectSpec] = field(default_factory=list)
     cameras: list[CameraSpec] = field(default_factory=list)   # 世界固定机位
+    pointcloud_slots: int = 0      # 3D 雷达点云可视化槽位数（0 = 不预置）；
+                                   # builder 在世界 body 下生成 N 个隐藏 box，
+                                   # 内核 PointCloudMapper 运行时填充位置/颜色
 
 
 @dataclass
@@ -368,6 +379,11 @@ def _parse_scene(d, path: str) -> SceneSpec:
         cameras.append(CameraSpec(name=cname, pos=cpos, quat=quat,
                                   euler=euler, fovy=fovy))
 
+    pointcloud_slots = _int(d.get("pointcloud_slots", 0), f"{path}.pointcloud_slots")
+    if not 0 <= pointcloud_slots <= 8192:
+        raise _err(f"{path}.pointcloud_slots",
+                   f"点云槽位数需在 0..8192 内，实际是 {pointcloud_slots}")
+
     objects = []
     for i, od in enumerate(d.get("objects", [])):
         p = f"{path}.objects[{i}]"
@@ -425,7 +441,8 @@ def _parse_scene(d, path: str) -> SceneSpec:
                                   quat=quat, mass=mass, color=color, static=static,
                                   friction=friction, model=model, **cloth_kw))
     return SceneSpec(floor=floor, lights=lights, objects=objects,
-                     cameras=cameras)
+                     cameras=cameras,
+                     pointcloud_slots=pointcloud_slots)
 
 
 def _parse_sensors(rd: dict, p: str) -> list[SensorSpec]:
@@ -492,8 +509,10 @@ def _parse_sensors(rd: dict, p: str) -> list[SensorSpec]:
             if near <= 0 or far <= near:
                 raise _err(f"{sp}.near/far",
                            f"深度裁剪面需要 0 < near < far，实际 near={near}, far={far}")
-        # ---- 仅 lidar：光束数 / 角度窗口 / 量程 ----
+        # ---- 仅 lidar：光束数 / 角度窗口 / 量程 / 垂直线 ----
         rays = min_angle = max_angle = rng = None
+        channels = 1
+        vmin = vmax = None
         if stype == "lidar":
             rays = _int(sd.get("rays", 36), f"{sp}.rays")
             if not 2 <= rays <= 1024:
@@ -507,11 +526,23 @@ def _parse_sensors(rd: dict, p: str) -> list[SensorSpec]:
             rng = _num(sd.get("range", 5.0), f"{sp}.range")
             if rng <= 0:
                 raise _err(f"{sp}.range", f"量程必须为正数(米)，实际是 {rng}")
+            channels = _int(sd.get("channels", 1), f"{sp}.channels")
+            if not 1 <= channels <= 64:
+                raise _err(f"{sp}.channels",
+                           f"垂直线数需在 1..64 内，实际是 {channels}（1 = 2D 雷达）")
+            if channels > 1:
+                vmin = _num(sd.get("vmin", -10.0), f"{sp}.vmin")
+                vmax = _num(sd.get("vmax", 14.0), f"{sp}.vmax")
+                if not (-89.0 < vmin < vmax < 89.0):
+                    raise _err(f"{sp}.vmin/vmax",
+                               f"垂直角需满足 -89 < vmin < vmax < 89（度），"
+                               f"实际 min={vmin}, max={vmax}")
         sensors.append(SensorSpec(name=name, type=stype, joint=joint, body=body,
                                   pos=pos, quat=quat, radius=radius,
                                   fovy=fovy, depth=depth, near=near, far=far,
                                   rays=rays, min_angle=min_angle,
-                                  max_angle=max_angle, range=rng))
+                                  max_angle=max_angle, range=rng,
+                                  channels=channels, vmin=vmin, vmax=vmax))
     return sensors
 
 

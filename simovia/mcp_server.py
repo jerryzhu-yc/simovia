@@ -32,6 +32,7 @@ os.environ.setdefault("MUJOCO_GL",
                       "wgl" if sys.platform == "win32" else "egl")
 
 import mujoco
+import numpy as np
 import yaml
 
 from simovia import supervisor
@@ -651,12 +652,17 @@ class SimoviaSession:
 
         写在推进线程、读在本协议线程：栅格整格读写撕裂最坏造成某格
         瞬时新旧值，渲染无害；qpos 读数同理由下帧自愈。
+        3D 多线雷达（PointCloudMapper）额外带 pc 段：全量体素均匀抽样后
+        的 N 个点（与内核槽位镜像同序）打包 [x,y,z,r,g,b] float32 数组
+        （b64+zlib，与 grid 同款传输方式）——GUI 3D 点云视图
+        （gui/pointcloud_panel）按体素去重累积渲染立体彩虹点云。
         """
         import zlib
         sim = self.sim
         if sim is None or not sim.lidar_mappers:
             return {"available": False}
-        maps, poses = {}, {}
+        from simovia.kernel.mapping import PointCloudMapper
+        maps, poses, pcs = {}, {}, {}
         for rname, mapper in sim.lidar_mappers.items():
             meta = mapper.meta()
             g = mapper.grid()
@@ -666,6 +672,20 @@ class SimoviaSession:
                                zlib.compress(g.tobytes(), 1)).decode("ascii"),
                            "prob": base64.b64encode(
                                zlib.compress(pr.tobytes(), 1)).decode("ascii")}
+            if isinstance(mapper, PointCloudMapper):
+                pts = mapper.pointcloud(len(sim.index.pointcloud["geoms"])
+                                       if sim.index.pointcloud else 1200)
+                arr = np.empty((len(pts), 6), dtype=np.float32)
+                for i, q in enumerate(pts):
+                    r, g, b = mapper._height_rgb(q[2])
+                    arr[i] = (q[0], q[1], q[2], r, g, b)
+                pcs[rname] = {
+                    "seq": mapper.seq,               # 已喂帧数（变化=有新数据）
+                    "voxel": len(mapper.vox),        # 体素总数（全量真相）
+                    "half": mapper.RENDER_HALF,   # 渲染点半尺寸（与槽位镜像一致）
+                    "n": len(pts),
+                    "points": base64.b64encode(
+                        zlib.compress(arr.tobytes(), 1)).decode("ascii")}
             ridx = sim.index.robots[rname]
             qadr = root_freejoint_qadr(sim.model, ridx)
             if qadr is None:
@@ -678,12 +698,29 @@ class SimoviaSession:
                              "points": [list(p) for p in v["points"]]}
                          for k, v in d.items()}
                     for r, d in sim.controller_overlays.items()}
-        return {"available": True, "maps": maps, "poses": poses,
-                "overlays": overlays}
+        out = {"available": True, "maps": maps, "poses": poses,
+               "overlays": overlays}
+        if pcs:
+            out["pc"] = pcs
+        return out
+
+    def _refresh_pc_slots(self, sim: Simulation) -> None:
+        """渲染前重刷 3D 点云槽位 xpos。
+
+        静态 body 的 geom_xpos 会被 mj_step 按编译期缓存重算覆盖回 0
+        （model.geom_pos 改动不生效于静态 body 的 kinematics 缓存），
+        所以内核推进间隙的槽位 xpos 不可信——每次离屏渲染（camera 流/
+        screenshot 工具都直接渲染 sim.model+sim.data）前重写一拍，
+        写完即渲染（中间无 step）值恒有效。
+        """
+        from simovia.kernel.mapping import PointCloudMapper
+        for m in sim.lidar_mappers.values():
+            if isinstance(m, PointCloudMapper):
+                m.sync_slots(sim.data)
 
     def _start_camera_stream(self, sim: Simulation, camera, width: int,
-                             height: int, fps: int, depth: bool = False,
-                             near=None, far=None) -> None:
+                              height: int, fps: int, depth: bool = False,
+                              near=None, far=None) -> None:
         if not (64 <= width <= 1280 and 48 <= height <= 960):
             raise WorldError(f"画面尺寸需在 64x48..1280x960 内，"
                              f"实际: {width}x{height}")
@@ -724,6 +761,7 @@ class SimoviaSession:
             free_cam.azimuth = 135.0
             free_cam.elevation = -25.0
         with self._cam_renderer_lock:
+            self._refresh_pc_slots(sim)
             if self._cam_renderer is None or self._cam_renderer_wh != (w, h):
                 if self._cam_renderer is not None:
                     self._cam_renderer.close()
@@ -1270,6 +1308,7 @@ class SimoviaSession:
                 rend.close()
             rend = mujoco.Renderer(sim.model, h, w)
             self._renderer, self._renderer_wh = rend, (w, h)
+        self._refresh_pc_slots(sim)
         rgb = render_offscreen(sim.model, sim.data, w, h, camera, renderer=rend)
         png = encode_png(rgb)
         path = args.get("path")

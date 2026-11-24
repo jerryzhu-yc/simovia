@@ -1,0 +1,51 @@
+<mujoco model="sweeper">
+  <!-- 扫地机器人：圆形底盘（freejoint 平面运动）+ 两驱动轮（hinge + velocity
+       伺服）+ 前后万向珠（低摩擦）。3D 雷达由世界 YAML 的 sensors 声明，
+       builder 自动在挂点生成固态雷达机壳外观。
+       驱动约定同 diff_car：ctrl +10 -> 前进 +x（两轮同向），差速转向。 -->
+  <compiler angle="radian"/>
+  <option timestep="0.002"/>
+
+  <worldbody>
+    <body name="sweeper" pos="0 0 0.045">
+      <joint name="sweeper_free" type="free"/>
+      <!-- 底盘：r=0.14 圆形，中心 z=0.045（占 0.02~0.07，底部离地 0.02）；
+           机身最高点 = 3D 雷达罩顶 0.14 —— 高于 0.105 的悬空横杆底沿，
+           低于桌面 0.72：可钻桌底、必撞低横杆 -->
+      <geom name="sweeper_chassis" type="cylinder" size="0.14 0.025"
+            rgba="0.2 0.22 0.28 1"/>
+      <!-- 顶盖/前保险杠：纯视觉（group 2、零碰撞零质量） -->
+      <geom name="sweeper_lid" type="cylinder" size="0.135 0.006" pos="0 0 0.027"
+            rgba="0.55 0.58 0.65 1" contype="0" conaffinity="0" density="0" group="2"/>
+      <geom name="sweeper_bumper" type="box" size="0.02 0.06 0.012"
+            pos="0.125 0 0" rgba="0.1 0.11 0.14 1"
+            contype="0" conaffinity="0" density="0" group="2"/>
+
+      <body name="wheel_l" pos="0 0.13 -0.013">
+        <joint name="wl" type="hinge" axis="0 1 0" armature="0.004"/>
+        <geom name="wheel_l_geom" type="cylinder" size="0.032 0.008"
+              euler="1.5708 0 0" rgba="0.3 0.3 0.35 1"/>
+      </body>
+      <body name="wheel_r" pos="0 -0.13 -0.013">
+        <joint name="wr" type="hinge" axis="0 1 0" armature="0.004"/>
+        <geom name="wheel_r_geom" type="cylinder" size="0.032 0.008"
+              euler="1.5708 0 0" rgba="0.3 0.3 0.35 1"/>
+      </body>
+      <body name="castor_f" pos="0.09 0 -0.028">
+        <geom name="castor_f_geom" type="sphere" size="0.017"
+              rgba="0.5 0.5 0.55 1" friction="0.02 0.001 0.0001"/>
+      </body>
+      <body name="castor_b" pos="-0.09 0 -0.028">
+        <geom name="castor_b_geom" type="sphere" size="0.017"
+              rgba="0.5 0.5 0.55 1" friction="0.02 0.001 0.0001"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- kv=0.1 + 轮 armature 0.004：小轮速度伺服在大增益下会把车打飞
+         （见 diff_car 台架实测注释）；implicitfast 积分下稳定跟踪 -->
+    <velocity name="w_l" joint="wl" kv="0.1" ctrlrange="-10 10"/>
+    <velocity name="w_r" joint="wr" kv="0.1" ctrlrange="-10 10"/>
+  </actuator>
+</mujoco>

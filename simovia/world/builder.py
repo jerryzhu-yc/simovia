@@ -51,6 +51,9 @@ class SensorIndex:
     encoder/joint_torque/tactile 为单 part；imu 为 [gyro(3), accel(3)] 两个 part。
     lidar 不编译 MuJoCo sensor（parts 为空），读数由内核 mj_ray 计算，
     配置存 lidar 字段：{body, pos, angles, range, robot_bodies}。
+    channels > 1（3D 多线）时额外存 vangles（各线仰角弧度）与 dirs
+    （channels×rays 行的 body 系单位方向表，channel-major 平铺），
+    以及 exclude_body（点云槽位 body id，mj_ray 直接排除，无槽位不设）。
     """
     name: str
     kind: str                       # YAML 类型
@@ -60,7 +63,7 @@ class SensorIndex:
     @property
     def dim(self) -> int:
         if self.lidar is not None:
-            return len(self.lidar["angles"])
+            return len(self.lidar["angles"]) * int(self.lidar.get("channels", 1))
         return sum(d for _, d in self.parts)
 
 
@@ -89,6 +92,10 @@ class NameIndex:
     #: 每台机器人的末端执行器挂载位（左右手各一个；单臂为默认挂点）。
     #: [{"side","site","label","builtin"}]——GUI/manifest 按此列出可装位置。
     mounts: dict[str, list[dict]] = field(default_factory=dict)
+    #: 3D 雷达点云可视化槽位（scene.pointcloud_slots > 0 时存在）：
+    #: {"body": body id, "geoms": [geom id 按槽位序]}。内核 PointCloudMapper
+    #: 运行时按槽位序写 geom_pos/size/rgba；GUI 渲染端按同序镜像重放。
+    pointcloud: dict | None = None
 
     def resolve_body(self, ref: str) -> int:
         """按 物体名 -> 完整前缀名 -> 任意机器人前缀 依次解析 body 引用。"""
@@ -243,6 +250,8 @@ def _build_scene(spec: WorldSpec, mj: mujoco.MjSpec):
         if od.mass is not None:
             kwargs["mass"] = od.mass
         body.add_geom(**kwargs)
+    # 3D 雷达点云可视化槽位（scene.pointcloud_slots > 0 时预置）
+    _add_pointcloud_slots(sc, mj)
 
 
 def _build_cloth(od, mj: mujoco.MjSpec) -> None:
@@ -314,16 +323,35 @@ def _add_camera_visuals(body, s: SensorSpec) -> None:
                   contype=0, conaffinity=0, density=0.0, group=2)
 
 
+def make_dirs(angles: "np.ndarray", vangles: "np.ndarray") -> "np.ndarray":
+    """3D 多线雷达的 body 系单位方向表：channels×rays 行 × 3 列。
+
+    每行 = 一条光束方向 [cos(v)*cos(a), cos(v)*sin(a), sin(v)]，
+    channel-major 平铺（先最低仰角一整圈，再下一条线）——与读数平铺顺序、
+    控制器端 SensorIndex.dim = rays*channels 严格一致。放在 builder 而非
+    kernel（避免 kernel -> world 的循环 import），控制器经 builder 复用。
+    """
+    dirs = np.empty((len(vangles), len(angles), 3), dtype=float)
+    for i, v in enumerate(vangles):
+        cv, sv = math.cos(float(v)), math.sin(float(v))
+        dirs[i, :, 0] = cv * np.cos(angles)
+        dirs[i, :, 1] = cv * np.sin(angles)
+        dirs[i, :, 2] = sv
+    return dirs.reshape(-1, 3)
+
+
 def _add_lidar_visuals(body, s: SensorSpec) -> None:
     """雷达实体外观：支杆 + 圆柱机身 + 深色镜面环 + 状态 LED。
 
-    造型对齐真实 2D 激光雷达（Hokuyo/RPLidar 的圆饼机身 + 暗色发射窗）。
+    造型对齐真实 2D 激光雷达（Hokuyo/RPLidar 的圆饼机身 + 暗色发射窗）；
+    channels > 1（3D 多线）时机壳放大一号（近似 Livox/速腾的固态雷达体）。
     纯视觉（无碰撞、零质量、group 2），与相机外观同一约定；读数由内核
     mj_ray 按 body 世界位姿 + pos 偏移计算，起点位于机壳中心——机壳会
     先被命中，内核按「跳过自体几何」迭代穿过（见 kernel/task.lidar_scan）。
     """
     p = list(s.pos)
-    shell_h = 0.013
+    r = 0.030 if s.channels > 1 else 0.022
+    shell_h = 0.020 if s.channels > 1 else 0.013
     # 支杆：从 body 原点平面撑到机壳底部（pos.z 太低时不生成，直接坐底）
     if p[2] > shell_h * 2:
         mast_half = (p[2] - shell_h) / 2
@@ -334,13 +362,13 @@ def _add_lidar_visuals(body, s: SensorSpec) -> None:
                       contype=0, conaffinity=0, density=0.0, group=2)
     body.add_geom(name=f"{s.name}_puck",
                   type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                  size=[0.022, shell_h], pos=p,
+                  size=[r, shell_h], pos=p,
                   rgba=[0.12, 0.13, 0.15, 1.0],
                   contype=0, conaffinity=0, density=0.0, group=2)
     # 镜面环：比机身略大一圈的窄环带，从外面看是环绕机身的暗色发射窗
     body.add_geom(name=f"{s.name}_lens",
                   type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                  size=[0.0225, 0.004], pos=p,
+                  size=[r + 0.0005, 0.004], pos=p,
                   rgba=[0.02, 0.02, 0.03, 1.0],
                   contype=0, conaffinity=0, density=0.0, group=2)
     body.add_geom(name=f"{s.name}_led",
@@ -348,6 +376,28 @@ def _add_lidar_visuals(body, s: SensorSpec) -> None:
                   size=[0.0025], pos=[p[0], p[1], p[2] + shell_h],
                   rgba=[0.95, 0.12, 0.12, 1.0],
                   contype=0, conaffinity=0, density=0.0, group=2)
+
+
+def _add_pointcloud_slots(sc: "SceneSpec", mj: mujoco.MjSpec) -> None:
+    """3D 点云可视化槽位：世界 body 下 N 个隐藏 box geom。
+
+    运行时由内核 PointCloudMapper 把活跃 voxel 写进这些 geom 的
+    pos/size/rgba（按高度着色），mj_kinematics 后即对渲染可见——内核
+    截图与 GUI 视口（独立编译的同序模型 + MCP 镜像重放）都能看到点云。
+    约束：mj_ray 不看 contype/conaffinity，槽位会被射线命中——因此全部
+    槽位挂在专用 body（pointcloud_slots）上，lidar_scan 用 bodyexclude
+    整体排除（_build_index 写 exclude_body）。size 给正的 0.02 避免
+    编译器拒绝零尺寸；alpha=0 初始不可见，密度 0 不影响物理。
+    """
+    if sc.pointcloud_slots <= 0:
+        return
+    body = mj.worldbody.add_body(name="pointcloud_slots")
+    for i in range(sc.pointcloud_slots):
+        body.add_geom(name=f"pcl_slot_{i}",
+                      type=mujoco.mjtGeom.mjGEOM_BOX,
+                      size=[0.02, 0.02, 0.02],
+                      rgba=[1.0, 1.0, 1.0, 0.0],
+                      contype=0, conaffinity=0, density=0.0, group=2)
 
 
 def _add_child_sensors(robot: RobotSpec, child: mujoco.MjSpec) -> None:
@@ -1305,11 +1355,16 @@ def _build_index(model: mujoco.MjModel, spec: WorldSpec) -> NameIndex:
                 angles = np.radians(np.linspace(float(s.min_angle),
                                                 float(s.max_angle),
                                                 int(s.rays), endpoint=False))
+                li = {"body": bid, "pos": tuple(s.pos),
+                      "angles": angles, "range": float(s.range),
+                      "robot_bodies": frozenset()}
+                if s.channels > 1:
+                    li["channels"] = int(s.channels)
+                    li["vangles"] = np.radians(np.linspace(
+                        float(s.vmin), float(s.vmax), int(s.channels)))
+                    li["dirs"] = make_dirs(angles, li["vangles"])
                 ridx.sensors[s.name] = SensorIndex(
-                    name=s.name, kind="lidar",
-                    lidar={"body": bid, "pos": tuple(s.pos),
-                           "angles": angles, "range": float(s.range),
-                           "robot_bodies": frozenset()})
+                    name=s.name, kind="lidar", lidar=li)
                 continue
             mj_names = ([f"{prefix}{s.name}"] if s.type != "imu"
                         else [f"{prefix}{s.name}_gyro", f"{prefix}{s.name}_accel"])
@@ -1339,6 +1394,22 @@ def _build_index(model: mujoco.MjModel, spec: WorldSpec) -> NameIndex:
         for six in ridx.sensors.values():
             if six.lidar is not None:
                 six.lidar["robot_bodies"] = frozenset(ridx.bodies.values())
+    # 3D 点云槽位：索引 geom 序 + 雷达 bodyexclude（射线直接排除槽位体）
+    if spec.scene.pointcloud_slots > 0:
+        pc_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY,
+                                    "pointcloud_slots")
+        gids = []
+        for i in range(spec.scene.pointcloud_slots):
+            gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM,
+                                     f"pcl_slot_{i}")
+            if gid < 0:
+                raise WorldError(f"编译后找不到点云槽位 geom 'pcl_slot_{i}'")
+            gids.append(gid)
+        index.pointcloud = {"body": pc_bid, "geoms": gids}
+        for rd in spec.robots:
+            for six in index.robots[rd.name].sensors.values():
+                if six.lidar is not None:
+                    six.lidar["exclude_body"] = pc_bid
     return index
 
 

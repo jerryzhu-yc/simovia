@@ -502,7 +502,7 @@ def test_gui_modules_importable():
     """无头 import 冒烟（不建 QApplication）。"""
     import importlib
     for mod in ("simovia.gui", "simovia.gui.app", "simovia.gui.mcp_client",
-                "simovia.gui.panels"):
+                "simovia.gui.panels", "simovia.gui.pointcloud_panel"):
         importlib.import_module(mod)
 
 
@@ -2029,5 +2029,48 @@ def test_export_project_zip_handles_old_mtime(tmp_path):
     _export_project_zip(yaml.safe_dump(world), base, out)
     with zipfile.ZipFile(out) as zf:
         assert zf.read("models/arm.xml") == b"<mujoco/>"
+
+
+def test_pointcloud_panel_renders_rainbow_cloud(qapp):
+    """3D 点云面板：自动取景 + 全分辨率渲染 + HUD 色带不崩（回归）。
+
+    回归点：_draw_hud 用标量 _jet 生成高度色带，旧实现 np.stack(axis=1)
+    对 0 维数组抛 AxisError —— 每帧 paintEvent 异常，面板空白/崩溃。
+    另守护自动取景：机位必须落在点云包围盒内部（站在屋里看），而不是
+    按对角线退到房间外变成"从外面看一个浅盘"。
+    """
+    import numpy as np
+    from PySide6.QtGui import QImage, QPainter
+    from simovia.gui.pointcloud_panel import PointCloudView
+
+    v = PointCloudView()
+    v.resize(360, 260)
+    vox = {}
+    for i in range(41):                      # 4m x 4m 地面
+        for j in range(41):
+            x, y = i * 0.1 - 2.0, j * 0.1 - 2.0
+            vox.setdefault((int(np.floor(x / 0.04)), int(np.floor(y / 0.04)), 0),
+                           (x, y, 0.0))
+    for k in range(40):                      # 2m 高的墙
+        vox.setdefault((0, 50, k), (0.0, 2.0, k * 0.05))
+    v._vox.update(vox)
+    v._rebuild()
+    v._autofit()
+    assert 0.3 < v._dist < 3.0               # 机位在房间内（不是对角线距离）
+
+    img = v._render_image(360, 260)
+    assert img is not None and img.width() == 360
+    raw = np.frombuffer(img.constBits(), dtype=np.uint8)
+    arr = raw.reshape(260, img.bytesPerLine())[:, :360 * 3]
+    assert int((arr > 0).sum()) > 2000       # 点确实画出来了
+
+    canvas = QImage(360, 260, QImage.Format.Format_RGB888)
+    canvas.fill(0)
+    p = QPainter(canvas)
+    try:
+        v._draw_hud(p, 360, 260)             # 标量 _jet：旧实现在此崩溃
+    finally:
+        p.end()
+    v.deleteLater()
 
 

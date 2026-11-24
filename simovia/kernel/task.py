@@ -127,9 +127,16 @@ def lidar_scan(model: mujoco.MjModel, data: mujoco.MjData,
       含全部 group（视觉机壳也在内），起点位于几何内部时命中内表面
       ——因此自体几何用「命中后前移 1mm 续投」迭代穿过（机壳外环、
       底盘/轮子遮挡都会被跳过），最多跳 16 个
+    - channels>1（3D 多线）时循环 li["dirs"]（channel-major 方向表），
+      每 tick 返回 channels×rays 个距离；dirs 不存在则走原 2D 路径
     - 无回波或超出 range 返回 -1.0（MuJoCo rangefinder 惯例，真实雷达的 inf）
     - 只读派生量：不调 mj_forward、不写 data，物理轨迹零影响
       （bit 级守护见 tests/test_lidar.py）
+
+    bodyexclude：预置点云槽位 geom 挂在专用 body 上且配置了 exclude_body
+    时直接排除（mj_ray 只认 geomgroup/flg_static/bodyexclude，不看
+    contype/conaffinity——槽位设零碰撞没用，必须走第 7 参）。老世界没有
+    该键，取 -1，与原实现逐位一致。
     """
     li = six.lidar
     bid = int(li["body"])
@@ -138,14 +145,31 @@ def lidar_scan(model: mujoco.MjModel, data: mujoco.MjData,
               + rot @ np.asarray(li["pos"], dtype=float))
     own = li["robot_bodies"]
     rng = float(li["range"])
+    excl = int(li.get("exclude_body", -1))
     gid = np.zeros(1, dtype=np.int32)
     out: list[float] = []
-    for ang in li["angles"]:
+    dirs = li.get("dirs")
+    if dirs is not None:                      # 3D 多线：channel-major 方向表
+        for bdir in dirs:
+            vec = rot @ bdir
+            base, d = 0.0, -1.0
+            for _ in range(16):
+                dist = mujoco.mj_ray(model, data, origin + base * vec, vec,
+                                     None, True, excl, gid)
+                if dist < 0.0 or base + dist > rng:
+                    break                      # 无回波 / 超量程
+                if int(model.geom_bodyid[gid[0]]) not in own:
+                    d = base + dist            # 命中环境
+                    break
+                base += dist + 1e-3            # 命中自体：穿过外壳续投
+            out.append(float(d))
+        return out
+    for ang in li["angles"]:                   # 2D：扫描平面内一圈
         vec = rot @ np.array([math.cos(ang), math.sin(ang), 0.0])
         base, d = 0.0, -1.0
         for _ in range(16):
             dist = mujoco.mj_ray(model, data, origin + base * vec, vec,
-                                 None, True, -1, gid)
+                                 None, True, excl, gid)
             if dist < 0.0 or base + dist > rng:
                 break                      # 无回波 / 超量程
             if int(model.geom_bodyid[gid[0]]) not in own:
@@ -154,6 +178,21 @@ def lidar_scan(model: mujoco.MjModel, data: mujoco.MjData,
             base += dist + 1e-3            # 命中自体：穿过外壳续投
         out.append(float(d))
     return out
+
+
+def lidar_frame(data: mujoco.MjData,
+                six: "SensorIndex") -> tuple[np.ndarray, np.ndarray]:
+    """雷达挂点世界原点(3,) + 3×3 旋转矩阵（3D 点云建图的输入）。
+
+    与 lidar_scan 同一原点约定；2D 建图用 lidar_pose（平面位姿），
+    3D 建图需要完整旋转矩阵把 body 系方向表投到世界系。只读不写 data。
+    """
+    li = six.lidar
+    bid = int(li["body"])
+    rot = data.xmat[bid].reshape(3, 3)
+    origin = (np.asarray(data.xpos[bid], dtype=float)
+              + rot @ np.asarray(li["pos"], dtype=float))
+    return origin, rot
 
 
 def lidar_pose(data: mujoco.MjData,
