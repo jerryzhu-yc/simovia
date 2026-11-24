@@ -28,13 +28,22 @@ import yaml as pyyaml
 W, H = 1280, 720
 LW, RW = 760, 520                     # 左视口宽 / 右终端宽
 FPS = 30
-REQ = ("造一个桌面抓取世界：工作台桌面顶 z=0.68（box 半尺寸 0.40x0.25x0.02 "
-       "放 (0.32,0,0.66)，加四条桌腿），桌面再放绿、蓝两个 60mm 方块当装饰，"
-       "红色 60mm 方块（0.1kg，摩擦 1.0）放 A 区 (0.55,0,0.71)，Franka Panda "
-       "站在桌后沿 (0,0,0.68) 装 onrobot_2fg7 夹爪并挂控制器 "
-       "../controllers/pick_place.py，任务成功区是空中 (0.55,0,0.86) 附近 "
+REQ = ("造一个精致的桌面抓取工作台，像实验室光学平台：整块深灰地毯垫底"
+       "（box 半尺寸 0.9x0.9x0.004 放 (0.32,0,0.004)，static），工作台桌面顶"
+       " z=0.68（box 半尺寸 0.40x0.25x0.02 放 (0.32,0,0.66)），四条桌腿必须"
+       "立桌面四个角正下方（x=0.02 与 0.62，y=0.21 与 -0.21，腿半尺寸 "
+       "0.025x0.025x0.32，中心 z=0.32），绝不能挤在桌子中间；桌面后沿立一条"
+       "低矮后挡板（半尺寸 0.40x0.012x0.10，pos (0.32,0.24,0.78)，static）。"
+       "桌面左前整齐摆三个 60mm 装饰方块成一行（绿 #22C55E、蓝 #3B82F6、"
+       "黄 #EAB308，z 均为 0.71，x 分别 0.16/0.28/0.40，y=-0.17）；"
+       "红色 60mm 方块（0.1kg，摩擦 1.0）单独放抓取位 (0.55,0,0.71)。"
+       "打两盏灯：主光 pos (1.2,-1.0,2.2)、补光 pos (-1.0,1.0,1.6)。"
+       "配 showcase 演示机位：pos [1.72,-1.48,1.30]、quat "
+       "[0.711901,0.594968,0.239265,0.286289]、fovy 40。"
+       "Franka Panda 站桌后沿 (0,0,0.68)，装 onrobot_2fg7 夹爪，挂控制器 "
+       "../controllers/pick_place.py。任务成功区是空中 (0.55,0,0.86) 附近 "
        "zone（min [0.49,-0.06,0.80]，max [0.61,0.06,0.92]）。timestep 0.002，"
-       "ctrl_period 32，隐式积分 implicitfast。")
+       "ctrl_period 32，隐式积分 implicitfast，impratio 10。")
 
 
 def _label(arr: np.ndarray, x, y, text, size=14):
@@ -65,26 +74,38 @@ def _wrap(text, width):
     return out
 
 
-def generate_yaml() -> str:
-    """真实 LLM 生成（缓存复用）；输出偏离抓取几何时 refine 修正。"""
-    cache = "/tmp/agent_gen_world.yaml"
-    if os.path.exists(cache):
-        return open(cache, encoding="utf-8").read()
-    from simovia.agent.config import AgentConfig
-    from simovia.agent.scene_agent import SceneGenSession
+def generate_yaml(base_url: str = "", model: str = "") -> tuple[str, str]:
+    """真实 LLM 生成（缓存复用）；输出偏离抓取几何时 refine 修正。
 
-    cfg = AgentConfig(base_url="http://localhost:11434/v1",
-                      model="mjcf-generator:latest")
+    配置优先取 ~/.simovia/agent.json（云端 OpenAI 兼容端点），命令行
+    --base-url/--model 可覆盖；都没有时回退本地 Ollama。返回 (YAML, 模型名)。
+    """
+    cache = "/tmp/agent_gen_world.yaml"
+    from simovia.agent.config import AgentConfig, load_config
+    cfg = load_config()
+    if base_url:
+        cfg.base_url = base_url
+    if model:
+        cfg.model = model
+    if not cfg.usable:                        # 回退本地 Ollama
+        cfg = AgentConfig(base_url="http://localhost:11434/v1",
+                          model="mjcf-generator:latest")
+    print(f"生成模型: {cfg.model} @ {cfg.base_url}")
+    if os.path.exists(cache):
+        return open(cache, encoding="utf-8").read(), cfg.model
+
+    from simovia.agent.scene_agent import SceneGenSession
     sess = SceneGenSession(cfg, max_retries=3)
     text, _ = sess.generate(REQ)
-    for _ in range(2):                        # 偏离关键几何则 refine（最多 2 轮）
-        d = pyyaml.safe_load(text)
-        objs = {o.get("name"): o for o in d.get("scene", {}).get("objects", [])}
+    for _ in range(3):                        # 偏离关键几何则 refine（最多 3 轮）
+        d = pyyaml.safe_load(text) or {}
+        scene = d.get("scene") or {}
+        objs = {o.get("name"): o for o in (scene.get("objects") or [])}
         cube = objs.get("red_cube", {})
         robot = (d.get("robots") or [{}])[0]
         fixes = []
         cp = cube.get("pos") or []
-        if not (abs(cp[0] - 0.55) < 0.05 and abs(cp[1]) < 0.05
+        if not (len(cp) >= 3 and abs(cp[0] - 0.55) < 0.05 and abs(cp[1]) < 0.05
                 and abs(cp[2] - 0.71) < 0.06):
             fixes.append("红色方块必须精确放 (0.55, 0, 0.71)")
         csize = cube.get("size") or []
@@ -93,26 +114,55 @@ def generate_yaml() -> str:
                 and abs(csize[2] - 0.03) < 0.005):
             fixes.append("红方块 size 必须精确写 [0.03, 0.03, 0.03]——MuJoCo 的 size 是"
                          "半尺寸，0.03 才是 60mm 方块（夹爪满开 64.8mm 才能抓）；"
-                         "绿蓝装饰方块同样改成 [0.03, 0.03, 0.03]")
-        for deco in ("green_cube", "blue_cube"):
-            o = objs.get(deco) or {}
+                         "绿蓝黄装饰方块同样改成 [0.03, 0.03, 0.03]")
+        # 桌腿必须立在桌面四角正下方（LLM 最常见的错：四条腿挤在桌子中间）
+        legs = [o for n, o in objs.items() if "leg" in (n or "").lower()]
+        missing = []
+        for lx in (0.02, 0.62):
+            for ly in (0.21, -0.21):
+                hit = False
+                for l in legs:
+                    lp = l.get("pos") or []
+                    if (len(lp) >= 2 and abs(lp[0] - lx) < 0.09
+                            and abs(lp[1] - ly) < 0.09):
+                        hit = True
+                        break
+                if not hit:
+                    missing.append(f"({lx}, {ly})")
+        if not legs or missing:
+            fixes.append("四条桌腿必须分别立在桌面四角正下方，缺 " + "、".join(missing)
+                         + "：x=0.02 与 0.62、y=0.21 与 -0.21，半尺寸 "
+                           "0.025x0.025x0.32、中心 z=0.32，绝不能挤在桌子中间")
+        # 台面装饰物必须贴面（z = 台面顶 0.68 + 半尺寸 0.03 = 0.71）
+        for key in ("green", "blue", "yellow"):
+            o = next((v for n, v in objs.items() if key in (n or "").lower()), None)
+            if o is None:
+                continue
             op = o.get("pos") or []
             if not (len(op) >= 3 and abs(op[2] - 0.71) < 0.02):
-                fixes.append(f"{deco} 是 60mm 方块、桌面顶 z=0.68，"
-                             "其 pos z 必须是 0.71（桌面顶 + 半尺寸 0.03），"
-                             "写成 0.68 会陷进桌面被弹飞落地")
+                fixes.append(f"{o.get('name')} 的 pos z 必须是 0.71"
+                             "（桌面顶 0.68 + 半尺寸 0.03），否则会陷进桌面")
+        # 必须有 showcase 演示机位（否则视频只能用脚本写死的自由相机）
+        cams = scene.get("cameras") or []
+        if not any((c.get("name") == "showcase") for c in cams):
+            fixes.append("scene.cameras 必须含一个 name: showcase 的机位："
+                         "pos [1.72,-1.48,1.30]、quat "
+                         "[0.711901,0.594968,0.239265,0.286289]、fovy 40")
         rp = robot.get("pos") or []
-        if not (abs(rp[0]) < 0.05 and abs(rp[1]) < 0.05 and abs(rp[2] - 0.68) < 0.05):
+        if not (len(rp) >= 3 and abs(rp[0]) < 0.05 and abs(rp[1]) < 0.05
+                and abs(rp[2] - 0.68) < 0.05):
             fixes.append("Panda 基座必须精确放 (0, 0, 0.68)")
-        zone = (d.get("task", {}).get("success", {}) or {}).get("zone", {})
+        zone = ((d.get("task") or {}).get("success") or {}).get("zone") or {}
         zmin, zmax = zone.get("min", []), zone.get("max", [])
-        if not (zmin and zmax and zmin[0] <= 0.55 <= zmax[0] and zmin[2] <= 0.86 <= zmax[2]):
+        if not (len(zmin) >= 3 and len(zmax) >= 3 and zmin[0] <= 0.55 <= zmax[0]
+                and zmin[2] <= 0.86 <= zmax[2]):
             fixes.append("成功区 zone 必须罩住空中 (0.55, 0, 0.86)")
         if not fixes:
             break
+        print(f"refine: {len(fixes)} 项 → {'；'.join(f[:28] for f in fixes)}")
         text, _ = sess.refine("；".join(fixes) + "，输出完整修正版 YAML")
     open(cache, "w", encoding="utf-8").write(text)
-    return text
+    return text, cfg.model
 
 
 def main() -> None:
@@ -120,6 +170,9 @@ def main() -> None:
     ap.add_argument("--frames-dir", default="/tmp/agent_frames")
     ap.add_argument("--vp-dir", default="/tmp/agent_vp")
     ap.add_argument("--out", default="site/public/assets/demos/agent_scene_gen.mp4")
+    ap.add_argument("--base-url", default="", help="覆盖 AgentConfig 的端点")
+    ap.add_argument("--model", default="", help="覆盖 AgentConfig 的模型名")
+    ap.add_argument("--dry-run", action="store_true", help="只生成并打印 YAML，不录视频")
     args = ap.parse_args()
 
     import mujoco
@@ -133,7 +186,10 @@ def main() -> None:
     _app = QApplication([])
 
     # ---- 1. LLM 真实生成 + 归一化（控制器绝对路径，落地即跑）----
-    yaml_text = generate_yaml()
+    yaml_text, model_name = generate_yaml(args.base_url, args.model)
+    if args.dry_run:
+        print(yaml_text)
+        return
     d = pyyaml.safe_load(yaml_text)
     d.setdefault("robots", [{}])
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -194,7 +250,7 @@ def main() -> None:
     with Simulation(spec) as sim:
         init_rgb = _render(sim)                       # load 后的初始世界
         stats = sim.run(on_tick=lambda: (
-            _grab(sim) if sim.tick > 0 and sim.tick % 5 == 0 else None),
+            _grab(sim) if sim.tick > 0 else None),
             max_ticks=5000)
     final_png_kb = len(encode_png(init_rgb)) // 1024   # 用初始帧估 PNG 大小
 
@@ -221,7 +277,7 @@ def main() -> None:
             p.fillRect(0, 0, RW, 34, QColor("#10161F"))
             p.setFont(mono(10))
             p.setPen(QPen(QColor(DIM)))
-            p.drawText(16, 21, "agent · ollama/mjcf-generator:7b")
+            p.drawText(16, 21, f"agent · {model_name}")
             p.setPen(QPen(QColor(MINT)))
             p.drawText(RW - 130, 21, "simovia mcp")
             p.setPen(QPen(QColor("#1E293B")))
@@ -285,7 +341,7 @@ def main() -> None:
                                f"← ticks={stats['ticks']} · success={ok} · "
                                f"reward={stats['reward']:+.2f}")
                 y += 34
-            tool(f"screenshot(camera=free, w={LW})",
+            tool(f"screenshot(camera={cam_name or 'free'}, w={LW})",
                  f"← {LW}x{H} PNG · {final_png_kb} KB", 1275)
         finally:
             p.end()

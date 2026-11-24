@@ -34,7 +34,12 @@ _SCHEMA_DOC = """世界 YAML schema（字段语义与 MJCF 对齐）：
   integrator: euler|rk4|implicit|implicitfast（默认 euler；硬接触用 implicitfast）
 
 scene.floor: {size: [半长,半宽]（默认 2x2）, texture: grid, friction: 1.0}
-scene.lights: [{pos: [x,y,z]}]（可选，默认自带一盏）
+scene.lights: [{pos: [x,y,z]}]（可选，默认自带一盏；可给多盏做布光）
+scene.cameras: 世界固定机位列表（可选，演示取景用），字段：
+  name: string（必填，唯一，渲染时按名选取）
+  pos: [x,y,z] 相机世界位置
+  quat: [w,x,y,z] 或 euler: [x,y,z]（degrees，二者给一个）
+  fovy: 垂直视场角（度，默认 45）
 scene.objects: 物体列表，字段：
   name: string（必填，全场景唯一）
   type: box|sphere|cylinder（必填）
@@ -86,6 +91,13 @@ _RULES = """生成规则：
 5. floor.size 要罩住全部物体和机器人（留 0.5m 余量）。
 6. 绝不输出 MJCF/XML，不引用任何 mesh/纹理文件（.obj/.dae/.stl/.png）——
    物体只用 box/sphere/cylinder 基本体表达，机器人只用 zoo:// 模型库。
+7. 组合家具的几何常识：桌腿/椅腿必须立在桌面四角的下方（各腿中心靠近桌面
+   四个角，而不是挤在桌子中间）；放在台面上的物体 z = 台面顶面高度 + 自身
+   半高（不能写台面高度本身，否则会陷进台面）；同一排/一列摆放的物体中心
+   间距 >= 两物体半宽之和 + 0.02m 间隙。
+8. 需要演示取景时，在 scene.cameras 里给一个 name: showcase 的机位
+   （典型：pos 在场景斜前上方约 1.6~1.9m 远、fovy 40~45、quat 保持世界
+   坐标朝向场景中心）；不要编造不存在的字段。
 """
 
 
