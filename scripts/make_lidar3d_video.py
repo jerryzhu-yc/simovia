@@ -95,6 +95,67 @@ def _label(canvas: np.ndarray, x: int, y: int, text: str, size=15, pad=6):
         p.end()
 
 
+# ---- 贴车跟拍机位参数（几何定参：相机高 0.55m、车后 0.95m、俯角 12°，
+#      画面下缘带约 1/4 车身、主体为车前方视野）----
+CAM_FWD = 1.4                              # lookat 在车前方 1.4m、贴地 0.05m
+CAM_BACK = 0.95                            # 相机在车后方 0.95m、高 0.55m
+CAM_MARGIN = 0.06                          # 相机从障碍 AABB 推出后的边距
+
+
+def _cam_aabbs(spec) -> list:
+    """跟拍相机高度带 [0.40, 0.70]m 相交的静态障碍 AABB 列表。
+
+    相机高 0.55m：低于该带的几何（床裙 0.28、床垫 0.48、沙发座 0.38、
+    桌面 0.745 顶、电视屏底 0.60）相机直接越过/钻过，无需钳制；相交的
+    （四面墙、门、窗、床头板、衣柜、沙发背/扶手、椅背、桌腿、灯杆）
+    相机撞进去画面就是整块几何内表面（零方差灰屏），必须推出。
+    """
+    z0b, z1b = 0.40, 0.70
+    out = []
+    for o in spec.scene.objects:
+        if not getattr(o, "static", False):
+            continue
+        pos, size = o.pos, o.size
+        if not size:
+            continue
+        if o.type == "box" and len(size) >= 3:
+            hx, hy, hz = (float(v) for v in size[:3])
+        elif o.type == "cylinder" and len(size) >= 2:
+            hx = hy = float(size[0])
+            hz = float(size[1])
+        elif o.type == "sphere":
+            hx = hy = hz = float(size[0])
+        else:
+            continue
+        if float(pos[2]) + hz < z0b or float(pos[2]) - hz > z1b:
+            continue
+        out.append((float(pos[0]) - hx, float(pos[1]) - hy,
+                    float(pos[0]) + hx, float(pos[1]) + hy))
+    return out
+
+
+def _push_out(cx: float, cy: float, aabbs: list) -> tuple:
+    """把相机点推出所有 AABB（最近边外留 CAM_MARGIN）。"""
+    for _ in range(3):                     # 两三轮：推出可能落进相邻 AABB
+        moved = False
+        for lx, ly, hx, hy in aabbs:
+            if lx <= cx <= hx and ly <= cy <= hy:
+                dl, dr, db, dt = cx - lx, hx - cx, cy - ly, hy - cy
+                m = min(dl, dr, db, dt)
+                if m == dl:
+                    cx = lx - CAM_MARGIN
+                elif m == dr:
+                    cx = hx + CAM_MARGIN
+                elif m == db:
+                    cy = ly - CAM_MARGIN
+                else:
+                    cy = hy + CAM_MARGIN
+                moved = True
+        if not moved:
+            break
+    return cx, cy
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--world", default="worlds/lidar_nav3d.yaml")
@@ -141,7 +202,8 @@ def main() -> None:
     rname = spec.robots[0].name
     renderer = None
     cam = mujoco.MjvCamera()
-    frame_idx, phase_text = [0], ["EXPLORE 建图巡逻"]
+    cam_aabbs = _cam_aabbs(spec)
+    frame_idx, phase_text, last_rgb3d = [0], ["EXPLORE 建图巡逻"], [None]
 
     def _snapshot(sim) -> dict:
         """复刻 MCP _tool_lidar_map 的 payload（maps/poses/overlays/pc）。"""
@@ -181,20 +243,33 @@ def main() -> None:
 
     def _grab(sim) -> None:
         nonlocal renderer
-        # ---- 左：MuJoCo 3D 实车（相机跟随扫地机）
+        # ---- 左：MuJoCo 3D 实车（贴车跟拍机位，见下方参数注释）
         ridx = sim.index.robots[rname]
         qadr = root_freejoint_qadr(sim.model, ridx)
         x, y, z, qw, qx, qy, qz = (float(v) for v in sim.data.qpos[qadr:qadr + 7])
         yaw = math.atan2(2.0 * (qw * qz + qx * qy),
                          1.0 - 2.0 * (qy * qy + qz * qz))
-        cam.lookat[:] = [x, y, 0.30]
-        cam.distance = 3.2
-        cam.azimuth = math.degrees(yaw) + 90.0    # 正后方追随机位
-        cam.elevation = -40.0                     # 俯视压低空天占比
+        # 贴车跟拍：相机高 0.55m（高于床垫/床裙、低于沙发背，几何定参保证
+        # 画面下缘带约 1/4 车身、主体是车前方视野）；远跟机位（distance 3.2）
+        # 会被墙挡视线。相机若落在墙/衣柜等高障碍内部则整帧灰屏，故对
+        # 相机水平位置做 AABB 推出钳制（lookat 同步平移保持视轴方向）。
+        cpx = x - math.cos(yaw) * CAM_BACK
+        cpy = y - math.sin(yaw) * CAM_BACK
+        nx, ny = _push_out(cpx, cpy, cam_aabbs)
+        cam.lookat[:] = [x + math.cos(yaw) * CAM_FWD + (nx - cpx),
+                         y + math.sin(yaw) * CAM_FWD + (ny - cpy), 0.05]
+        cam.distance = 2.4
+        cam.azimuth = math.degrees(yaw)      # az=yaw：相机在车正后方（MjvCamera
+        cam.elevation = -12.0                # 方位角约定经标定实验验证）
         if renderer is None:
             renderer = mujoco.Renderer(sim.model, H, LW)
         rgb3d = render_offscreen(sim.model, sim.data, LW, H,
                                   renderer=renderer, free_cam=cam)
+        # 全灰兜底：偶发渲染失败帧（近乎零方差均匀灰）复用上一帧
+        if rgb3d.var() < 5.0 and last_rgb3d[0] is not None:
+            rgb3d = last_rgb3d[0]
+        else:
+            last_rgb3d[0] = rgb3d
         # ---- 右上/右下：Qt 部件（喂同款数据后 grab）
         data = _snapshot(sim)
         pc_view.update_pc(next(iter(data.get("pc", {}).values()), None))
