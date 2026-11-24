@@ -378,10 +378,19 @@ function Demos() {
 
         <div className="mt-6 rounded-2xl border border-line bg-panel/40 px-5 py-4 font-mono text-xs leading-6 text-slate-500">
           <span className="text-slate-300">复现入口：</span>
-          python -m demo.maintenance_relay · python -m demo.fruit_sorting ·
+          python -m simovia run worlds/lidar_nav3d.yaml ·
           python -m simovia run worlds/lidar_nav.yaml ·
+          python -m demo.maintenance_relay · python -m demo.fruit_sorting ·
           python -m simovia run worlds/pick_cube.yaml ·
-          worlds/g1_cloth_teleop.yaml · worlds/so101_policy_eval.yaml
+          worlds/g1_cloth_teleop.yaml · worlds/so101_policy_eval.yaml ·
+          <a
+            className="text-mint hover:underline"
+            href="https://github.com/jerryzhu-yc/simovia-playground"
+            target="_blank"
+            rel="noreferrer"
+          >
+            playground 分支逐个 demo 复现 →
+          </a>
         </div>
       </div>
     </section>
