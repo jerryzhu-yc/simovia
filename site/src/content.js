@@ -190,6 +190,14 @@ export const DEMOS = [
   },
   {
     kind: "video",
+    src: "./assets/demos/go2_sim2sim.mp4",
+    tag: "sim2sim · 跨引擎",
+    title: "同一份 CPG 步态：原生 MuJoCo vs simovia",
+    body: "左半是直接用 MuJoCo 原生 API 步进的 Go2（保留引擎默认的灰地面、黑背景），右半是同一个 go2.xml、同一份对角小跑控制律跑在 simovia 里（天空盒 + 网格地面）。目标域只改物理：控制周期 62.5→50 Hz、积分器 implicitfast→implicit、impratio 100→20、地面摩擦 0.8→0.6、重力 -9.81→-9.6。两端共用同一相机、同一起始位姿、同一条时间轴，4 秒里步频与位移的差别只来自仿真条件本身（源端 2.80 m，目标端 3.35 m）。",
+    meta: "Go2 对角小跑 · 62.5Hz vs 50Hz · 4s 对齐",
+  },
+  {
+    kind: "video",
     src: "./assets/demos/maintenance_relay.mp4",
     tag: "多机器人协同",
     title: "Go2 × G1 × UR5e 联合维修",

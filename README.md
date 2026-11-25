@@ -4,7 +4,7 @@
 
 Simovia 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿真世界），把"控制器"做成独立进程（Webots 风格的 `robot.step()` 循环），并通过标准 MCP（Model Context Protocol）把整个仿真内核暴露给 AI Agent——Agent 可以读世界、改世界、重跑、观察结果、再调整，形成完整的感知-决策闭环。
 
-> **Demo 集锦**：13 个可独立复现的 demo 已整理到 [simovia-playground](https://github.com/jerryzhu-yc/simovia-playground)——每个分支 = 一个 demo（世界文件 + 控制器 + 复现说明），`git checkout demo/<名字>` 即跑；完整映射见下文[演示合集](#演示合集)。
+> **Demo 集锦**：14 个可独立复现的 demo 已整理到 [simovia-playground](https://github.com/jerryzhu-yc/simovia-playground)——每个分支 = 一个 demo（世界文件 + 控制器 + 复现说明），`git checkout demo/<名字>` 即跑；完整映射见下文[演示合集](#演示合集)。
 
 ```
         ┌──────────────────────────────────────────────┐
@@ -814,6 +814,7 @@ python examples/train_ppo_go2.py
 | G1 遥操作采集 + 数据链路 | PICO 双手柄 + 2F85 采 LeRobot 数据集，随机化场景回放增强 | `worlds/g1_cloth_teleop.yaml` | [`demo/g1-cloth`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/g1-cloth) |
 | G1 π0.5 策略闭环 | 双相机 + 语言指令驱动 π0.5（pi05 + LoRA）自主抓毯入盒 | `worlds/g1_cloth_policy_eval.yaml` | [`demo/g1-cloth-policy`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/g1-cloth-policy) |
 | Go2 × G1 × UR5e 联合维修 | 三机接触接力：UR5e 装模块 → Go2 运输 → G1 装入导向槽并复位 | [demo/maintenance_relay](demo/maintenance_relay/README.md) | [`demo/maintenance-relay`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/maintenance-relay) |
+| Go2 对角小跑 sim2sim | 同一份 CPG 步态：原生 MuJoCo 步进 vs simovia 目标域（只改物理参数） | [README](README.md#go2-对角小跑-sim2sim同一控制律两套仿真引擎) + `worlds/go2_trot_sim2sim.yaml` | [`demo/go2-sim2sim`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/go2-sim2sim) |
 | 视觉水果分拣 | 腕部 RGB → HSV → 2.5D 抓取入框 | [demo/fruit_sorting](demo/fruit_sorting/README.md) | [`demo/fruit-sorting`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/fruit-sorting) |
 | 腕部相机手眼标定 | Panda / UR5e 眼在手上 AXB 标定（采样-求解-验证-落盘） | [demo/hand_eye](demo/hand_eye/README.md) | [`demo/hand-eye`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/hand-eye) |
 
@@ -838,6 +839,29 @@ python examples/train_ppo_go2.py
 - **遥操作采集**（`worlds/g1_cloth_teleop.yaml`）：PICO 头显自带浏览器连控制器，左右手柄增量映射到双臂 TCP，扳机控制夹爪，A 键开关录制；每控制 tick 采 cam_high + 腕部相机，落成 LeRobot v2.1（16 维双臂 state/action，openpi π0.5 loader 可直接读）。
 - **数据回放**（`worlds/g1_cloth_augment.yaml`）：读取已有 episode 的 action 在重新随机化（布料颜色/摆放、桌面、灯光、机位、后处理）的场景里重放同一段关节轨迹，并把新帧追加回数据集。**会写回源数据集**，先复制一份再跑。
 - **π0.5 策略闭环**（`worlds/g1_cloth_policy_eval.yaml`）：π0.5（pi05 + LoRA，30k step）以第三人称 `cam_high` + 腕部 `cam_left_wrist` 两路 256×256 图像与语言指令为输入，每 0.32s 输出一个 10 帧动作 chunk，控制器逐 tick 回放（31.25 Hz）。推理跑在独立子进程里（由控制器用 openpi 的 venv 拉起，jax 与 mujoco 环境互斥，走定长二进制协议）；成功要求布料质心进盒、两侧夹爪松开并保持 0.5s。openpi 配置补丁、权重目录与参数说明见 [playground 分支](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/g1-cloth-policy)。
+
+### Go2 对角小跑 sim2sim：同一控制律，两套仿真引擎
+
+`worlds/go2_trot_demo.yaml` 就是模型库里 Go2「加载即走」的那个 CPG 对角小跑 demo（`zoo.generate('unitree_go2', demo=True)` 的生成物，控制器收进了仓库）。控制律只有一份、纯 numpy、无状态依赖：`simovia/sim2sim/go2_trot.py`，力矩执行器用 PD 跟踪 `q*(t) = home + amp·sin(2πf·t + 相位 + 膝滞后)`，对角腿反相。
+
+sim2sim 的三份实现共用这一份控制律：
+
+```bash
+# 基线（simovia 里跑，等价于 zoo demo）
+python -m simovia run worlds/go2_trot_demo.yaml
+
+# sim2sim 目标域（只改物理：50Hz / implicit / impratio 20 / μ0.6 / g -9.6）
+python -m simovia run worlds/go2_trot_sim2sim.yaml --record /tmp/go2_s2s --record-images \
+    --record-camera showcase --record-width 960 --record-height 720
+
+# 源端：MuJoCo 自带 viewer 实时观看（不加 --ticks 就一直走，Ctrl+C 或关窗退出）
+python examples/sim2sim/mujoco_go2_trot.py --viewer
+
+# 源端录视频：直接用 MuJoCo API 步进同一个 go2.xml
+MUJOCO_GL=egl python examples/sim2sim/mujoco_go2_trot.py --ticks 250 --video /tmp/go2_mujoco.mp4 --stride 1
+```
+
+源端脚本刻意复刻了 simovia 的场景构造顺序（先建空 MjSpec + 地面/相机，再用 frame 平移 attach 机器人）。构造顺序会影响接触求解顺序，两边同序之后，同一份控制律在两套引擎下的轨迹几乎逐点重合（t=3.2s 时 x 1.94 vs 1.93 m），差异全部来自目标域那四项物理改动：4 秒里源端走 2.80 m、目标端走 3.35 m，步频与姿态也肉眼可辨。外观上源端刻意保留 MuJoCo 引擎默认（灰地面、黑背景、默认平行光），目标端是 simovia 的天空盒 + 网格地面，对比视频里一眼就能看出哪半是原生 MuJoCo。
 
 ## 视觉水果分拣与独立手眼标定
 
@@ -963,13 +987,14 @@ simovia/
 │   └── cli.py             # run / inspect / mcp / gui / scenegen 命令行
 ├── models/                # 机器人 MJCF（demo_arm、diff_car）+ 4 款夹爪
 │                          # + zoo/<key>/：35 个 Menagerie 模型资产随仓库自带（离线即用）
-├── worlds/                # 19 个示例世界（pick_cube / twin_arms / lidar_nav{,3d} /
+├── worlds/                # 21 个示例世界（pick_cube / twin_arms / lidar_nav{,3d} /
 │                          #   g1_cloth_{fold,teleop,augment,policy_eval} /
+│                          #   go2_trot_{demo,sim2sim} /
 │                          #   so101_{sort,pico_sort,policy_eval,policy_eval_sim2sim} 等）
 ├── controllers/           # 示例控制器（pick_place / lidar_nav{,3d} / g1_cloth_* /
-│                          #   pi05_infer_worker / so101_*）
+│                          #   pi05_infer_worker / so101_* / go2_trot_sim2sim）
 ├── demo/                  # 场景 demo（cloth_folding / fruit_sorting / hand_eye / maintenance_relay）
-├── examples/              # PPO 训练示例（train_ppo_go2.py，sb3 可选依赖）
+├── examples/              # PPO 训练示例（train_ppo_go2.py）+ sim2sim 源端（sim2sim/mujoco_go2_trot.py）
 ├── site/                  # 展示站（Vite + React，CI 自动部署 GitHub Pages）
 ├── docs/                  # 设计文档与里程碑实施计划
 ├── start.bat / start.sh / create_desktop_shortcut.bat / simovia.ico

@@ -1,0 +1,40 @@
+name: go2_trot_sim2sim       # 同一 CPG 步态的 sim2sim 目标域：只改物理，几何/相机/外观/出生位姿不变
+# 与 worlds/go2_trot_demo.yaml 的差异（对照源端 examples/sim2sim/mujoco_go2_trot.py）：
+#   - 控制周期 0.016s(62.5Hz) -> 0.020s(50Hz)：策略更新更粗
+#   - integrator implicitfast -> implicit（含科氏力项），impratio 100 -> 20
+#   - 重力 -9.81 -> -9.6，地面摩擦 0.8 -> 0.6
+# 目的：验证同一条开环步态在"不同仿真条件"下是否还能走，而不是刷成功率。
+# 外观（地面网格/天空/机位）保持不变，对比视频里两边的差异只来自物理。
+timestep: 0.0025
+ctrl_period: 8               # 0.0025 x 8 = 0.020s -> 50Hz
+gravity: [0, 0, -9.6]
+impratio: 20
+integrator: implicit
+
+scene:
+  floor:
+    size: [15.0, 15.0]
+    texture: grid
+    friction: 0.6
+  lights:
+    - {pos: [0, 0, 3]}
+  cameras:
+    # 机位必须与 go2_trot_demo 完全一致，否则视频对比没有可比性
+    - name: showcase
+      pos: [3.418, 2.428, 1.964]
+      quat: [0.200893, 0.130462, 0.528783, 0.814254]
+      fovy: 50
+
+robots:
+  - name: go2
+    model: ../models/zoo/unitree_go2/go2.xml
+    pos: [0, 0, 0.45]
+    controller: ../controllers/go2_trot_sim2sim.py
+
+task:
+  max_ticks: 200             # 4s（50Hz 下 0.02s/tick），与 go2_trot_demo 的 4s 对齐
+
+runtime:
+  realtime: false
+  controller_timeout: 120
+  timeout_policy: last_ctrl
