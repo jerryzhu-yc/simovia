@@ -2,6 +2,8 @@
 
 包含 G1 双臂收拾毛毯、三机联合维修、视觉分拣和手眼标定。G1 叠毯支持命令行脚本演示与 PICO 遥操作采集；联合维修在独立任务控制台中运行；视觉分拣与手眼标定沿用主窗口场景工作流。
 
+每个 demo 另有独立的 playground 分支（[simovia-playground](https://github.com/jerryzhu-yc/simovia-playground)）：分支根目录就是该 demo 的世界文件、控制器与完整复现说明，`git checkout demo/<名字>` 即跑。
+
 | 场景 | 软件内入口 | 场景文件 |
 |---|---|---|
 | G1 双臂收拾毛毯（脚本叠毯） | 命令行 `python -m demo.cloth_folding.run` 或加载世界 | [cloth_folding/README.md](cloth_folding/README.md) |
@@ -34,7 +36,7 @@ python -m simovia gui
 
 ## G1 收拾毛毯
 
-三套世界共用 G1 双臂 + 2F85 夹爪，分别覆盖脚本演示、PICO 采集和数据增强回放；详细命令与物理实现见 [cloth_folding/README.md](cloth_folding/README.md)。
+四套世界共用 G1 + 2F85 夹爪，分别覆盖脚本演示、PICO 采集、数据增强回放和 π0.5 策略闭环；详细命令与物理实现见 [cloth_folding/README.md](cloth_folding/README.md)。
 
 - **脚本叠毯**：`python -m demo.cloth_folding.run`，加 `--video out.mp4` 同时录视频。毛毯是 flexcomp 二维网格柔体，双臂用离线关键帧 IK 对折，抓取靠有限刚度的合规抓持力。
 - **遥操作采集**：加载 `worlds/g1_cloth_teleop.yaml`，PICO 头显浏览器打开 `http://<PC 的 IP>:8090`，双手柄驱动双臂、扳机控夹爪、A 键开关录制，落成 LeRobot v2.1 数据集。

@@ -185,7 +185,7 @@ function Hero() {
         </div>
 
         <p className="mt-5 font-mono text-[11px] text-slate-500">
-          35 个机器人模型 · 17 个示例世界 · 17 个 MCP 工具 · 31.25 Hz 策略闭环
+          35 个机器人模型 · 19 个示例世界 · 17 个 MCP 工具 · 31.25 Hz 策略闭环
         </p>
       </div>
     </section>

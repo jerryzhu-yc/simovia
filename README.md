@@ -4,6 +4,8 @@
 
 Simovia 把"世界"做成代码（World as Code：一份 YAML 即一个完整仿真世界），把"控制器"做成独立进程（Webots 风格的 `robot.step()` 循环），并通过标准 MCP（Model Context Protocol）把整个仿真内核暴露给 AI Agent——Agent 可以读世界、改世界、重跑、观察结果、再调整，形成完整的感知-决策闭环。
 
+> **Demo 集锦**：13 个可独立复现的 demo 已整理到 [simovia-playground](https://github.com/jerryzhu-yc/simovia-playground)——每个分支 = 一个 demo（世界文件 + 控制器 + 复现说明），`git checkout demo/<名字>` 即跑；完整映射见下文[演示合集](#演示合集)。
+
 ```
         ┌──────────────────────────────────────────────┐
         │                AI Agent (MCP)                 │
@@ -797,24 +799,35 @@ python examples/train_ppo_go2.py
 
 所有场景都在仓库内，可直接加载运行；演示视频与最新画面见[展示站](https://jerryzhu-yc.github.io/simovia/)。
 
-| 演示 | 内容 | 入口 |
-|---|---|---|
-| 雷达建图与自主导航 | 差速小车绕圈建图 → 维诺骨架 → A* → 纯跟踪 | `worlds/lidar_nav.yaml` |
-| G1 收拾毛毯 · 脚本叠毯 | 双臂离线 IK 关键帧把柔性毛毯对折 | `python -m demo.cloth_folding.run` |
-| G1 收拾毛毯 · 遥操作采集 | PICO 双手柄 + 2F85 采集 LeRobot 数据集 | `worlds/g1_cloth_teleop.yaml` |
-| G1 收拾毛毯 · 数据回放 | 读数据集 action 在随机化场景重渲染增强 | `worlds/g1_cloth_augment.yaml` |
-| Go2 × G1 × UR5e 联合维修 | 三机接触交接完成维修任务 | [demo/maintenance_relay](demo/maintenance_relay/README.md) |
-| 视觉水果分拣 | 腕部 RGB → HSV → 2.5D 抓取入框 | [demo/fruit_sorting](demo/fruit_sorting/README.md) |
-| 腕部相机手眼标定 | Panda / UR5e 眼在手上标定 | [demo/hand_eye](demo/hand_eye/README.md) |
-| SmolVLA 策略闭环 | SO-101 遥操作采集 → 微调 → 推理 | [so101-smolvla-demo](https://github.com/jerryzhu-yc/so101-smolvla-demo) |
+每个 demo 在 [simovia-playground](https://github.com/jerryzhu-yc/simovia-playground) 上都有一个独立分支：分支根目录即该 demo 的世界文件、控制器与完整复现说明（含依赖、参数与排障），`main` 分支是索引。
+
+| 演示 | 内容 | 本地入口 | Playground 分支 |
+|---|---|---|---|
+| 3D 多线雷达建图 + 全屋覆盖 | 16 线 × 60 束 3D 点云建图 → 蛇形全覆盖清扫 → 回充 | `worlds/lidar_nav3d.yaml` | [`demo/lidar-nav-3d`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/lidar-nav-3d) |
+| 2D 雷达建图 + 骨架导航 | 60 束 log-odds 占据栅格 → 维诺骨架 → A* → 纯跟踪 | `worlds/lidar_nav.yaml` | [`demo/lidar-nav-2d`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/lidar-nav-2d) |
+| Panda 抓取 | 2FG7 相位机：接近-下探-闭合-抬升-入成功区 | `worlds/pick_cube.yaml` | [`demo/pick-cube`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/pick-cube) |
+| RRP 三轴臂 IK | DH 表造臂 + 解析逆运动学走轨迹 | `worlds/rrp3_ik.yaml` | [`demo/rrp3-ik`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/rrp3-ik) |
+| 自制连杆树机械臂 | YAML 连杆树从零造臂 + 旋转矩阵/位姿实时打印 | `worlds/diy_arm.yaml` | [`demo/diy-arm`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/diy-arm) |
+| SO-101 桌面分拣 | 红/蓝方块 → 同色料盒（控制器演示红块入框） | `worlds/so101_sort.yaml` | [`demo/so101-sort`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/so101-sort) |
+| SmolVLA 策略闭环 | SO-101 双相机 + 语言指令驱动，31.25 Hz chunk 推理（附 sim2sim 变体） | `worlds/so101_policy_eval.yaml` | [`demo/so101-policy-eval`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/so101-policy-eval) |
+| G1 脚本叠毯 | 双臂离线 IK 关键帧把柔性毛毯对折 | `python -m demo.cloth_folding.run` | [`demo/cloth-folding`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/cloth-folding) |
+| G1 遥操作采集 + 数据链路 | PICO 双手柄 + 2F85 采 LeRobot 数据集，随机化场景回放增强 | `worlds/g1_cloth_teleop.yaml` | [`demo/g1-cloth`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/g1-cloth) |
+| G1 π0.5 策略闭环 | 双相机 + 语言指令驱动 π0.5（pi05 + LoRA）自主抓毯入盒 | `worlds/g1_cloth_policy_eval.yaml` | [`demo/g1-cloth-policy`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/g1-cloth-policy) |
+| Go2 × G1 × UR5e 联合维修 | 三机接触接力：UR5e 装模块 → Go2 运输 → G1 装入导向槽并复位 | [demo/maintenance_relay](demo/maintenance_relay/README.md) | [`demo/maintenance-relay`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/maintenance-relay) |
+| 视觉水果分拣 | 腕部 RGB → HSV → 2.5D 抓取入框 | [demo/fruit_sorting](demo/fruit_sorting/README.md) | [`demo/fruit-sorting`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/fruit-sorting) |
+| 腕部相机手眼标定 | Panda / UR5e 眼在手上 AXB 标定（采样-求解-验证-落盘） | [demo/hand_eye](demo/hand_eye/README.md) | [`demo/hand-eye`](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/hand-eye) |
+
+> SO-101 的 PICO 遥操作采集 + SmolVLA 微调完整链路（含 `lerobot-train` 命令与常见坑）在独立仓库：[jerryzhu-yc/so101-smolvla-demo](https://github.com/jerryzhu-yc/so101-smolvla-demo)。
 
 ### 雷达建图与自主导航
 
 `worlds/lidar_nav.yaml`：5.2m × 4.2m 房间、五处静态障碍，差速小车车顶装 60 束 2D 激光雷达。控制器 `controllers/lidar_nav.py` 分三步：外圈巡逻建图（log-odds 占据栅格实时更新）→ 对可通行区做障碍膨胀与 Zhang-Suen 细化得到 1px 维诺骨架，在骨架上 A* 搜路 → 纯跟踪沿路径行驶到目标。建图、骨架、A* 路径经叠加层实时显示在 GUI「雷达建图」面板，AI Agent 也可用 MCP 工具 `lidar_map` 直接读取。
 
-### G1 收拾毛毯：脚本叠毯 / 遥操作 / 数据回放
+`worlds/lidar_nav3d.yaml` 是同一思路的 3D 版本：6.4m × 4.8m 居家房间（床、衣柜、餐桌椅、沙发、茶几、电视柜、地毯、绿植等），扫地机器人车顶 16 线 × 60 束（960 束/帧）3D 雷达。控制器 `controllers/lidar_nav3d.py` 建图 → 覆盖规划 → 清扫回充三段推进：3D 命中点离散化成体素，高度带内的命中投影成俯视占据（地面不挡路、床面桌面不挡路、床裙椅腿横撑必进障碍），再把可通行区切成条带做蛇形全覆盖、相邻覆盖线用 A* 连接，最后纯跟踪走完并回充。点云按高度着色直接渲染在 3D 视口。
 
-三套世界共用 G1 双臂 + 2F85 夹爪 + 桌面毛毯，分别覆盖「自动演示 / 采集 / 增强」：
+### G1 收拾毛毯：脚本叠毯 / 遥操作 / 数据回放 / π0.5 策略闭环
+
+四套世界共用 G1 + 2F85 夹爪 + 桌面毛毯，分别覆盖「自动演示 / 采集 / 增强 / 策略闭环」：
 
 - **脚本叠毯**（`worlds/g1_cloth_fold.yaml`）：毛毯是 flexcomp 二维网格柔体（膜/弯刚度 + 自碰撞）。启动时把每个关键帧目标解成 7 关节角，运行中余弦插值；抓取用有限刚度的合规抓持力锁定指间布顶点，布料本体仍是完整柔体仿真。命令行可录视频：
   ```bash
@@ -824,6 +837,7 @@ python examples/train_ppo_go2.py
   也可在 GUI 里加载世界，由 `demo/cloth_folding/controller.py` 作内核内共享控制器预览。
 - **遥操作采集**（`worlds/g1_cloth_teleop.yaml`）：PICO 头显自带浏览器连控制器，左右手柄增量映射到双臂 TCP，扳机控制夹爪，A 键开关录制；每控制 tick 采 cam_high + 腕部相机，落成 LeRobot v2.1（16 维双臂 state/action，openpi π0.5 loader 可直接读）。
 - **数据回放**（`worlds/g1_cloth_augment.yaml`）：读取已有 episode 的 action 在重新随机化（布料颜色/摆放、桌面、灯光、机位、后处理）的场景里重放同一段关节轨迹，并把新帧追加回数据集。**会写回源数据集**，先复制一份再跑。
+- **π0.5 策略闭环**（`worlds/g1_cloth_policy_eval.yaml`）：π0.5（pi05 + LoRA，30k step）以第三人称 `cam_high` + 腕部 `cam_left_wrist` 两路 256×256 图像与语言指令为输入，每 0.32s 输出一个 10 帧动作 chunk，控制器逐 tick 回放（31.25 Hz）。推理跑在独立子进程里（由控制器用 openpi 的 venv 拉起，jax 与 mujoco 环境互斥，走定长二进制协议）；成功要求布料质心进盒、两侧夹爪松开并保持 0.5s。openpi 配置补丁、权重目录与参数说明见 [playground 分支](https://github.com/jerryzhu-yc/simovia-playground/tree/demo/g1-cloth-policy)。
 
 ## 视觉水果分拣与独立手眼标定
 
@@ -949,9 +963,11 @@ simovia/
 │   └── cli.py             # run / inspect / mcp / gui / scenegen 命令行
 ├── models/                # 机器人 MJCF（demo_arm、diff_car）+ 4 款夹爪
 │                          # + zoo/<key>/：35 个 Menagerie 模型资产随仓库自带（离线即用）
-├── worlds/                # 17 个示例世界（pick_cube / twin_arms / lidar_nav /
-│                          #   g1_cloth_{fold,teleop,augment} / so101_{pico_sort,policy_eval} 等）
-├── controllers/           # 示例控制器（pick_place / lidar_nav / g1_cloth_* / so101_*）
+├── worlds/                # 19 个示例世界（pick_cube / twin_arms / lidar_nav{,3d} /
+│                          #   g1_cloth_{fold,teleop,augment,policy_eval} /
+│                          #   so101_{sort,pico_sort,policy_eval,policy_eval_sim2sim} 等）
+├── controllers/           # 示例控制器（pick_place / lidar_nav{,3d} / g1_cloth_* /
+│                          #   pi05_infer_worker / so101_*）
 ├── demo/                  # 场景 demo（cloth_folding / fruit_sorting / hand_eye / maintenance_relay）
 ├── examples/              # PPO 训练示例（train_ppo_go2.py，sb3 可选依赖）
 ├── site/                  # 展示站（Vite + React，CI 自动部署 GitHub Pages）
