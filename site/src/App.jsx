@@ -321,7 +321,9 @@ function AgentCoding() {
 }
 
 function DemoMedia({ demo }) {
-  const ratio = demo.featured ? "aspect-[16/9]" : "aspect-[4/3]";
+  // 单卡片默认 16:9 / 4:3；横跨整行的并排视频自带很宽的画幅，按原始比例展示，
+  // 否则 object-cover 会把两侧裁掉（Go2 sim2sim 这类并排对比尤其明显）。
+  const ratio = demo.ratio || (demo.featured ? "aspect-[16/9]" : "aspect-[4/3]");
   if (demo.kind === "image") {
     return (
       <img

@@ -37,10 +37,10 @@ from simovia.sim2sim.go2_trot import ACTUATORS, Go2Trot  # noqa: E402
 
 XML = ROOT / "models" / "zoo" / "unitree_go2" / "go2.xml"
 
-# 与 worlds/go2_trot_demo.yaml 完全一致的机位（对比视频要用）；地面/背景/
-# 光照刻意保留 MuJoCo 默认外观，好让两边一眼看出是不同的仿真软件
-CAM_POS = [3.418, 2.428, 1.964]
-CAM_QUAT = [0.200893, 0.130462, 0.528783, 0.814254]
+# 与 worlds/go2_trot_demo.yaml 完全一致的机位（对比视频要用）；地面和背景
+# 用 MuJoCo 自己的灰地面/黑背景，好让两边一眼看出是不同的仿真软件
+CAM_POS = [3.289, 3.618, 2.315]
+CAM_QUAT = [0.151214, 0.098413, 0.536518, 0.824377]
 CAM_FOVY = 50.0
 FLOOR_FRICTION = 0.8
 

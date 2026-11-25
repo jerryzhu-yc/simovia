@@ -197,7 +197,7 @@ export const DEMOS = [
     body: "左半是直接用 MuJoCo 原生接口步进的 Go2，右半是同一个 go2.xml、同一份对角小跑控制律跑在 simovia 里：地面、背景、界面都来自各自软件，一眼就能看出不是一个仿真器。目标域只改物理——控制周期 62.5→50 Hz、积分器 implicitfast→implicit、impratio 100→20、地面摩擦 0.8→0.6、重力 -9.81→-9.6；两端共用同一相机、同一起始位姿、同一条时间轴，4 秒里步频与位移的差别只来自仿真条件本身（源端 2.80 m，目标端 3.35 m）。",
     meta: "Go2 对角小跑 · 62.5Hz vs 50Hz · 4s 对齐",
     featured: true,
-    row: true,
+    ratio: "aspect-[2560/1044]",
   },
   {
     kind: "video",
