@@ -7,6 +7,7 @@
 | G1 双臂收拾毛毯（脚本叠毯） | 命令行 `python -m demo.cloth_folding.run` 或加载世界 | [cloth_folding/README.md](cloth_folding/README.md) |
 | G1 收拾毛毯（遥操作采集） | 文件 → 打开世界 → `g1_cloth_teleop.yaml` | [worlds/g1_cloth_teleop.yaml](../worlds/g1_cloth_teleop.yaml) |
 | G1 收拾毛毯（数据回放增强） | 文件 → 打开世界 → `g1_cloth_augment.yaml` | [worlds/g1_cloth_augment.yaml](../worlds/g1_cloth_augment.yaml) |
+| G1 收拾毛毯（π0.5 策略闭环推理） | 文件 → 打开世界 → `g1_cloth_policy_eval.yaml` | [worlds/g1_cloth_policy_eval.yaml](../worlds/g1_cloth_policy_eval.yaml) |
 | Go2 × G1 × UR5e 联合维修 | 文件 → Go2 × G1 × UR5e 联合维修 Demo… | [使用说明](maintenance_relay/README.md) |
 | 香蕉、苹果、葡萄分拣 | 文件 → 水果视觉分拣 Demo… | [fruit_sorting/scene.yaml](fruit_sorting/scene.yaml) |
 | Panda 腕部相机标定 | 文件 → 手眼标定 Demo → Panda 手眼标定… | [hand_eye/scene_panda.yaml](hand_eye/scene_panda.yaml) |
@@ -38,6 +39,7 @@ python -m simovia gui
 - **脚本叠毯**：`python -m demo.cloth_folding.run`，加 `--video out.mp4` 同时录视频。毛毯是 flexcomp 二维网格柔体，双臂用离线关键帧 IK 对折，抓取靠有限刚度的合规抓持力。
 - **遥操作采集**：加载 `worlds/g1_cloth_teleop.yaml`，PICO 头显浏览器打开 `http://<PC 的 IP>:8090`，双手柄驱动双臂、扳机控夹爪、A 键开关录制，落成 LeRobot v2.1 数据集。
 - **数据回放增强**：加载 `worlds/g1_cloth_augment.yaml`，读取已有 episode 的 action 在随机化（外观 / 灯光 / 机位 / 后处理）场景重放并追加回数据集。**会写回源数据集**，先复制一份再跑。
+- **π0.5 策略闭环推理**：加载 `worlds/g1_cloth_policy_eval.yaml`（或 `python -m simovia run worlds/g1_cloth_policy_eval.yaml`）。控制器把 cam_high / cam_left_wrist 两路 256×256 图像与 16 维关节状态送进子进程里的 π0.5（pi05 + LoRA）推理 worker，按 10 帧动作 chunk、31.25 Hz 回放；抓起毛毯、松手落入盒内并保持 0.5s 判成功，超过 30s 仿真时间判失败。前置条件：`~/openpi/.venv` 可用、checkpoint 存在，路径与 `device` / `num_steps` 在 YAML 的 `robots[].args` 里配置。展示站上的「遥操作 vs π0.5」对比视频就是本世界与 `g1_cloth.mp4` 同机位逐帧对齐拼出来的。
 
 ## 目录
 

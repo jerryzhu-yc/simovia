@@ -66,8 +66,12 @@ robots:
       model: pi05_g1_cloth_lora
       checkpoint: ~/openpi/checkpoints/pi05_g1_cloth_lora/g1_cloth/30000
       python: ~/openpi/.venv/bin/python     # openpi 的 uv 环境（jax/flax）
-      device: cpu                            # CPU 约 7s/次；5070 显存不足时不要切 cuda
-      mem_fraction: 0.55                     # 切 cuda 时用：5070 共 12G，桌面还要留一半
+      # cuda 下用平台分配器（按需分配/归还），仿真加载后仅剩 ~8G 也能稳定跑
+      device: cuda
+      mem_fraction: 0.66                     # 平台分配器下不生效，保留仅作参考
+      # 50 步：平台分配器下实测连续 6 次推理稳定（首次含编译 3.8s，之后 ~0.37s）
+      num_steps: 50
+      ticks_per_action: 1                    # 每个预测动作重复的 tick 数；1=严格 31.25Hz 回放
       prompt: put the blanket in the box     # 必须与训练数据集 task 一致
       # ---- 场景/渲染（与采集一致）
       task: put the blanket in the box

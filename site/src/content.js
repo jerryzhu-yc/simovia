@@ -182,6 +182,14 @@ export const DEMOS = [
   },
   {
     kind: "video",
+    src: "./assets/demos/g1_cloth_policy_compare.mp4",
+    tag: "策略闭环 · 对比",
+    title: "同一任务：遥操作示教 vs π0.5 自主推理（逐帧对齐）",
+    body: "上排是 PICO 遥操作采集的原始 episode，下排是 π0.5（pi05 + LoRA，30k step）在同一世界、同一任务、同一机位下的自主闭环：两路相机 256×256 输入、语言指令条件，每 0.32s 输出一个 10 帧动作 chunk，31.25 Hz 回放，抓起毛毯松手落入盒内由控制器判定成功。两排压在同一条时间轴上：人类示教 10.9s，策略 7.6s 完成（之后定格）。",
+    meta: "π0.5 + LoRA 30k · 31.25 Hz · 10.9s vs 7.6s",
+  },
+  {
+    kind: "video",
     src: "./assets/demos/maintenance_relay.mp4",
     tag: "多机器人协同",
     title: "Go2 × G1 × UR5e 联合维修",
@@ -220,5 +228,6 @@ export const DEMOS = [
     title: "13 个 demo 分支，逐个可复现",
     body: "每个 demo 独立分支 + README 复现流程：环境、命令、世界文件齐备，clone 即跑。",
     meta: "simovia-playground",
+    featured: true,
   },
 ];

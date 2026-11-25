@@ -48,6 +48,7 @@ DEFAULT_CHECKPOINT = (pathlib.Path.home() / "openpi" / "checkpoints"
 DEFAULT_PROMPT = "put the blanket in the box"
 DEFAULT_BOX = {"min": [0.285, 0.120, 0.745], "max": [0.475, 0.400, 0.790]}
 INFER_TIMEOUT = 600.0     # 首次含 XLA 编译，CPU 上要几十秒
+WORKER_READY_TIMEOUT = 600.0   # 等 worker 加载权重的上限（cuda 首次含编译）
 
 
 class G1ClothPolicyEval(G1ClothTeleop):
@@ -61,7 +62,7 @@ class G1ClothPolicyEval(G1ClothTeleop):
         while self.server._loop is None and time.monotonic() < deadline:
             time.sleep(0.01)
         self.server.stop()
-        print("[policy_eval] 不需要 PICO 遥操作，已关闭页面服务器", flush=True)
+        self._log("不需要 PICO 遥操作，已关闭页面服务器")
 
         # 只渲染策略需要的两路（父类按 arms 生成，这里显式钉死顺序）
         size = int(self.args.get("cam_size", 256))
@@ -87,6 +88,13 @@ class G1ClothPolicyEval(G1ClothTeleop):
         self.n_infer = 0
         self._stable_since: float | None = None
         self._last_status = 0.0
+        # 每个预测动作重复执行的 tick 数（1=严格 31.25Hz 回放；>1 让每次
+        # 推理覆盖更多仿真时间、动作更平顺，但任务整体会更慢推进）
+        self.ticks_per_action = max(1, int(self.args.get("ticks_per_action", 1)))
+        self._cur_action: np.ndarray | None = None
+        self._hold = 0
+        self._render_s = 0.0
+        self.num_steps = int(self.args.get("num_steps", 10))
 
         if not self.checkpoint.exists():
             raise RuntimeError(f"checkpoint 不存在: {self.checkpoint}")
@@ -98,21 +106,33 @@ class G1ClothPolicyEval(G1ClothTeleop):
         log_path = pathlib.Path(self.args.get(
             "worker_log", "/tmp/pi05_worker.log")).expanduser()
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._worker_log_path = log_path
         self._worker_log = open(log_path, "w", encoding="utf-8", buffering=1)
         cmd = [str(py), str(HERE / "pi05_infer_worker.py"),
                "--config", self.model_name,
                "--checkpoint", str(self.checkpoint),
                "--prompt", self.prompt,
                "--device", str(self.args.get("device", "cpu")),
+               "--num-steps", str(self.num_steps),
                "--mem-fraction", str(self.args.get("mem_fraction", 0.55))]
-        print(f"[policy_eval] 启动推理 worker: {' '.join(cmd)}", flush=True)
+        self._log(f"启动推理 worker: {' '.join(cmd)}")
         self.worker = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=self._worker_log, cwd=str(pathlib.Path.home() / "openpi"))
+        self._worker_ready = False
         self.status.update({"recording": False,
                             "msg": f"π0.5 策略评估：{self.checkpoint.name}"})
-        print(f"[policy_eval] 就绪：{self.model_name} @ {self.checkpoint}"
-              f"  (设备 {self.args.get('device', 'cpu')})", flush=True)
+        self._log(f"就绪：{self.model_name} @ {self.checkpoint}"
+                  f"  (设备 {self.args.get('device', 'cpu')}, "
+                  f"num_steps {self.num_steps}, "
+                  f"ticks_per_action {self.ticks_per_action})")
+
+    @staticmethod
+    def _log(msg: str) -> None:
+        """推理进度统一走 stderr：GUI/MCP 模式下 stdout 是 JSON-RPC 协议流，
+        print 到 stdout 会被吞掉甚至污染协议，只有 stderr 能在终端/控制台看到。"""
+        sys.stderr.write(f"[policy_eval] {msg}\n")
+        sys.stderr.flush()
 
     # ------------------------------------------------------------ 观测/推理
 
@@ -123,6 +143,34 @@ class G1ClothPolicyEval(G1ClothTeleop):
             d.qpos[self.arm_qadrs["right"]], [self._grip_state("right")],
         ]).astype(np.float32)
 
+    def _wait_ready(self) -> None:
+        """等 worker 发来就绪字节 R。这期间不渲染，避免 GPU 峰值撞车 OOM。"""
+        self._log("等待推理 worker 加载权重（cuda 首次含 XLA 编译，约 30~90s）…")
+        fd = self.worker.stdout.fileno()
+        ready, _, _ = select.select([fd], [], [], WORKER_READY_TIMEOUT)
+        if not ready:
+            raise TimeoutError(f"推理 worker {WORKER_READY_TIMEOUT:.0f}s 未就绪")
+        b = os.read(fd, 1)
+        if b != b"R":
+            raise RuntimeError(
+                f"推理 worker 启动失败（收到 {b!r}，rc={self.worker.poll()}），"
+                f"日志 {self._worker_log_path}：{self._worker_tail()}")
+        self._worker_ready = True
+        self._log("推理 worker 就绪")
+
+    def _worker_tail(self, n: int = 14) -> str:
+        """把 worker 日志尾部拼进异常：worker 一退出（常见是显存 OOM），
+        日志是唯一能定位原因的地方，直接显示在终端/GUI 控制台免去翻文件。"""
+        path = getattr(self, "_worker_log_path", None)
+        if path is None:
+            return ""
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return ""
+        tail = [ln.rstrip() for ln in lines[-n:] if ln.strip()]
+        return "".join(f"\n    {ln}" for ln in tail)
+
     def _read_raw(self, n: int, timeout: float) -> bytes:
         buf = bytearray()
         fd = self.worker.stdout.fileno()
@@ -132,12 +180,18 @@ class G1ClothPolicyEval(G1ClothTeleop):
                 raise TimeoutError(f"推理 worker {timeout:.0f}s 无响应")
             chunk = os.read(fd, n - len(buf))
             if not chunk:
-                raise RuntimeError("推理 worker 已退出，详见 pi05_worker.log")
+                raise RuntimeError(
+                    f"推理 worker 已退出（rc={self.worker.poll()}），"
+                    f"日志 {self._worker_log_path}：{self._worker_tail()}")
             buf.extend(chunk)
         return bytes(buf)
 
     def _infer(self) -> np.ndarray:
+        if not self._worker_ready:
+            self._wait_ready()
+        t_render = time.monotonic()
         images = [self._render(k) for k in self.cam_specs]
+        self._render_s = time.monotonic() - t_render
         state = self._state16()
         h, w = images[0].shape[:2]
         head = struct.pack("<IIII", len(state), h, w, len(images))
@@ -172,8 +226,7 @@ class G1ClothPolicyEval(G1ClothTeleop):
         self.detail = detail
         self.status.update({"recording": False,
                             "msg": f"{'成功' if ok else '结束'}：{detail}"})
-        print(f"[policy_eval] {'✔' if ok else '✖'} {detail}"
-              f"（推理 {self.n_infer} 次）", flush=True)
+        self._log(f"{'✔' if ok else '✖'} {detail}（推理 {self.n_infer} 次）")
 
     def _check_finish(self) -> bool:
         sim_t = self.tick * self.tick_dt
@@ -206,14 +259,23 @@ class G1ClothPolicyEval(G1ClothTeleop):
             return False
         if self._check_finish():
             return False
-        if not self.queue:
-            t0 = time.monotonic()
-            self.queue = list(self._infer())
-            self.n_infer += 1
-            print(f"[policy_eval] 推理 #{self.n_infer} "
-                  f"{time.monotonic() - t0:.2f}s  t={self.tick * self.tick_dt:.2f}s  "
-                  f"首步={np.round(self.queue[0][:8], 3)}", flush=True)
-        self._apply_action(self.queue.pop(0))
+        # 每 ticks_per_action 个 tick 才取一个新动作；最后一个动作也会完整
+        # hold 住，所以下一次推理要等到 hold 用完且队列空。
+        if self._hold <= 0:
+            if not self.queue:
+                t0 = time.monotonic()
+                self.queue = list(self._infer())
+                infer_s = time.monotonic() - t0
+                self.n_infer += 1
+                cover = len(self.queue) * self.ticks_per_action * self.tick_dt
+                self._log(
+                    f"推理 #{self.n_infer}  渲染 {self._render_s * 1e3:.0f}ms"
+                    f" + 推理 {infer_s:.2f}s  chunk={len(self.queue)}"
+                    f"（覆盖 {cover:.2f}s 仿真）  t={self.tick * self.tick_dt:.2f}s")
+            self._cur_action = self.queue.pop(0)
+            self._hold = self.ticks_per_action
+        self._apply_action(self._cur_action)
+        self._hold -= 1
         for _ in range(self.ctrl_period):
             self._substep()
         self.tick += 1
