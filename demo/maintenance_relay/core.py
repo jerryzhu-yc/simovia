@@ -149,12 +149,19 @@ class Demo:
             q=arm.solve(p,R=R,seed=seed)
             yield from self.joint_move(arm,q,seconds)
         # Compensate the measured floating-base displacement at the final pose.
-        for _ in range(2):
+        # 2 轮在本机够用（残差 1~4mm），但不同 CPU / BLAS 下贴装工位会漂到
+        # 十几毫米，给足重试预算，最后再补一段慢速收敛才判失败。
+        for _ in range(4):
             if np.linalg.norm(self.data.site_xpos[arm.sid]-p)<.004:break
             q=arm.solve(p,R=R,seed=arm.q)
             yield from self.joint_move(arm,q,.35)
-        if np.linalg.norm(self.data.site_xpos[arm.sid]-p)>.012:
-            raise RuntimeError(f'{arm.prefix} 末端跟踪误差过大')
+        err=float(np.linalg.norm(self.data.site_xpos[arm.sid]-p))
+        if err>.006:
+            q=arm.solve(p,R=R,seed=arm.q)
+            yield from self.joint_move(arm,q,.6)
+            err=float(np.linalg.norm(self.data.site_xpos[arm.sid]-p))
+        if err>.012:
+            raise RuntimeError(f'{arm.prefix} 末端跟踪误差过大（{err*1000:.1f}mm）')
 
     def grasp(self,arm):
         self.grip[arm.prefix]=0.
