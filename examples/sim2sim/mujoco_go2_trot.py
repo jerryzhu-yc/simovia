@@ -15,7 +15,7 @@
 引擎参数与 worlds/go2_trot_demo.yaml 对齐：timestep 0.002、ctrl_period 8、
 integrator implicitfast、impratio 100、地面摩擦 0.8。改这些参数就等于在
 源端引入物理差异（对照 worlds/go2_trot_sim2sim.yaml）。外观保留 MuJoCo
-引擎默认（灰地面 / 黑背景 / 默认 headlight），与 simovia 画面一眼可分。
+引擎自带的地面与背景（灰地面 / 黑背景），与 simovia 画面一眼可分。
 """
 from __future__ import annotations
 

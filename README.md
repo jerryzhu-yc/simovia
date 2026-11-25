@@ -861,7 +861,7 @@ python examples/sim2sim/mujoco_go2_trot.py --viewer
 MUJOCO_GL=egl python examples/sim2sim/mujoco_go2_trot.py --ticks 250 --video /tmp/go2_mujoco.mp4 --stride 1
 ```
 
-源端脚本刻意复刻了 simovia 的场景构造顺序（先建空 MjSpec + 地面/相机，再用 frame 平移 attach 机器人）。构造顺序会影响接触求解顺序，两边同序之后，同一份控制律在两套引擎下的轨迹几乎逐点重合（t=3.2s 时 x 1.94 vs 1.93 m），差异全部来自目标域那四项物理改动：4 秒里源端走 2.80 m、目标端走 3.35 m，步频与姿态也肉眼可辨。外观上源端刻意保留 MuJoCo 引擎默认（灰地面、黑背景、默认平行光），目标端是 simovia 的天空盒 + 网格地面，对比视频里一眼就能看出哪半是原生 MuJoCo。
+源端脚本刻意复刻了 simovia 的场景构造顺序（先建空 MjSpec + 地面/相机，再用 frame 平移 attach 机器人）。构造顺序会影响接触求解顺序，两边同序之后，同一份控制律在两套引擎下的轨迹几乎逐点重合（t=3.2s 时 x 1.94 vs 1.93 m），差异全部来自目标域那四项物理改动：4 秒里源端走 2.80 m、目标端走 3.35 m，步频与姿态也肉眼可辨。源端画面用的是 MuJoCo 自带的灰地面与黑背景，目标端是 simovia 的天空盒 + 网格地面，对比视频里一眼就能看出哪半是原生 MuJoCo。
 
 ## 视觉水果分拣与独立手眼标定
 

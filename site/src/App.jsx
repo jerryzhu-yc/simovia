@@ -379,10 +379,12 @@ function DemoCard({ demo }) {
   }
   return (
     <figure
-      className={`group overflow-hidden rounded-2xl border border-line bg-panel transition hover:border-mint/40 ${wide}`}
+      className={`group overflow-hidden rounded-2xl border border-line bg-panel transition hover:border-mint/40 ${wide} ${
+        demo.row ? "md:grid md:grid-cols-[1.55fr_1fr] md:items-stretch" : ""
+      }`}
     >
       <DemoMedia demo={demo} />
-      <figcaption className="px-5 py-4">
+      <figcaption className={demo.row ? "flex flex-col justify-center px-6 py-6" : "px-5 py-4"}>
         <div className="flex items-center gap-2">
           <span className="rounded-md bg-mint/10 px-2 py-0.5 font-mono text-[11px] text-mint">
             {demo.tag}
@@ -562,15 +564,16 @@ function QuickStart() {
           <div>
             <SectionHead
               kicker="快速开始"
-              title="五条命令，看到第一个世界"
-              desc="需要 64 位 Python 3.11+。核心依赖只有 mujoco、numpy、pyyaml、pyzmq，模型资产随仓库自带，无需联网下载。"
+              title="第一次上手：装好就能跑"
+              desc="不需要 GPU，也不用下载模型——模型资产随仓库自带，离线可用。按下面 5 步走，就能看到第一个仿真世界动起来。命令都在仓库根目录执行。"
             />
             <div className="mt-6 space-y-3 text-sm text-slate-400">
               {[
-                ["python -m simovia run worlds/pick_cube.yaml", "跑一个世界，看统计结果"],
-                ["python -m simovia inspect worlds/pick_cube.yaml", "列出执行器 / 关节 / 传感器"],
-                ["python -m demo.maintenance_relay", "多机器人协同维修完整演示"],
-                ["python -m simovia doctor", "环境诊断，缺什么直接给安装提示"],
+                ["python3.12 -m venv .venv && source .venv/bin/activate", "第 1 步：建一个干净的 Python 环境（3.11+ 即可；Windows 用 .venv\\Scripts\\activate）"],
+                ["pip install -r requirements.txt", "第 2 步：装依赖，核心只有 mujoco、numpy、pyyaml、pyzmq"],
+                ["python -m simovia doctor", "第 3 步：环境自检，依赖 / 模型资产 / 离屏渲染逐项检查，缺什么直接给安装提示"],
+                ["python -m simovia run worlds/pick_cube.yaml", "第 4 步：不开窗口跑一个抓取任务，终端打印末端误差和成功判定"],
+                ["python -m simovia gui", "第 5 步：打开工作台 → 文件 → 打开世界 → 选 YAML → F5 运行（F6 停 / F7 单步 / F8 重置）"],
               ].map(([cmd, desc]) => (
                 <div key={cmd}>
                   <code className="rounded-md border border-line bg-ink px-2 py-1 font-mono text-xs text-slate-200">
@@ -580,6 +583,14 @@ function QuickStart() {
                 </div>
               ))}
             </div>
+            <p className="mt-5 text-xs leading-5 text-slate-500">
+              跑通之后想改世界：直接编辑 <span className="font-mono text-slate-400">worlds/*.yaml</span>
+              （物理、机器人、任务全在里面）；想写自己的控制律：把 YAML 里的
+              <span className="font-mono text-slate-400"> controller </span>
+              指向自己的 Python 脚本，在 <span className="font-mono text-slate-400">while robot.step()</span>
+              里读观测、写控制量即可，<span className="font-mono text-slate-400">controllers/</span>
+              下全是现成例子。
+            </p>
           </div>
 
           <div className="overflow-hidden rounded-2xl border border-line bg-ink">
@@ -590,6 +601,11 @@ function QuickStart() {
             <pre className="overflow-x-auto px-4 py-4 font-mono text-[12.5px] leading-7 text-slate-300">
               {CODE}
             </pre>
+            <p className="border-t border-line px-4 py-3 text-xs leading-5 text-slate-500">
+              卡在某一步？先跑 <span className="font-mono text-slate-300">python -m simovia doctor</span>，
+              它会指出缺的依赖、模型或渲染后端。更多细节（录制数据、MCP 接入、
+              模型库）见仓库 README。
+            </p>
           </div>
         </div>
       </div>

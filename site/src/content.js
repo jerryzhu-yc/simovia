@@ -1,10 +1,11 @@
 export const CODE = `git clone https://github.com/jerryzhu-yc/simovia.git
 cd simovia
-python3.12 -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate   # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
 
-python -m simovia doctor   # 环境自检：依赖 / 模型资产 / 离屏渲染
-python -m simovia gui      # 打开 GUI，选一个世界直接运行`;
+python -m simovia doctor                        # 环境自检：缺什么会提示怎么装
+python -m simovia run worlds/pick_cube.yaml     # 无窗口跑一个内置抓取任务
+python -m simovia gui                           # 打开工作台，选世界按 F5 运行`;
 
 export const FEATURES = [
   {
@@ -192,9 +193,11 @@ export const DEMOS = [
     kind: "video",
     src: "./assets/demos/go2_sim2sim.mp4",
     tag: "sim2sim · 跨引擎",
-    title: "同一份 CPG 步态：原生 MuJoCo vs simovia",
-    body: "左半是直接用 MuJoCo 原生 API 步进的 Go2（保留引擎默认的灰地面、黑背景），右半是同一个 go2.xml、同一份对角小跑控制律跑在 simovia 里（天空盒 + 网格地面）。目标域只改物理：控制周期 62.5→50 Hz、积分器 implicitfast→implicit、impratio 100→20、地面摩擦 0.8→0.6、重力 -9.81→-9.6。两端共用同一相机、同一起始位姿、同一条时间轴，4 秒里步频与位移的差别只来自仿真条件本身（源端 2.80 m，目标端 3.35 m）。",
+    title: "同一个 Go2，两套仿真软件跑同一份步态",
+    body: "左半是直接用 MuJoCo 原生接口步进的 Go2，右半是同一个 go2.xml、同一份对角小跑控制律跑在 simovia 里：地面、背景、界面都来自各自软件，一眼就能看出不是一个仿真器。目标域只改物理——控制周期 62.5→50 Hz、积分器 implicitfast→implicit、impratio 100→20、地面摩擦 0.8→0.6、重力 -9.81→-9.6；两端共用同一相机、同一起始位姿、同一条时间轴，4 秒里步频与位移的差别只来自仿真条件本身（源端 2.80 m，目标端 3.35 m）。",
     meta: "Go2 对角小跑 · 62.5Hz vs 50Hz · 4s 对齐",
+    featured: true,
+    row: true,
   },
   {
     kind: "video",
@@ -233,7 +236,7 @@ export const DEMOS = [
     kind: "link",
     href: "https://github.com/jerryzhu-yc/simovia-playground",
     tag: "Playground",
-    title: "13 个 demo 分支，逐个可复现",
+    title: "14 个 demo 分支，逐个可复现",
     body: "每个 demo 独立分支 + README 复现流程：环境、命令、世界文件齐备，clone 即跑。",
     meta: "simovia-playground",
     featured: true,
