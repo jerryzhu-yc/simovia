@@ -355,11 +355,11 @@ function DemoCard({ demo }) {
         href={demo.href}
         target="_blank"
         rel="noreferrer"
-        className={`group flex flex-col items-center justify-center gap-3 rounded-2xl border border-line bg-panel px-8 py-10 text-center transition hover:border-mint/40 ${wide}`}
+        className={`group flex items-center gap-4 rounded-2xl border border-line bg-panel px-6 py-5 transition hover:border-mint/40 ${wide}`}
       >
-        <span className="flex h-12 w-12 items-center justify-center rounded-xl border border-line bg-ink text-mint">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-line bg-ink text-mint">
           <svg
-            className="h-5 w-5"
+            className="h-4 w-4"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -371,29 +371,35 @@ function DemoCard({ demo }) {
             <path d="M7 17L17 7M8 7h9v9" />
           </svg>
         </span>
-        <p className="text-sm font-semibold text-slate-100">{demo.title}</p>
-        <p className="max-w-xs text-xs leading-5 text-slate-400">{demo.body}</p>
-        <span className="font-mono text-[11px] text-slate-500 transition group-hover:text-mint">
-          ↗ {demo.meta}
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-slate-100">{demo.title}</p>
+          <p className="mt-0.5 text-xs leading-5 text-slate-400">{demo.body}</p>
+        </div>
+        <span className="hidden shrink-0 font-mono text-[11px] text-slate-500 transition group-hover:text-mint sm:block">
+          {demo.meta} ↗
         </span>
       </a>
     );
   }
   return (
     <figure
-      className={`group overflow-hidden rounded-2xl border border-line bg-panel transition hover:border-mint/40 ${wide} ${
-        demo.row ? "md:grid md:grid-cols-[1.55fr_1fr] md:items-stretch" : ""
+      className={`group flex flex-col overflow-hidden rounded-2xl border border-line bg-panel transition hover:border-mint/40 ${wide} ${
+        demo.featured
+          ? "md:grid md:grid-cols-[1.55fr_1fr] md:items-center"
+          : ""
       }`}
     >
       <DemoMedia demo={demo} />
-      <figcaption className={demo.row ? "flex flex-col justify-center px-6 py-6" : "px-5 py-4"}>
-        <div className="flex items-center gap-2">
+      <figcaption className={`flex flex-1 flex-col px-5 py-4 ${demo.featured ? "md:px-7 md:py-6" : ""}`}>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="rounded-md bg-mint/10 px-2 py-0.5 font-mono text-[11px] text-mint">
             {demo.tag}
           </span>
           <span className="font-mono text-[11px] text-slate-600">{demo.meta}</span>
         </div>
-        <p className="mt-2 text-sm font-semibold text-slate-100">{demo.title}</p>
+        <p className={`mt-2 font-semibold text-slate-100 ${demo.featured ? "text-base" : "text-sm"}`}>
+          {demo.title}
+        </p>
         <p className="mt-1 text-xs leading-5 text-slate-400">{demo.body}</p>
       </figcaption>
     </figure>
@@ -407,7 +413,7 @@ function Demos() {
         <SectionHead
           kicker="演示"
           title="真实仿真画面，实时录制"
-          desc="下面每一段都来自仓库里的世界与控制器：AI 一句话生成世界并跑通抓取、3D 实车与雷达建图同步、多机协同、G1 遥操作与数据回放、视觉分拣、抓取与 VLA 闭环。"
+          desc="下面每一段都来自仓库里的世界与控制器：AI 一句话生成世界并跑通抓取、3D 实车与雷达建图同步、多机协同、G1 遥操作与数据回放、视觉分拣、抓取与 VLA 闭环，以及同一份控制律跨两套引擎运行的 sim2sim 对比。"
         />
 
         <div className="mt-10 grid grid-flow-dense gap-5 md:grid-cols-2">
