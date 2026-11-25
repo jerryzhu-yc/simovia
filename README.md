@@ -72,6 +72,16 @@ python -m simovia doctor
 python -m simovia gui
 ```
 
+### 桌面安装包
+
+不想手动配环境和命令行启动，可以直接产出两个平台的桌面安装包：
+
+```bash
+python packaging/build.py            # 产物在 dist/
+```
+
+`dist/Simovia-<版本>-linux-x64.zip` 与 `dist/Simovia-<版本>-windows-x64.zip` 自带模型资产、示例世界和安装/启动脚本。解压后只需配置一次环境：Linux 执行 `./install.sh`，Windows 双击 `install-windows.bat`（脚本自动建虚拟环境、装依赖、做环境自检并创建桌面图标），之后双击桌面图标即可启动，和普通桌面软件一致。安装脚本会一并装上视觉 demo 的 OpenCV 依赖；首次安装需要联网，运行与模型库可离线使用。
+
 > 仓库自带 35 个机器人模型资产（`models/zoo/`，约 600MB）。依赖安装完成且资产齐全后，模型库和本地 demo 可离线运行；AI 功能按所配置的服务连接。
 
 `requirements.txt` 包含核心、GUI、RL 和 pytest，**不包含视觉 demo 的 OpenCV**。按需安装时，拆分文件是各自能力的依赖清单，需要显式组合：
@@ -997,6 +1007,7 @@ simovia/
 ├── examples/              # PPO 训练示例（train_ppo_go2.py）+ sim2sim 源端（sim2sim/mujoco_go2_trot.py）
 ├── site/                  # 展示站（Vite + React，CI 自动部署 GitHub Pages）
 ├── docs/                  # 设计文档与里程碑实施计划
+├── packaging/             # 桌面安装包构建（build.py + Linux/Windows 安装与启动脚本）
 ├── start.bat / start.sh / create_desktop_shortcut.bat / simovia.ico
 │                          # Windows / Linux 启动脚本 + 桌面快捷方式（项目图标）
 └── tests/                 # 自动化回归测试（URDF/AI 场景/夹爪/码垛/造机器人/导航/遥操作）
